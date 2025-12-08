@@ -30,6 +30,12 @@ class FairPlay_LMS_Config {
     public const META_TOPIC_RESOURCE_ID   = 'fplms_resource_id';
     public const META_TOPIC_RESOURCE_TYPE = 'fplms_resource_type';
 
+    // Meta de cursos para visibilidad por estructura
+    public const META_COURSE_CITIES   = 'fplms_course_cities';
+    public const META_COURSE_CHANNELS = 'fplms_course_channels';
+    public const META_COURSE_BRANCHES = 'fplms_course_branches';
+    public const META_COURSE_ROLES    = 'fplms_course_roles';
+
     // Opción para matriz de privilegios
     public const OPTION_CAP_MATRIX = 'fplms_capability_matrix';
 

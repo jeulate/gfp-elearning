@@ -22,6 +22,7 @@ require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-progress.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-structures.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-users.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-courses.php';
+require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-course-visibility.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-reports.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-pages.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-menu.php';

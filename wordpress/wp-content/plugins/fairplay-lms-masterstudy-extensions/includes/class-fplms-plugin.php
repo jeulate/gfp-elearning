@@ -26,6 +26,11 @@ class FairPlay_LMS_Plugin {
     private $courses;
 
     /**
+     * @var FairPlay_LMS_Course_Visibility_Service
+     */
+    private $visibility;
+
+    /**
      * @var FairPlay_LMS_Reports_Controller
      */
     private $reports;
@@ -45,7 +50,8 @@ class FairPlay_LMS_Plugin {
         $this->structures = new FairPlay_LMS_Structures_Controller();
         $this->progress   = new FairPlay_LMS_Progress_Service();
         $this->users      = new FairPlay_LMS_Users_Controller( $this->structures, $this->progress );
-        $this->courses    = new FairPlay_LMS_Courses_Controller();
+        $this->courses    = new FairPlay_LMS_Courses_Controller( $this->structures );
+        $this->visibility = new FairPlay_LMS_Course_Visibility_Service();
         $this->reports    = new FairPlay_LMS_Reports_Controller( $this->users, $this->structures, $this->progress );
         $this->pages      = new FairPlay_LMS_Admin_Pages();
         $this->menu       = new FairPlay_LMS_Admin_Menu(
@@ -88,5 +94,39 @@ class FairPlay_LMS_Plugin {
 
         // Exportaciones / informes
         add_action( 'admin_init', [ $this->reports, 'handle_export' ] );
+
+        // Filtrado de cursos por visibilidad de estructura
+        add_filter( 'stm_lms_get_user_courses', [ $this->visibility, 'filter_courses_array' ], 10, 1 );
+        add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
+    }
+
+    /**
+     * Filtra la query de cursos para mostrar solo los visibles según estructura.
+     * Hook de compatibilidad con MasterStudy.
+     */
+    public function filter_course_query( $query_args ): array {
+
+        if ( ! is_array( $query_args ) ) {
+            return $query_args;
+        }
+
+        $user_id = get_current_user_id();
+
+        if ( 0 === $user_id || current_user_can( 'manage_options' ) ) {
+            return $query_args;
+        }
+
+        // Obtener cursos visibles para el usuario
+        $visible_course_ids = $this->visibility->get_visible_courses_for_user( $user_id );
+
+        if ( ! empty( $visible_course_ids ) ) {
+            $query_args['post__in'] = $visible_course_ids;
+        } else {
+            // Si no hay cursos visibles, retornar query que no devuelva resultados
+            $query_args['post__in'] = [ 0 ];
+        }
+
+        return $query_args;
     }
 }
+

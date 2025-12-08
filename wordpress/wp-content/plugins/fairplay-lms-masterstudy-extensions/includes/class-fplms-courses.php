@@ -6,6 +6,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 class FairPlay_LMS_Courses_Controller {
 
     /**
+     * @var FairPlay_LMS_Structures_Controller
+     */
+    private $structures;
+
+    public function __construct( FairPlay_LMS_Structures_Controller $structures = null ) {
+        $this->structures = $structures;
+    }
+
+    /**
      * Registra post types internos de módulos y temas.
      */
     public function register_post_types(): void {
@@ -75,6 +84,19 @@ class FairPlay_LMS_Courses_Controller {
             } else {
                 delete_post_meta( $course_id, FairPlay_LMS_Config::MS_META_COURSE_TEACHER );
             }
+
+            wp_safe_redirect(
+                add_query_arg(
+                    [ 'page' => 'fplms-courses' ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
+        // Asignar estructuras a curso
+        if ( 'assign_structures' === $action && $course_id ) {
+            $this->save_course_structures( $course_id );
 
             wp_safe_redirect(
                 add_query_arg(
@@ -183,6 +205,8 @@ class FairPlay_LMS_Courses_Controller {
             $this->render_course_modules_view( $course_id );
         } elseif ( 'topics' === $view && $course_id && $module_id ) {
             $this->render_module_topics_view( $course_id, $module_id );
+        } elseif ( 'structures' === $view && $course_id ) {
+            $this->render_course_structures_view( $course_id );
         } else {
             $this->render_course_list_view();
         }
@@ -236,6 +260,7 @@ class FairPlay_LMS_Courses_Controller {
 
         $instructors = $this->get_available_instructors();
         ?>
+        <p><strong>Nota:</strong> Haz clic en "Gestionar estructuras" para asignar a qué estructuras será visible cada curso.</p>
         <table class="widefat striped">
             <thead>
                 <tr>
@@ -253,6 +278,15 @@ class FairPlay_LMS_Courses_Controller {
                     [
                         'page'      => 'fplms-courses',
                         'view'      => 'modules',
+                        'course_id' => $course->ID,
+                    ],
+                    admin_url( 'admin.php' )
+                );
+
+                $structures_url = add_query_arg(
+                    [
+                        'page'      => 'fplms-courses',
+                        'view'      => 'structures',
                         'course_id' => $course->ID,
                     ],
                     admin_url( 'admin.php' )
@@ -290,6 +324,7 @@ class FairPlay_LMS_Courses_Controller {
                     </td>
                     <td>
                         <a href="<?php echo esc_url( $modules_url ); ?>" class="button">Gestionar módulos</a>
+                        <a href="<?php echo esc_url( $structures_url ); ?>" class="button">Gestionar estructuras</a>
                         <a href="<?php echo esc_url( get_edit_post_link( $course->ID ) ); ?>" class="button-secondary">Editar curso (MasterStudy)</a>
                     </td>
                 </tr>
@@ -563,6 +598,123 @@ class FairPlay_LMS_Courses_Controller {
     }
 
     /**
+     * Vista para gestionar estructuras de un curso.
+     */
+    private function render_course_structures_view( int $course_id ): void {
+
+        $course = get_post( $course_id );
+        if ( ! $course || FairPlay_LMS_Config::MS_PT_COURSE !== $course->post_type ) {
+            echo '<p>Curso no válido.</p>';
+            return;
+        }
+
+        $back_url = add_query_arg( [ 'page' => 'fplms-courses' ], admin_url( 'admin.php' ) );
+
+        echo '<p><a href="' . esc_url( $back_url ) . '">&larr; Volver al listado de cursos</a></p>';
+        echo '<h2>Estructuras para: ' . esc_html( get_the_title( $course ) ) . ' (ID ' . esc_html( $course->ID ) . ')</h2>';
+
+        // Obtener estructuras actuales del curso
+        $current_structures = $this->get_course_structures( $course_id );
+
+        // Obtener términos activos
+        $cities   = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY ) : [];
+        $channels = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL ) : [];
+        $branches = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH ) : [];
+        $roles    = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE ) : [];
+        ?>
+        <p><strong>Nota:</strong> Selecciona qué estructuras pueden ver este curso. Si no seleccionas ninguna, el curso será visible para todos.</p>
+
+        <form method="post">
+            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+            <input type="hidden" name="fplms_courses_action" value="assign_structures">
+            <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+
+            <table class="form-table">
+                <tr>
+                    <th scope="row"><label>Ciudades</label></th>
+                    <td>
+                        <?php if ( ! empty( $cities ) ) : ?>
+                            <fieldset>
+                                <?php foreach ( $cities as $term_id => $term_name ) : ?>
+                                    <label>
+                                        <input type="checkbox" name="fplms_course_cities[]" value="<?php echo esc_attr( $term_id ); ?>" 
+                                        <?php checked( in_array( $term_id, $current_structures['cities'], true ) ); ?>>
+                                        <?php echo esc_html( $term_name ); ?>
+                                    </label><br>
+                                <?php endforeach; ?>
+                            </fieldset>
+                        <?php else : ?>
+                            <p><em>No hay ciudades disponibles.</em></p>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+
+                <tr>
+                    <th scope="row"><label>Canales / Franquicias</label></th>
+                    <td>
+                        <?php if ( ! empty( $channels ) ) : ?>
+                            <fieldset>
+                                <?php foreach ( $channels as $term_id => $term_name ) : ?>
+                                    <label>
+                                        <input type="checkbox" name="fplms_course_channels[]" value="<?php echo esc_attr( $term_id ); ?>" 
+                                        <?php checked( in_array( $term_id, $current_structures['channels'], true ) ); ?>>
+                                        <?php echo esc_html( $term_name ); ?>
+                                    </label><br>
+                                <?php endforeach; ?>
+                            </fieldset>
+                        <?php else : ?>
+                            <p><em>No hay canales disponibles.</em></p>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+
+                <tr>
+                    <th scope="row"><label>Sucursales</label></th>
+                    <td>
+                        <?php if ( ! empty( $branches ) ) : ?>
+                            <fieldset>
+                                <?php foreach ( $branches as $term_id => $term_name ) : ?>
+                                    <label>
+                                        <input type="checkbox" name="fplms_course_branches[]" value="<?php echo esc_attr( $term_id ); ?>" 
+                                        <?php checked( in_array( $term_id, $current_structures['branches'], true ) ); ?>>
+                                        <?php echo esc_html( $term_name ); ?>
+                                    </label><br>
+                                <?php endforeach; ?>
+                            </fieldset>
+                        <?php else : ?>
+                            <p><em>No hay sucursales disponibles.</em></p>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+
+                <tr>
+                    <th scope="row"><label>Cargos</label></th>
+                    <td>
+                        <?php if ( ! empty( $roles ) ) : ?>
+                            <fieldset>
+                                <?php foreach ( $roles as $term_id => $term_name ) : ?>
+                                    <label>
+                                        <input type="checkbox" name="fplms_course_roles[]" value="<?php echo esc_attr( $term_id ); ?>" 
+                                        <?php checked( in_array( $term_id, $current_structures['roles'], true ) ); ?>>
+                                        <?php echo esc_html( $term_name ); ?>
+                                    </label><br>
+                                <?php endforeach; ?>
+                            </fieldset>
+                        <?php else : ?>
+                            <p><em>No hay cargos disponibles.</em></p>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            </table>
+
+            <p class="submit">
+                <button type="submit" class="button button-primary">Guardar estructuras</button>
+            </p>
+        </form>
+        <?php
+    }
+
+    /**
      * Recurso MasterStudy (lecciones y quizzes).
      */
     private function get_masterstudy_resources(): array {
@@ -598,4 +750,32 @@ class FairPlay_LMS_Courses_Controller {
 
         return $resources;
     }
+
+    /**
+     * Guarda las estructuras asignadas a un curso.
+     */
+    private function save_course_structures( int $course_id ): void {
+        $cities   = isset( $_POST['fplms_course_cities'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_cities'] ) ) : [];
+        $channels = isset( $_POST['fplms_course_channels'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_channels'] ) ) : [];
+        $branches = isset( $_POST['fplms_course_branches'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_branches'] ) ) : [];
+        $roles    = isset( $_POST['fplms_course_roles'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_roles'] ) ) : [];
+
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, $cities );
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, $channels );
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, $branches );
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, $roles );
+    }
+
+    /**
+     * Obtiene las estructuras asignadas a un curso.
+     */
+    public function get_course_structures( int $course_id ): array {
+        return [
+            'cities'   => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
+            'channels' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
+            'branches' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
+            'roles'    => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
+        ];
+    }
 }
+
