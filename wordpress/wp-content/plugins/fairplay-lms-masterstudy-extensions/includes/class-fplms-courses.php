@@ -598,4 +598,52 @@ class FairPlay_LMS_Courses_Controller {
 
         return $resources;
     }
+
+        /**
+     * Devuelve un resumen de cursos para el widget del dashboard.
+     *
+     * @param int $limit Cantidad de cursos a mostrar.
+     * @return array[]
+     */
+    public function get_courses_summary( int $limit = 6 ): array {
+
+        if ( ! post_type_exists( FairPlay_LMS_Config::MS_PT_COURSE ) ) {
+            return [];
+        }
+
+        $posts = get_posts(
+            [
+                'post_type'      => FairPlay_LMS_Config::MS_PT_COURSE,
+                'posts_per_page' => $limit,
+                'post_status'    => 'publish',
+                'orderby'        => 'date',
+                'order'          => 'DESC',
+            ]
+        );
+
+        if ( empty( $posts ) ) {
+            return [];
+        }
+
+        $summary = [];
+
+        foreach ( $posts as $course ) {
+
+            $thumb_url    = get_the_post_thumbnail_url( $course, 'medium' );
+            $teacher_id   = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
+            $teacher_name = $teacher_id ? get_the_author_meta( 'display_name', $teacher_id ) : '';
+
+            $summary[] = [
+                'id'        => $course->ID,
+                'title'     => $course->post_title,
+                'thumb_url' => $thumb_url ? $thumb_url : '',
+                'view_url'  => get_permalink( $course ),
+                'edit_url'  => get_edit_post_link( $course->ID ),
+                'teacher'   => $teacher_name,
+            ];
+        }
+
+        return $summary;
+    }
+
 }

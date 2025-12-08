@@ -442,4 +442,91 @@ class FairPlay_LMS_Users_Controller {
         $query = new WP_User_Query( $args );
         return (array) $query->get_results();
     }
+
+        /**
+     * Estadísticas de estructuras creadas vs estructuras con usuarios que tienen cursos.
+     *
+     * Devuelve un array con 4 filas: ciudad, canal, sucursal y cargo.
+     * Cada fila trae:
+     *  - label
+     *  - total_terms
+     *  - terms_with_courses
+     */
+    public function get_structure_assignment_stats(): array {
+
+        $config = [
+            'city' => [
+                'label'     => 'Ciudades',
+                'taxonomy'  => FairPlay_LMS_Config::TAX_CITY,
+                'user_meta' => FairPlay_LMS_Config::USER_META_CITY,
+            ],
+            'channel' => [
+                'label'     => 'Canales / Franquicias',
+                'taxonomy'  => FairPlay_LMS_Config::TAX_CHANNEL,
+                'user_meta' => FairPlay_LMS_Config::USER_META_CHANNEL,
+            ],
+            'branch' => [
+                'label'     => 'Sucursales',
+                'taxonomy'  => FairPlay_LMS_Config::TAX_BRANCH,
+                'user_meta' => FairPlay_LMS_Config::USER_META_BRANCH,
+            ],
+            'role' => [
+                'label'     => 'Cargos',
+                'taxonomy'  => FairPlay_LMS_Config::TAX_ROLE,
+                'user_meta' => FairPlay_LMS_Config::USER_META_ROLE,
+            ],
+        ];
+
+        $stats = [];
+
+        foreach ( $config as $key => $item ) {
+
+            $terms = $this->structures->get_active_terms_for_select( $item['taxonomy'] );
+            $total = count( $terms );
+            $with_courses = 0;
+
+            if ( $total > 0 ) {
+                foreach ( array_keys( $terms ) as $term_id ) {
+
+                    // usuarios que pertenecen a este término de estructura
+                    $user_query = new WP_User_Query(
+                        [
+                            'number'    => 500,
+                            'fields'    => 'ID',
+                            'meta_key'  => $item['user_meta'],
+                            'meta_value'=> $term_id,
+                        ]
+                    );
+
+                    $user_ids = (array) $user_query->get_results();
+                    if ( empty( $user_ids ) ) {
+                        continue;
+                    }
+
+                    // ¿algún usuario tiene cursos?
+                    $has_courses = false;
+                    foreach ( $user_ids as $uid ) {
+                        $detail = $this->progress->get_user_progress_detail( (int) $uid );
+                        if ( ! empty( $detail['total_courses'] ) && $detail['total_courses'] > 0 ) {
+                            $has_courses = true;
+                            break;
+                        }
+                    }
+
+                    if ( $has_courses ) {
+                        $with_courses++;
+                    }
+                }
+            }
+
+            $stats[ $key ] = [
+                'label'             => $item['label'],
+                'total_terms'       => $total,
+                'terms_with_courses'=> $with_courses,
+            ];
+        }
+
+        return $stats;
+    }
+
 }
