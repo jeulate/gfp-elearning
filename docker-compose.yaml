@@ -1,0 +1,43 @@
+version: '3.9'
+
+services:
+  db:
+    image: mariadb:10.11
+    container_name: fplms_db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: fpgroup
+      MYSQL_USER: wpuseradmin
+      MYSQL_PASSWORD: wppassfpgroup
+      MYSQL_ROOT_PASSWORD: rootpass
+    volumes:
+      - db_data:/var/lib/mysql
+
+  wordpress:
+    image: wordpress:php7.4-fpm
+    container_name: fplms_wp
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_USER: wpuseradmin
+      WORDPRESS_DB_PASSWORD: wppassfpgroup
+      WORDPRESS_DB_NAME: fpgroup
+    volumes:
+      - ./wordpress:/var/www/html
+      - ./docker/php/custom.ini:/usr/local/etc/php/conf.d/custom.ini
+  nginx:
+    image: nginx:alpine
+    container_name: fplms_nginx
+    restart: unless-stopped
+    depends_on:
+      - wordpress
+    ports:
+      - "8088:88"
+    volumes:
+      - ./wordpress:/var/www/html
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  db_data:

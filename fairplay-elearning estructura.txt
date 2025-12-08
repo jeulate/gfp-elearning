@@ -1,0 +1,8 @@
+fairplay-elearning/
+  docker-compose.yml
+  nginx/
+    default.conf
+  wordpress/
+    wp-content/
+      plugins/
+      themes/
