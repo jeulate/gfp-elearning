@@ -89,6 +89,9 @@ class FairPlay_LMS_Plugin {
         add_action( 'personal_options_update',  [ $this->users, 'save_user_structures_fields' ] );
         add_action( 'edit_user_profile_update', [ $this->users, 'save_user_structures_fields' ] );
 
+        // Crear nuevo usuario desde panel FairPlay
+        add_action( 'admin_init', [ $this->users, 'handle_new_user_form' ] );
+
         // Matriz de privilegios
         add_action( 'admin_init', [ $this->users, 'handle_caps_matrix_form' ] );
 

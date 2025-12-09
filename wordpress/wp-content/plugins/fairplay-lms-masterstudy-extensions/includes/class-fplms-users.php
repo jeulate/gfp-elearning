@@ -284,6 +284,130 @@ class FairPlay_LMS_Users_Controller {
             </form>
             <?php endif; ?>
 
+            <h2 style="margin-top:2em;">Crear nuevo usuario</h2>
+
+            <?php if ( isset( $_GET['user_created'] ) ) : ?>
+                <div id="message" class="updated notice notice-success is-dismissible">
+                    <p>Usuario creado correctamente. ID: <?php echo esc_html( absint( $_GET['user_created'] ) ); ?></p>
+                </div>
+            <?php endif; ?>
+
+            <?php if ( isset( $_GET['error'] ) ) : ?>
+                <div id="message" class="error notice notice-error is-dismissible">
+                    <p>
+                        <?php
+                        $error_msg = sanitize_text_field( wp_unslash( $_GET['error'] ) );
+                        echo 'incomplete_data' === $error_msg ? 'Datos incompletos. Verifica que llenes todos los campos requeridos.' : 'Error al crear el usuario. Verifica que el usuario no exista.';
+                        ?>
+                    </p>
+                </div>
+            <?php endif; ?>
+
+            <form method="post" style="margin-bottom:2em;">
+                <?php wp_nonce_field( 'fplms_new_user_save', 'fplms_new_user_nonce' ); ?>
+                <input type="hidden" name="fplms_new_user_action" value="create_user">
+
+                <table class="form-table">
+                    <tr>
+                        <th><label for="fplms_user_login">Usuario *</label></th>
+                        <td>
+                            <input type="text" id="fplms_user_login" name="fplms_user_login" class="regular-text" required>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="fplms_user_email">Email *</label></th>
+                        <td>
+                            <input type="email" id="fplms_user_email" name="fplms_user_email" class="regular-text" required>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="fplms_user_pass">Contraseña *</label></th>
+                        <td>
+                            <input type="password" id="fplms_user_pass" name="fplms_user_pass" class="regular-text" required>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="fplms_first_name">Nombre</label></th>
+                        <td>
+                            <input type="text" id="fplms_first_name" name="fplms_first_name" class="regular-text">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="fplms_last_name">Apellido</label></th>
+                        <td>
+                            <input type="text" id="fplms_last_name" name="fplms_last_name" class="regular-text">
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label>Roles *</label></th>
+                        <td>
+                            <?php foreach ( $roles_def_labels as $role_key => $role_label ) : ?>
+                                <label>
+                                    <input type="checkbox" name="fplms_roles[]" value="<?php echo esc_attr( $role_key ); ?>">
+                                    <?php echo esc_html( $role_label ); ?>
+                                </label><br>
+                            <?php endforeach; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="fplms_city">Ciudad</label></th>
+                        <td>
+                            <select name="fplms_city" id="fplms_city">
+                                <option value="">— Sin asignar —</option>
+                                <?php foreach ( $cities as $id => $name ) : ?>
+                                    <option value="<?php echo esc_attr( $id ); ?>">
+                                        <?php echo esc_html( $name ); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="fplms_channel">Canal / Franquicia</label></th>
+                        <td>
+                            <select name="fplms_channel" id="fplms_channel">
+                                <option value="">— Sin asignar —</option>
+                                <?php foreach ( $channels as $id => $name ) : ?>
+                                    <option value="<?php echo esc_attr( $id ); ?>">
+                                        <?php echo esc_html( $name ); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="fplms_branch">Sucursal</label></th>
+                        <td>
+                            <select name="fplms_branch" id="fplms_branch">
+                                <option value="">— Sin asignar —</option>
+                                <?php foreach ( $branches as $id => $name ) : ?>
+                                    <option value="<?php echo esc_attr( $id ); ?>">
+                                        <?php echo esc_html( $name ); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><label for="fplms_job_role">Cargo</label></th>
+                        <td>
+                            <select name="fplms_job_role" id="fplms_job_role">
+                                <option value="">— Sin asignar —</option>
+                                <?php foreach ( $roles as $id => $name ) : ?>
+                                    <option value="<?php echo esc_attr( $id ); ?>">
+                                        <?php echo esc_html( $name ); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                </table>
+
+                <p class="submit">
+                    <button type="submit" class="button button-primary">Crear usuario</button>
+                </p>
+            </form>
+
             <h2 style="margin-top:2em;">Usuarios por estructura</h2>
 
             <form method="get" style="margin-bottom:1em;">
@@ -339,7 +463,7 @@ class FairPlay_LMS_Users_Controller {
                     </tr>
                 </table>
                 <p class="submit">
-                    <button type="submit" class="button button-primary">Filtrar</button>
+                    <button type="submit" class="button">Filtrar</button>
                 </p>
             </form>
 
@@ -394,6 +518,8 @@ class FairPlay_LMS_Users_Controller {
 
     /**
      * Usuarios filtrados por estructura.
+     * Aplica filtros por estructura (ciudad, canal, sucursal, cargo).
+     * Si ningún filtro está activo, retorna todos los usuarios.
      */
     public function get_users_filtered_by_structure(
         int $city_id,
@@ -402,44 +528,160 @@ class FairPlay_LMS_Users_Controller {
         int $role_id
     ): array {
 
-        $meta_query = [ 'relation' => 'AND' ];
-
-        if ( $city_id ) {
-            $meta_query[] = [
-                'key'   => FairPlay_LMS_Config::USER_META_CITY,
-                'value' => $city_id,
-            ];
-        }
-        if ( $channel_id ) {
-            $meta_query[] = [
-                'key'   => FairPlay_LMS_Config::USER_META_CHANNEL,
-                'value' => $channel_id,
-            ];
-        }
-        if ( $branch_id ) {
-            $meta_query[] = [
-                'key'   => FairPlay_LMS_Config::USER_META_BRANCH,
-                'value' => $branch_id,
-            ];
-        }
-        if ( $role_id ) {
-            $meta_query[] = [
-                'key'   => FairPlay_LMS_Config::USER_META_ROLE,
-                'value' => $role_id,
-            ];
-        }
-
         $args = [
-            'number'  => 500,
+            'number'  => -1,
             'orderby' => 'display_name',
             'order'   => 'ASC',
         ];
 
-        if ( count( $meta_query ) > 1 ) {
-            $args['meta_query'] = $meta_query;
+        // Construir meta_query solo si hay filtros activos
+        $meta_query_clauses = [];
+
+        if ( $city_id ) {
+            $meta_query_clauses[] = [
+                'key'     => FairPlay_LMS_Config::USER_META_CITY,
+                'value'   => (string) $city_id,
+                'compare' => '=',
+                'type'    => 'NUMERIC',
+            ];
+        }
+
+        if ( $channel_id ) {
+            $meta_query_clauses[] = [
+                'key'     => FairPlay_LMS_Config::USER_META_CHANNEL,
+                'value'   => (string) $channel_id,
+                'compare' => '=',
+                'type'    => 'NUMERIC',
+            ];
+        }
+
+        if ( $branch_id ) {
+            $meta_query_clauses[] = [
+                'key'     => FairPlay_LMS_Config::USER_META_BRANCH,
+                'value'   => (string) $branch_id,
+                'compare' => '=',
+                'type'    => 'NUMERIC',
+            ];
+        }
+
+        if ( $role_id ) {
+            $meta_query_clauses[] = [
+                'key'     => FairPlay_LMS_Config::USER_META_ROLE,
+                'value'   => (string) $role_id,
+                'compare' => '=',
+                'type'    => 'NUMERIC',
+            ];
+        }
+
+        // Solo aplicar meta_query si hay filtros activos
+        if ( ! empty( $meta_query_clauses ) ) {
+            $args['meta_query'] = [
+                'relation' => 'AND',
+                ...$meta_query_clauses,
+            ];
         }
 
         $query = new WP_User_Query( $args );
         return (array) $query->get_results();
+    }
+
+    /**
+     * Manejo del formulario para crear nuevo usuario.
+     */
+    public function handle_new_user_form(): void {
+
+        if ( ! isset( $_POST['fplms_new_user_action'] ) ) {
+            return;
+        }
+
+        if ( ! current_user_can( FairPlay_LMS_Config::CAP_MANAGE_USERS ) ) {
+            return;
+        }
+
+        if (
+            ! isset( $_POST['fplms_new_user_nonce'] ) ||
+            ! wp_verify_nonce( $_POST['fplms_new_user_nonce'], 'fplms_new_user_save' )
+        ) {
+            return;
+        }
+
+        $action = sanitize_text_field( wp_unslash( $_POST['fplms_new_user_action'] ) );
+
+        if ( 'create_user' === $action ) {
+
+            $user_login = sanitize_text_field( wp_unslash( $_POST['fplms_user_login'] ?? '' ) );
+            $user_email = sanitize_email( wp_unslash( $_POST['fplms_user_email'] ?? '' ) );
+            $user_pass  = sanitize_text_field( wp_unslash( $_POST['fplms_user_pass'] ?? '' ) );
+            $first_name = sanitize_text_field( wp_unslash( $_POST['fplms_first_name'] ?? '' ) );
+            $last_name  = sanitize_text_field( wp_unslash( $_POST['fplms_last_name'] ?? '' ) );
+            $city_id    = isset( $_POST['fplms_city'] ) ? absint( $_POST['fplms_city'] ) : 0;
+            $channel_id = isset( $_POST['fplms_channel'] ) ? absint( $_POST['fplms_channel'] ) : 0;
+            $branch_id  = isset( $_POST['fplms_branch'] ) ? absint( $_POST['fplms_branch'] ) : 0;
+            $role_id    = isset( $_POST['fplms_job_role'] ) ? absint( $_POST['fplms_job_role'] ) : 0;
+            $user_roles = isset( $_POST['fplms_roles'] ) && is_array( $_POST['fplms_roles'] ) ? array_map( 'sanitize_text_field', wp_unslash( $_POST['fplms_roles'] ) ) : [];
+
+            // Validar datos requeridos
+            if ( ! $user_login || ! $user_email || ! $user_pass ) {
+                wp_safe_redirect(
+                    add_query_arg(
+                        [ 'page' => 'fplms-users', 'error' => 'incomplete_data' ],
+                        admin_url( 'admin.php' )
+                    )
+                );
+                exit;
+            }
+
+            // Crear usuario
+            $user_id = wp_create_user( $user_login, $user_pass, $user_email );
+
+            if ( is_wp_error( $user_id ) ) {
+                wp_safe_redirect(
+                    add_query_arg(
+                        [ 'page' => 'fplms-users', 'error' => 'user_exists' ],
+                        admin_url( 'admin.php' )
+                    )
+                );
+                exit;
+            }
+
+            // Actualizar datos del usuario
+            if ( $first_name ) {
+                update_user_meta( $user_id, 'first_name', $first_name );
+            }
+            if ( $last_name ) {
+                update_user_meta( $user_id, 'last_name', $last_name );
+            }
+
+            // Asignar roles - Remover "subscriber" automático de wp_create_user
+            $user = new WP_User( $user_id );
+            // Remover rol "subscriber" que wp_create_user() asigna automáticamente
+            $user->remove_role( 'subscriber' );
+            // Asignar solo los roles seleccionados
+            foreach ( $user_roles as $role ) {
+                $user->add_role( $role );
+            }
+
+            // Asignar estructuras
+            if ( $city_id ) {
+                update_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CITY, $city_id );
+            }
+            if ( $channel_id ) {
+                update_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CHANNEL, $channel_id );
+            }
+            if ( $branch_id ) {
+                update_user_meta( $user_id, FairPlay_LMS_Config::USER_META_BRANCH, $branch_id );
+            }
+            if ( $role_id ) {
+                update_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ROLE, $role_id );
+            }
+
+            wp_safe_redirect(
+                add_query_arg(
+                    [ 'page' => 'fplms-users', 'user_created' => $user_id ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
     }
 }
