@@ -101,6 +101,10 @@ class FairPlay_LMS_Plugin {
         // Filtrado de cursos por visibilidad de estructura
         add_filter( 'stm_lms_get_user_courses', [ $this->visibility, 'filter_courses_array' ], 10, 1 );
         add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
+
+        // AJAX: Cargar dinámicamente términos filtrados por ciudad
+        add_action( 'wp_ajax_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
+        add_action( 'wp_ajax_nopriv_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
     }
 
     /**

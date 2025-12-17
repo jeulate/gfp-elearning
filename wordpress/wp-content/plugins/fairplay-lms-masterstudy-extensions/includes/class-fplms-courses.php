@@ -621,8 +621,18 @@ class FairPlay_LMS_Courses_Controller {
         $channels = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL ) : [];
         $branches = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH ) : [];
         $roles    = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE ) : [];
+        
+        // Obtener la ciudad seleccionada (si la hay)
+        $selected_city = ! empty( $current_structures['cities'] ) ? reset( $current_structures['cities'] ) : 0;
+        
+        // Si hay ciudad seleccionada, obtener canales, sucursales y cargos filtrados
+        if ( $selected_city ) {
+            $channels = $this->structures ? $this->structures->get_active_terms_by_city( FairPlay_LMS_Config::TAX_CHANNEL, $selected_city ) : [];
+            $branches = $this->structures ? $this->structures->get_active_terms_by_city( FairPlay_LMS_Config::TAX_BRANCH, $selected_city ) : [];
+            $roles    = $this->structures ? $this->structures->get_active_terms_by_city( FairPlay_LMS_Config::TAX_ROLE, $selected_city ) : [];
+        }
         ?>
-        <p><strong>Nota:</strong> Selecciona qué estructuras pueden ver este curso. Si no seleccionas ninguna, el curso será visible para todos.</p>
+        <p><strong>Nota:</strong> Si asignas una ciudad, el curso será visible para TODOS los canales, sucursales y cargos de esa ciudad, O selecciona específicamente cuáles podrán verlo.</p>
 
         <form method="post">
             <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
@@ -631,14 +641,19 @@ class FairPlay_LMS_Courses_Controller {
 
             <table class="form-table">
                 <tr>
-                    <th scope="row"><label>Ciudades</label></th>
+                    <th scope="row"><label for="fplms_course_city_select">Ciudades</label></th>
                     <td>
                         <?php if ( ! empty( $cities ) ) : ?>
                             <fieldset>
                                 <?php foreach ( $cities as $term_id => $term_name ) : ?>
                                     <label>
-                                        <input type="checkbox" name="fplms_course_cities[]" value="<?php echo esc_attr( $term_id ); ?>" 
-                                        <?php checked( in_array( $term_id, $current_structures['cities'], true ) ); ?>>
+                                        <input type="checkbox" 
+                                               id="fplms_city_<?php echo esc_attr( $term_id ); ?>"
+                                               class="fplms-city-checkbox"
+                                               name="fplms_course_cities[]" 
+                                               value="<?php echo esc_attr( $term_id ); ?>" 
+                                               data-city-id="<?php echo esc_attr( $term_id ); ?>"
+                                               <?php checked( in_array( $term_id, $current_structures['cities'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
                                     </label><br>
                                 <?php endforeach; ?>
@@ -650,10 +665,10 @@ class FairPlay_LMS_Courses_Controller {
                 </tr>
 
                 <tr>
-                    <th scope="row"><label>Canales / Franquicias</label></th>
+                    <th scope="row"><label for="fplms_course_channels">Canales / Franquicias</label></th>
                     <td>
-                        <?php if ( ! empty( $channels ) ) : ?>
-                            <fieldset>
+                        <fieldset id="fplms_channels_fieldset">
+                            <?php if ( ! empty( $channels ) ) : ?>
                                 <?php foreach ( $channels as $term_id => $term_name ) : ?>
                                     <label>
                                         <input type="checkbox" name="fplms_course_channels[]" value="<?php echo esc_attr( $term_id ); ?>" 
@@ -661,18 +676,18 @@ class FairPlay_LMS_Courses_Controller {
                                         <?php echo esc_html( $term_name ); ?>
                                     </label><br>
                                 <?php endforeach; ?>
-                            </fieldset>
-                        <?php else : ?>
-                            <p><em>No hay canales disponibles.</em></p>
-                        <?php endif; ?>
+                            <?php else : ?>
+                                <p><em>Selecciona una ciudad para ver sus canales.</em></p>
+                            <?php endif; ?>
+                        </fieldset>
                     </td>
                 </tr>
 
                 <tr>
-                    <th scope="row"><label>Sucursales</label></th>
+                    <th scope="row"><label for="fplms_course_branches">Sucursales</label></th>
                     <td>
-                        <?php if ( ! empty( $branches ) ) : ?>
-                            <fieldset>
+                        <fieldset id="fplms_branches_fieldset">
+                            <?php if ( ! empty( $branches ) ) : ?>
                                 <?php foreach ( $branches as $term_id => $term_name ) : ?>
                                     <label>
                                         <input type="checkbox" name="fplms_course_branches[]" value="<?php echo esc_attr( $term_id ); ?>" 
@@ -680,18 +695,18 @@ class FairPlay_LMS_Courses_Controller {
                                         <?php echo esc_html( $term_name ); ?>
                                     </label><br>
                                 <?php endforeach; ?>
-                            </fieldset>
-                        <?php else : ?>
-                            <p><em>No hay sucursales disponibles.</em></p>
-                        <?php endif; ?>
+                            <?php else : ?>
+                                <p><em>Selecciona una ciudad para ver sus sucursales.</em></p>
+                            <?php endif; ?>
+                        </fieldset>
                     </td>
                 </tr>
 
                 <tr>
-                    <th scope="row"><label>Cargos</label></th>
+                    <th scope="row"><label for="fplms_course_roles">Cargos</label></th>
                     <td>
-                        <?php if ( ! empty( $roles ) ) : ?>
-                            <fieldset>
+                        <fieldset id="fplms_roles_fieldset">
+                            <?php if ( ! empty( $roles ) ) : ?>
                                 <?php foreach ( $roles as $term_id => $term_name ) : ?>
                                     <label>
                                         <input type="checkbox" name="fplms_course_roles[]" value="<?php echo esc_attr( $term_id ); ?>" 
@@ -699,10 +714,10 @@ class FairPlay_LMS_Courses_Controller {
                                         <?php echo esc_html( $term_name ); ?>
                                     </label><br>
                                 <?php endforeach; ?>
-                            </fieldset>
-                        <?php else : ?>
-                            <p><em>No hay cargos disponibles.</em></p>
-                        <?php endif; ?>
+                            <?php else : ?>
+                                <p><em>Selecciona una ciudad para ver sus cargos.</em></p>
+                            <?php endif; ?>
+                        </fieldset>
                     </td>
                 </tr>
             </table>
@@ -711,6 +726,58 @@ class FairPlay_LMS_Courses_Controller {
                 <button type="submit" class="button button-primary">Guardar estructuras</button>
             </p>
         </form>
+
+        <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
+            const cityCheckboxes = document.querySelectorAll('.fplms-city-checkbox');
+
+            cityCheckboxes.forEach(function(checkbox) {
+                checkbox.addEventListener('change', function() {
+                    const cityId = this.value;
+                    
+                    if ( ! this.checked ) {
+                        return;
+                    }
+
+                    // Cargar dinámicamente canales, sucursales y cargos
+                    const taxonomies = ['<?php echo FairPlay_LMS_Config::TAX_CHANNEL; ?>', '<?php echo FairPlay_LMS_Config::TAX_BRANCH; ?>', '<?php echo FairPlay_LMS_Config::TAX_ROLE; ?>'];
+                    const fieldsetIds = ['fplms_channels_fieldset', 'fplms_branches_fieldset', 'fplms_roles_fieldset'];
+
+                    taxonomies.forEach(function(taxonomy, index) {
+                        const formData = new FormData();
+                        formData.append('action', 'fplms_get_terms_by_city');
+                        formData.append('city_id', cityId);
+                        formData.append('taxonomy', taxonomy);
+
+                        fetch(ajaxUrl, {
+                            method: 'POST',
+                            body: formData
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                const fieldset = document.getElementById(fieldsetIds[index]);
+                                let html = '';
+
+                                for (const [termId, termName] of Object.entries(data.data)) {
+                                    if (termId === '') continue;
+                                    html += '<label><input type="checkbox" name="fplms_course_' + taxonomy + '[]" value="' + termId + '"> ' + termName + '</label><br>';
+                                }
+
+                                if (html === '') {
+                                    html = '<p><em>No hay opciones disponibles para esta ciudad.</em></p>';
+                                }
+
+                                fieldset.innerHTML = html;
+                            }
+                        })
+                        .catch(error => console.error('Error:', error));
+                    });
+                });
+            });
+        });
+        </script>
         <?php
     }
 
