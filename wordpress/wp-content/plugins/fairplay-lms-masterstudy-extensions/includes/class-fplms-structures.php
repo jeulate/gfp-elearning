@@ -130,6 +130,19 @@ class FairPlay_LMS_Structures_Controller {
             }
         }
 
+        if ( 'delete' === $action ) {
+
+            $term_id = isset( $_POST['fplms_term_id'] ) ? absint( $_POST['fplms_term_id'] ) : 0;
+
+            if ( $term_id ) {
+                // Eliminar relaciones de ciudades si existen
+                delete_term_meta( $term_id, FairPlay_LMS_Config::META_CITY_RELATIONS );
+                
+                // Eliminar el término completamente
+                wp_delete_term( $term_id, $taxonomy );
+            }
+        }
+
         $tab = isset( $_POST['fplms_tab'] ) ? sanitize_text_field( wp_unslash( $_POST['fplms_tab'] ) ) : 'city';
         wp_safe_redirect(
             add_query_arg(
@@ -152,237 +165,914 @@ class FairPlay_LMS_Structures_Controller {
             wp_die( 'No tienes permisos para acceder a esta sección.' );
         }
 
-        $tab = isset( $_GET['tab'] ) ? sanitize_text_field( wp_unslash( $_GET['tab'] ) ) : 'city';
-
         $tabs = [
             'city'    => [
-                'label'    => 'Ciudades',
+                'label'    => '📍 Ciudades',
+                'icon'     => '📍',
                 'taxonomy' => FairPlay_LMS_Config::TAX_CITY,
+                'color'    => '#0073aa',
             ],
             'channel' => [
-                'label'    => 'Canales / Franquicias',
+                'label'    => '🏪 Canales / Franquicias',
+                'icon'     => '🏪',
                 'taxonomy' => FairPlay_LMS_Config::TAX_CHANNEL,
+                'color'    => '#00a000',
             ],
             'branch'  => [
-                'label'    => 'Sucursales',
+                'label'    => '🏢 Sucursales',
+                'icon'     => '🏢',
                 'taxonomy' => FairPlay_LMS_Config::TAX_BRANCH,
+                'color'    => '#ff6f00',
             ],
             'role'    => [
-                'label'    => 'Cargos',
+                'label'    => '👔 Cargos',
+                'icon'     => '👔',
                 'taxonomy' => FairPlay_LMS_Config::TAX_ROLE,
+                'color'    => '#7c3aed',
             ],
         ];
 
-        if ( ! isset( $tabs[ $tab ] ) ) {
-            $tab = 'city';
-        }
-
-        $current = $tabs[ $tab ];
-
-        $terms = get_terms(
-            [
-                'taxonomy'   => $current['taxonomy'],
-                'hide_empty' => false,
-            ]
-        );
         ?>
         <div class="wrap">
-            <h1>Estructuras</h1>
+            <h1>⚙️ Gestión de Estructuras</h1>
+            <p style="font-size: 16px; color: #666; margin-bottom: 30px;">
+                Organiza tu empresa en ciudades, canales, sucursales y cargos. Expande cada sección para ver, editar o eliminar elementos.
+            </p>
 
-            <h2 class="nav-tab-wrapper">
-                <?php foreach ( $tabs as $key => $info ) : ?>
+            <div class="fplms-accordion-container">
+                <?php foreach ( $tabs as $tab_key => $tab_info ) : ?>
                     <?php
-                    $class = ( $key === $tab ) ? 'nav-tab nav-tab-active' : 'nav-tab';
-                    $url   = add_query_arg(
+                    $terms = get_terms(
                         [
-                            'page' => 'fplms-structures',
-                            'tab'  => $key,
-                        ],
-                        admin_url( 'admin.php' )
+                            'taxonomy'   => $tab_info['taxonomy'],
+                            'hide_empty' => false,
+                        ]
                     );
                     ?>
-                    <a href="<?php echo esc_url( $url ); ?>" class="<?php echo esc_attr( $class ); ?>">
-                        <?php echo esc_html( $info['label'] ); ?>
-                    </a>
-                <?php endforeach; ?>
-            </h2>
-
-            <h2><?php echo esc_html( $current['label'] ); ?></h2>
-
-            <table class="widefat striped">
-                <thead>
-                    <tr>
-                        <th>Nombre</th>
-                        <?php if ( 'city' !== $tab ) : ?>
-                            <th>Ciudad</th>
-                        <?php endif; ?>
-                        <th>Activo</th>
-                        <th>Acciones</th>
-                    </tr>
-                </thead>
-                <tbody>
-                <?php if ( ! empty( $terms ) && ! is_wp_error( $terms ) ) : ?>
-                    <?php foreach ( $terms as $term ) : ?>
-                        <?php
-                        $active = get_term_meta( $term->term_id, FairPlay_LMS_Config::META_ACTIVE, true );
-                        $active = ( '1' === $active );
+                    <div class="fplms-accordion-item">
+                        <div class="fplms-accordion-header" data-tab="<?php echo esc_attr( $tab_key ); ?>" style="border-left: 5px solid <?php echo esc_attr( $tab_info['color'] ); ?>;">
+                            <span class="fplms-accordion-icon">▶</span>
+                            <span class="fplms-accordion-title">
+                                <?php echo esc_html( $tab_info['label'] ); ?>
+                                <span class="fplms-accordion-count">( <?php echo count( is_wp_error( $terms ) ? [] : $terms ); ?> )</span>
+                            </span>
+                        </div>
                         
-                        // Obtener ciudades relacionadas si no es tab ciudad
-                        $city_ids = [];
-                        $city_names = [];
-                        if ( 'city' !== $tab ) {
-                            $city_ids = $this->get_term_cities( $term->term_id );
-                            foreach ( $city_ids as $city_id ) {
-                                $city_name = $this->get_term_name_by_id( $city_id );
-                                if ( $city_name ) {
-                                    $city_names[] = $city_name;
-                                }
-                            }
-                        }
-                        ?>
-                        <tr>
-                            <td><?php echo esc_html( $term->name ); ?></td>
-                            <?php if ( 'city' !== $tab ) : ?>
-                                <td>
-                                    <?php 
-                                    if ( ! empty( $city_names ) ) {
-                                        echo esc_html( implode( ', ', $city_names ) );
-                                    } else {
-                                        echo '<em>Sin asignar</em>';
-                                    }
-                                    ?>
-                                </td>
-                            <?php endif; ?>
-                            <td><?php echo $active ? 'Sí' : 'No'; ?></td>
-                            <td>
-                                <form method="post" style="display:inline;">
-                                    <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
-                                    <input type="hidden" name="fplms_structures_action" value="toggle_active">
-                                    <input type="hidden" name="fplms_taxonomy" value="<?php echo esc_attr( $current['taxonomy'] ); ?>">
-                                    <input type="hidden" name="fplms_term_id" value="<?php echo esc_attr( $term->term_id ); ?>">
-                                    <input type="hidden" name="fplms_tab" value="<?php echo esc_attr( $tab ); ?>">
-                                    <button type="submit" class="button">
-                                        <?php echo $active ? 'Desactivar' : 'Activar'; ?>
-                                    </button>
-                                </form>
-                                
-                                <!-- Botón Editar -->
-                                <button type="button" class="button" 
-                                    onclick="fplmsEditStructure(<?php echo esc_attr( $term->term_id ); ?>, '<?php echo esc_attr( $term->name ); ?>', <?php echo esc_attr( wp_json_encode( $city_ids ) ); ?>, '<?php echo esc_attr( $current['taxonomy'] ); ?>')">
-                                    Editar
-                                </button>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php else : ?>
-                    <tr>
-                        <td colspan="<?php echo 'city' === $tab ? '3' : '4'; ?>">No hay registros todavía.</td>
-                    </tr>
-                <?php endif; ?>
-                </tbody>
-            </table>
-
-            <h3 style="margin-top:2em;">Nuevo registro</h3>
-            <form method="post">
-                <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
-                <input type="hidden" name="fplms_structures_action" value="create">
-                <input type="hidden" name="fplms_taxonomy" value="<?php echo esc_attr( $current['taxonomy'] ); ?>">
-                <input type="hidden" name="fplms_tab" value="<?php echo esc_attr( $tab ); ?>">
-
-                <table class="form-table">
-                    <tr>
-                        <th scope="row"><label for="fplms_name">Nombre</label></th>
-                        <td>
-                            <input name="fplms_name" id="fplms_name" type="text" class="regular-text" required>
-                        </td>
-                    </tr>
-
-                    <?php if ( 'city' !== $tab ) : ?>
-                        <tr>
-                            <th scope="row"><label for="fplms_cities">Ciudades Relacionadas</label></th>
-                            <td>
-                                <div class="fplms-multiselect-wrapper">
-                                    <select name="fplms_cities[]" id="fplms_cities" class="fplms-multiselect" multiple required>
+                        <div class="fplms-accordion-body" style="display: none; border-left: 5px solid <?php echo esc_attr( $tab_info['color'] ); ?>;">
+                            <div class="fplms-terms-list">
+                                <?php if ( ! empty( $terms ) && ! is_wp_error( $terms ) ) : ?>
+                                    <?php foreach ( $terms as $term ) : ?>
                                         <?php
-                                        $cities = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
-                                        foreach ( $cities as $city_id => $city_name ) :
-                                            ?>
-                                            <option value="<?php echo esc_attr( $city_id ); ?>">
-                                                <?php echo esc_html( $city_name ); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                    <div class="fplms-multiselect-display"></div>
-                                </div>
-                                <p class="description">Selecciona una o múltiples ciudades. Este <?php echo esc_html( strtolower( $current['label'] ) ); ?> estará disponible en todas las ciudades seleccionadas.</p>
-                            </td>
-                        </tr>
-                    <?php endif; ?>
-
-                    <tr>
-                        <th scope="row">Activo</th>
-                        <td>
-                            <label>
-                                <input name="fplms_active" type="checkbox" value="1" checked>
-                                Marcar como activo
-                            </label>
-                        </td>
-                    </tr>
-                </table>
-
-                <p class="submit">
-                    <button type="submit" class="button button-primary">Guardar</button>
-                </p>
-            </form>
-
-            <!-- Modal de Edición -->
-            <div id="fplms-edit-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999;">
-                <div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:white; padding:30px; border-radius:5px; width:90%; max-width:500px; box-shadow:0 0 20px rgba(0,0,0,0.3);">
-                    <h3>Editar Estructura</h3>
-                    <form method="post" id="fplms-edit-form">
-                        <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
-                        <input type="hidden" name="fplms_structures_action" value="edit">
-                        <input type="hidden" name="fplms_tab" value="<?php echo esc_attr( $tab ); ?>">
-                        <input type="hidden" name="fplms_term_id" id="fplms_edit_term_id" value="">
-                        <input type="hidden" name="fplms_taxonomy" id="fplms_edit_taxonomy" value="">
-
-                        <table class="form-table">
-                            <tr>
-                                <th scope="row"><label for="fplms_edit_name">Nombre</label></th>
-                                <td>
-                                    <input name="fplms_name" id="fplms_edit_name" type="text" class="regular-text" required>
-                                </td>
-                            </tr>
-                            <tr id="fplms_edit_city_row" style="display:none;">
-                                <th scope="row"><label for="fplms_edit_cities">Ciudades</label></th>
-                                <td>
-                                    <div class="fplms-multiselect-wrapper">
-                                        <select name="fplms_cities[]" id="fplms_edit_cities" class="fplms-multiselect" multiple required>
-                                            <?php 
-                                            $cities = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
-                                            foreach ( $cities as $city_id => $city_name ) : 
-                                            ?>
-                                                <option value="<?php echo esc_attr( $city_id ); ?>">
-                                                    <?php echo esc_html( $city_name ); ?>
-                                                </option>
-                                            <?php endforeach; ?>
-                                        </select>
-                                        <div class="fplms-multiselect-display"></div>
+                                        $active = get_term_meta( $term->term_id, FairPlay_LMS_Config::META_ACTIVE, true );
+                                        $active = ( '1' === $active );
+                                        $city_ids = [];
+                                        $city_names = [];
+                                        
+                                        if ( 'city' !== $tab_key ) {
+                                            $city_ids = $this->get_term_cities( $term->term_id );
+                                            foreach ( $city_ids as $city_id ) {
+                                                $city_name = $this->get_term_name_by_id( $city_id );
+                                                if ( $city_name ) {
+                                                    $city_names[] = $city_name;
+                                                }
+                                            }
+                                        }
+                                        ?>
+                                        <div class="fplms-term-item" data-term-id="<?php echo esc_attr( $term->term_id ); ?>" data-active="<?php echo $active ? '1' : '0'; ?>">
+                                            <div class="fplms-term-header">
+                                                <div class="fplms-term-info">
+                                                    <span class="fplms-term-name"><?php echo esc_html( $term->name ); ?></span>
+                                                    <?php if ( 'city' !== $tab_key && ! empty( $city_names ) ) : ?>
+                                                        <span class="fplms-term-cities">🔗 <?php echo esc_html( implode( ', ', $city_names ) ); ?></span>
+                                                    <?php endif; ?>
+                                                    <span class="fplms-term-status <?php echo $active ? 'active' : 'inactive'; ?>">
+                                                        <?php echo $active ? '✓ Activo' : '✗ Inactivo'; ?>
+                                                    </span>
+                                                </div>
+                                                
+                                                <div class="fplms-term-actions">
+                                                    <form method="post" style="display:inline;">
+                                                        <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
+                                                        <input type="hidden" name="fplms_structures_action" value="toggle_active">
+                                                        <input type="hidden" name="fplms_taxonomy" value="<?php echo esc_attr( $tab_info['taxonomy'] ); ?>">
+                                                        <input type="hidden" name="fplms_term_id" value="<?php echo esc_attr( $term->term_id ); ?>">
+                                                        <input type="hidden" name="fplms_tab" value="<?php echo esc_attr( $tab_key ); ?>">
+                                                        <button type="submit" class="fplms-btn fplms-btn-toggle" title="<?php echo $active ? 'Desactivar' : 'Activar'; ?>">
+                                                            <?php echo $active ? '⊙' : '○'; ?>
+                                                        </button>
+                                                    </form>
+                                                    
+                                                    <button type="button" class="fplms-btn fplms-btn-edit" 
+                                                        onclick="fplmsToggleEdit(this)"
+                                                        title="Editar">
+                                                        ✏️
+                                                    </button>
+                                                    
+                                                    <button type="button" class="fplms-btn fplms-btn-delete" 
+                                                        onclick="fplmsDeleteStructure(<?php echo esc_attr( $term->term_id ); ?>, '<?php echo esc_attr( $tab_info['taxonomy'] ); ?>', '<?php echo esc_attr( $tab_key ); ?>')"
+                                                        title="Eliminar">
+                                                        🗑️
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- FORMA DE EDICIÓN INLINE -->
+                                            <?php if ( 'city' !== $tab_key ) : ?>
+                                            <div class="fplms-term-edit-form" style="display:none; padding: 16px; background: #f5f5f5; border-top: 1px solid #ddd;">
+                                                <form method="post" class="fplms-inline-edit-form" onsubmit="return fplmsSubmitEdit(event, this);">
+                                                    <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
+                                                    <input type="hidden" name="fplms_structures_action" value="edit">
+                                                    <input type="hidden" name="fplms_taxonomy" value="<?php echo esc_attr( $tab_info['taxonomy'] ); ?>">
+                                                    <input type="hidden" name="fplms_term_id" value="<?php echo esc_attr( $term->term_id ); ?>">
+                                                    <input type="hidden" name="fplms_tab" value="<?php echo esc_attr( $tab_key ); ?>">
+                                                    
+                                                    <div class="fplms-edit-row">
+                                                        <div class="fplms-edit-field">
+                                                            <label>Nombre</label>
+                                                            <input type="text" name="fplms_name" class="regular-text" value="<?php echo esc_attr( $term->name ); ?>" required>
+                                                        </div>
+                                                        
+                                                        <div class="fplms-edit-field fplms-cities-field">
+                                                            <label>Ciudades Relacionadas</label>
+                                                            <div class="fplms-city-selector">
+                                                                <input type="text" class="fplms-city-search" placeholder="🔍 Buscar ciudad..." data-field-id="city_<?php echo esc_attr( $term->term_id ); ?>">
+                                                                <div class="fplms-cities-list" id="city_<?php echo esc_attr( $term->term_id ); ?>">
+                                                                    <?php
+                                                                    $all_cities = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
+                                                                    foreach ( $all_cities as $city_id => $city_name ) :
+                                                                        $is_selected = in_array( $city_id, $city_ids, true );
+                                                                    ?>
+                                                                        <label class="fplms-city-option">
+                                                                            <input type="checkbox" name="fplms_cities[]" value="<?php echo esc_attr( $city_id ); ?>" <?php checked( $is_selected ); ?> data-city-name="<?php echo esc_attr( $city_name ); ?>">
+                                                                            <span><?php echo esc_html( $city_name ); ?></span>
+                                                                        </label>
+                                                                    <?php endforeach; ?>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    
+                                                    <div class="fplms-edit-actions">
+                                                        <button type="button" class="button" onclick="fplmsToggleEdit(this)">Cancelar</button>
+                                                        <button type="submit" class="button button-primary">Guardar Cambios</button>
+                                                    </div>
+                                                </form>
+                                            </div>
+                                            <?php endif; ?>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php else : ?>
+                                    <div class="fplms-empty-state">
+                                        <p>📭 No hay <?php echo esc_html( strtolower( $tab_info['label'] ) ); ?> creadas todavía.</p>
                                     </div>
-                                    <p class="description">Selecciona una o múltiples ciudades.</p>
-                                </td>
-                            </tr>
-                        </table>
+                                <?php endif; ?>
+                            </div>
+                            
+                            <div class="fplms-new-item-form">
+                                <h4>➕ Crear nuevo elemento</h4>
+                                <form method="post" class="fplms-inline-form">
+                                    <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
+                                    <input type="hidden" name="fplms_structures_action" value="create">
+                                    <input type="hidden" name="fplms_taxonomy" value="<?php echo esc_attr( $tab_info['taxonomy'] ); ?>">
+                                    <input type="hidden" name="fplms_tab" value="<?php echo esc_attr( $tab_key ); ?>">
+                                    
+                                    <div class="fplms-form-row">
+                                        <input name="fplms_name" type="text" class="regular-text" placeholder="Nombre del elemento..." required>
+                                        
+                                        <?php if ( 'city' !== $tab_key ) : ?>
+                                            <div class="fplms-edit-field fplms-cities-field">
+                                                <label>Ciudades Asociadas</label>
+                                                <div class="fplms-city-selector">
+                                                    <input type="text" 
+                                                           class="fplms-city-search" 
+                                                           placeholder="Buscar ciudades...">
+                                                    
+                                                    <div class="fplms-cities-list">
+                                                        <?php 
+                                                        $cities = $this->get_active_terms_for_select('fplms_city');
+                                                        foreach ($cities as $city_id => $city_name) : 
+                                                        ?>
+                                                        <label class="fplms-city-option">
+                                                            <input type="checkbox" 
+                                                                   name="fplms_cities[]" 
+                                                                   value="<?php echo $city_id; ?>"
+                                                                   data-city-name="<?php echo esc_attr($city_name); ?>">
+                                                            <span><?php echo esc_html($city_name); ?></span>
+                                                        </label>
+                                                        <?php endforeach; ?>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        <?php endif; ?>
+                                        
+                                        <label class="fplms-checkbox">
+                                            <input name="fplms_active" type="checkbox" value="1" checked>
+                                            Activo
+                                        </label>
+                                        
+                                        <button type="submit" class="button button-primary" style="background-color: <?php echo esc_attr( $tab_info['color'] ); ?>; border-color: <?php echo esc_attr( $tab_info['color'] ); ?>;">
+                                            Crear
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
 
-                        <p class="submit" style="margin-top:20px; text-align:right;">
-                            <button type="button" class="button" onclick="fplmsCloseEditModal()">Cancelar</button>
-                            <button type="submit" class="button button-primary">Guardar Cambios</button>
-                        </p>
-                    </form>
+            <!-- Formularios de creación integrados en cada acordeón -->
+            <!-- Contenedores para Notificaciones -->
+            <div id="fplms-success-message"></div>
+            <div id="fplms-error-message"></div>
+
+            <!-- Modal de Confirmación de Eliminación -->
+            <div id="fplms-delete-modal" class="fplms-modal" style="display:none;">
+                <div class="fplms-modal-content" style="max-width: 400px;">
+                    <div class="fplms-modal-header">
+                        <h3>🗑️ Confirmar Eliminación</h3>
+                        <button class="fplms-modal-close" onclick="fplmsCloseDeleteModal()">✕</button>
+                    </div>
+                    <div class="fplms-modal-body">
+                        <p>¿Estás seguro de que deseas eliminar este elemento?</p>
+                        <p style="color: #c00; font-weight: bold;" id="fplms_delete_name"></p>
+                        <p style="color: #666; font-size: 12px;">Esta acción no se puede deshacer.</p>
+                    </div>
+                    <div class="fplms-modal-footer">
+                        <button type="button" class="button" onclick="fplmsCloseDeleteModal()">Cancelar</button>
+                        <button type="button" class="button button-primary" style="background-color: #c00; border-color: #c00;" onclick="fplmsConfirmDelete()">Eliminar Definitivamente</button>
+                    </div>
                 </div>
             </div>
 
             <style>
+            /* NOTIFICACIÓN DE ÉXITO - Mejorada */
+            .fplms-success-notice {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                z-index: 99999;
+                min-width: 350px;
+                max-width: 500px;
+                animation: slideInRight 0.4s ease;
+            }
+
+            .fplms-success-notice .fplms-notice-content {
+                display: flex;
+                align-items: flex-start;
+                gap: 12px;
+                padding: 16px 20px;
+                background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+                border: 2px solid #28a745;
+                border-radius: 8px;
+                box-shadow: 0 8px 24px rgba(40, 167, 69, 0.25);
+                color: #155724;
+                font-weight: 600;
+                font-size: 14px;
+            }
+
+            .fplms-notice-icon {
+                font-size: 22px;
+                display: flex;
+                align-items: center;
+                flex-shrink: 0;
+                color: #28a745;
+                font-weight: bold;
+            }
+
+            .fplms-notice-text {
+                flex: 1;
+                line-height: 1.4;
+                padding-top: 2px;
+            }
+
+            .fplms-notice-close {
+                background: none;
+                border: none;
+                cursor: pointer;
+                font-size: 20px;
+                color: #155724;
+                padding: 0;
+                transition: transform 0.2s ease;
+                flex-shrink: 0;
+            }
+
+            .fplms-notice-close:hover {
+                transform: scale(1.2);
+            }
+
+            /* NOTIFICACIÓN DE ERROR */
+            .fplms-error-notice {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                z-index: 99999;
+                min-width: 350px;
+                max-width: 500px;
+                animation: slideInRight 0.4s ease;
+            }
+
+            .fplms-error-notice .fplms-notice-content {
+                display: flex;
+                align-items: flex-start;
+                gap: 12px;
+                padding: 16px 20px;
+                background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
+                border: 2px solid #dc3545;
+                border-radius: 8px;
+                box-shadow: 0 8px 24px rgba(220, 53, 69, 0.25);
+                color: #721c24;
+                font-weight: 600;
+                font-size: 14px;
+            }
+
+            .fplms-error-notice .fplms-notice-icon {
+                color: #dc3545;
+            }
+
+            /* Animación mejorada */
+            @keyframes slideInRight {
+                from {
+                    opacity: 0;
+                    transform: translateX(400px) scale(0.9);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateX(0) scale(1);
+                }
+            }
+
+            /* Animación de salida */
+            @keyframes slideOutRight {
+                from {
+                    opacity: 1;
+                    transform: translateX(0) scale(1);
+                }
+                to {
+                    opacity: 0;
+                    transform: translateX(400px) scale(0.9);
+                }
+            }
+
+            .fplms-notice-closing {
+                animation: slideOutRight 0.3s ease forwards;
+            }
+
+            /* FORMULARIO INLINE DE EDICIÓN */
+            .fplms-term-edit-form {
+                padding: 16px;
+                background: #f5f5f5;
+                border-top: 1px solid #ddd;
+                animation: slideDown 0.3s ease;
+            }
+
+            .fplms-inline-edit-form {
+                display: flex;
+                flex-direction: column;
+                gap: 16px;
+            }
+
+            .fplms-edit-row {
+                display: flex;
+                gap: 16px;
+                flex-wrap: wrap;
+            }
+
+            .fplms-edit-field {
+                flex: 1;
+                min-width: 250px;
+            }
+
+            .fplms-edit-field label {
+                display: block;
+                font-weight: 600;
+                margin-bottom: 6px;
+                color: #333;
+                font-size: 13px;
+            }
+
+            .fplms-edit-field input[type="text"] {
+                width: 100%;
+                padding: 8px 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                font-size: 13px;
+            }
+
+            .fplms-edit-field input[type="text"]:focus {
+                outline: none;
+                border-color: #0073aa;
+                box-shadow: 0 0 0 2px rgba(0,115,170,0.1);
+            }
+
+            /* SELECTOR DE CIUDADES */
+            .fplms-city-selector {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .fplms-city-search {
+                padding: 8px 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                font-size: 13px;
+                width: 100%;
+            }
+
+            .fplms-city-search:focus {
+                outline: none;
+                border-color: #0073aa;
+                box-shadow: 0 0 0 2px rgba(0,115,170,0.1);
+            }
+
+            .fplms-cities-list {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                max-height: 200px;
+                overflow-y: auto;
+                padding: 8px;
+                background: white;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+
+            .fplms-city-option {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 6px 10px;
+                background: white;
+                border: 1px solid #ddd;
+                border-radius: 3px;
+                cursor: pointer;
+                font-size: 12px;
+                transition: all 0.2s ease;
+                white-space: nowrap;
+            }
+
+            .fplms-city-option:hover {
+                background: #f0f0f0;
+                border-color: #0073aa;
+            }
+
+            .fplms-city-option input[type="checkbox"] {
+                margin: 0;
+                cursor: pointer;
+            }
+
+            .fplms-city-option input[type="checkbox"]:checked {
+                accent-color: #0073aa;
+            }
+
+            .fplms-city-option input[type="checkbox"]:checked + span {
+                color: #0073aa;
+                font-weight: 600;
+            }
+
+            .fplms-cities-field {
+                flex: 2;
+                min-width: 300px;
+            }
+
+            /* ACCIONES DE EDICIÓN */
+            .fplms-edit-actions {
+                display: flex;
+                gap: 10px;
+                justify-content: flex-end;
+            }
+
+            .fplms-edit-actions .button {
+                padding: 8px 16px;
+                font-size: 13px;
+            }
+
+            /* RESPONSIVE PARA EDICIÓN */
+            @media (max-width: 768px) {
+                .fplms-edit-row {
+                    flex-direction: column;
+                }
+
+                .fplms-edit-field,
+                .fplms-cities-field {
+                    min-width: auto;
+                    flex: 1 !important;
+                }
+
+                .fplms-edit-actions {
+                    flex-direction: column;
+                    gap: 8px;
+                }
+
+                .fplms-edit-actions .button {
+                    width: 100%;
+                }
+
+                .fplms-notice-content {
+                    right: 10px;
+                    left: 10px;
+                }
+            }
+
+            /* CONTENEDOR ACORDEÓN */
+            .fplms-accordion-container {
+                max-width: 1200px;
+                margin: 20px 0;
+            }
+
+            /* ITEM DEL ACORDEÓN */
+            .fplms-accordion-item {
+                margin-bottom: 15px;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                overflow: hidden;
+                background: #fff;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                transition: all 0.3s ease;
+            }
+
+            .fplms-accordion-item:hover {
+                box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+            }
+
+            /* ENCABEZADO DEL ACORDEÓN */
+            .fplms-accordion-header {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding: 16px 20px;
+                cursor: pointer;
+                background: linear-gradient(135deg, #f5f5f5 0%, #f9f9f9 100%);
+                user-select: none;
+                transition: all 0.3s ease;
+                font-weight: 600;
+                font-size: 15px;
+            }
+
+            .fplms-accordion-header:hover {
+                background: linear-gradient(135deg, #e8e8e8 0%, #efefef 100%);
+            }
+
+            .fplms-accordion-icon {
+                display: inline-block;
+                transition: transform 0.3s ease;
+                font-size: 12px;
+                color: #666;
+            }
+
+            .fplms-accordion-item.active .fplms-accordion-icon {
+                transform: rotate(90deg);
+            }
+
+            .fplms-accordion-title {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex: 1;
+                color: #333;
+            }
+
+            .fplms-accordion-count {
+                background: #f0f0f0;
+                padding: 2px 8px;
+                border-radius: 12px;
+                font-size: 12px;
+                color: #666;
+                font-weight: normal;
+            }
+
+            /* CUERPO DEL ACORDEÓN */
+            .fplms-accordion-body {
+                padding: 20px;
+                border-top: 1px solid #eee;
+                background: #fafafa;
+                animation: slideDown 0.3s ease;
+            }
+
+            @keyframes slideDown {
+                from {
+                    opacity: 0;
+                    transform: translateY(-10px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+
+            /* LISTA DE TÉRMINOS */
+            .fplms-terms-list {
+                margin-bottom: 20px;
+            }
+
+            /* ITEM DE TÉRMINO */
+            .fplms-term-item {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 12px 16px;
+                margin-bottom: 8px;
+                background: #fff;
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
+                transition: all 0.2s ease;
+            }
+
+            .fplms-term-item:hover {
+                background: #f9f9f9;
+                border-color: #bbb;
+                transform: translateX(2px);
+            }
+
+            .fplms-term-item.active {
+                background: #e3f2fd;
+                border-left: 4px solid #0073aa;
+                padding-left: 12px;
+            }
+
+            /* ENCABEZADO DEL TÉRMINO */
+            .fplms-term-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+                gap: 20px;
+            }
+
+            .fplms-term-info {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                flex: 1;
+            }
+
+            .fplms-term-name {
+                font-weight: 600;
+                color: #333;
+                min-width: 150px;
+            }
+
+            .fplms-term-cities {
+                font-size: 12px;
+                color: #666;
+                background: #f0f0f0;
+                padding: 2px 8px;
+                border-radius: 3px;
+                flex: 1;
+            }
+
+            .fplms-term-status {
+                font-size: 11px;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-weight: 600;
+                white-space: nowrap;
+            }
+
+            .fplms-term-status.active {
+                background: #d4edda;
+                color: #155724;
+            }
+
+            .fplms-term-status.inactive {
+                background: #f8d7da;
+                color: #721c24;
+            }
+
+            /* ACCIONES DEL TÉRMINO */
+            .fplms-term-actions {
+                display: flex;
+                gap: 6px;
+                flex-shrink: 0;
+            }
+
+            .fplms-btn {
+                padding: 6px 12px;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+                transition: all 0.2s ease;
+                background: #f0f0f0;
+                color: #333;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 32px;
+                height: 32px;
+            }
+
+            .fplms-btn:hover {
+                background: #e0e0e0;
+                transform: scale(1.1);
+            }
+
+            .fplms-btn-toggle {
+                background: #e8f5e9;
+                color: #2e7d32;
+            }
+
+            .fplms-btn-toggle:hover {
+                background: #c8e6c9;
+            }
+
+            .fplms-btn-edit {
+                background: #e3f2fd;
+                color: #1565c0;
+            }
+
+            .fplms-btn-edit:hover {
+                background: #bbdefb;
+            }
+
+            .fplms-btn-edit.fplms-cancel-edit {
+                background: #ffe0b2;
+                color: #e65100;
+            }
+
+            .fplms-btn-edit.fplms-cancel-edit:hover {
+                background: #ffd54f;
+            }
+
+            .fplms-btn-delete {
+                background: #ffebee;
+                color: #c62828;
+            }
+
+            .fplms-btn-delete:hover {
+                background: #ffcdd2;
+            }
+
+            /* ESTADO VACÍO */
+            .fplms-empty-state {
+                text-align: center;
+                padding: 40px 20px;
+                color: #999;
+                font-style: italic;
+            }
+
+            /* FORMULARIO DE NUEVO ELEMENTO */
+            .fplms-new-item-form {
+                background: #f5f5f5;
+                padding: 16px;
+                border-radius: 4px;
+                border: 2px dashed #ddd;
+                margin-top: 20px;
+            }
+
+            .fplms-new-item-form h4 {
+                margin-top: 0;
+                margin-bottom: 12px;
+                color: #333;
+                font-size: 14px;
+            }
+
+            .fplms-form-row {
+                display: flex;
+                gap: 12px;
+                align-items: flex-end;
+                flex-wrap: wrap;
+            }
+
+            .fplms-form-row input[type="text"] {
+                flex: 1;
+                min-width: 200px;
+            }
+
+            .fplms-form-row .fplms-multiselect-wrapper {
+                flex: 1;
+                min-width: 200px;
+            }
+
+            /* Selector de ciudades en formulario de creación */
+            .fplms-form-row .fplms-cities-field {
+                flex: 1;
+                min-width: 250px;
+                margin: 0;
+            }
+
+            .fplms-form-row .fplms-city-selector {
+                max-height: 180px;
+            }
+
+            .fplms-form-row .fplms-cities-list {
+                max-height: 150px;
+            }
+
+            .fplms-checkbox {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                white-space: nowrap;
+                margin: 0;
+            }
+
+            .fplms-checkbox input[type="checkbox"] {
+                margin: 0;
+                cursor: pointer;
+            }
+
+            .fplms-form-group {
+                margin-bottom: 16px;
+            }
+
+            .fplms-form-group label {
+                display: block;
+                margin-bottom: 6px;
+                font-weight: 600;
+                color: #333;
+                font-size: 13px;
+            }
+
+            /* MODAL */
+            .fplms-modal {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.5);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 10000;
+                animation: fadeIn 0.2s ease;
+            }
+
+            @keyframes fadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+
+            .fplms-modal-content {
+                background: #fff;
+                border-radius: 8px;
+                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+                max-width: 600px;
+                width: 90%;
+                max-height: 90vh;
+                overflow-y: auto;
+                animation: slideIn 0.3s ease;
+            }
+
+            @keyframes slideIn {
+                from {
+                    opacity: 0;
+                    transform: translateY(-50px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+
+            .fplms-modal-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 20px;
+                border-bottom: 1px solid #eee;
+                background: linear-gradient(135deg, #f9f9f9 0%, #f5f5f5 100%);
+            }
+
+            .fplms-modal-header h3 {
+                margin: 0;
+                color: #333;
+                font-size: 18px;
+            }
+
+            .fplms-modal-close {
+                background: none;
+                border: none;
+                font-size: 24px;
+                cursor: pointer;
+                color: #666;
+                transition: color 0.2s ease;
+            }
+
+            .fplms-modal-close:hover {
+                color: #333;
+            }
+
+            .fplms-modal-body {
+                padding: 20px;
+            }
+
+            .fplms-modal-footer {
+                padding: 16px 20px;
+                border-top: 1px solid #eee;
+                display: flex;
+                gap: 10px;
+                justify-content: flex-end;
+                background: #f9f9f9;
+            }
+
+            .fplms-modal-footer .button {
+                min-width: 100px;
+            }
+
+            /* MULTISELECT */
             .fplms-multiselect-wrapper {
                 position: relative;
                 width: 100%;
@@ -395,349 +1085,123 @@ class FairPlay_LMS_Structures_Controller {
             .fplms-multiselect-display {
                 display: flex;
                 flex-wrap: wrap;
-                gap: 8px;
-                padding: 10px 12px;
-                border: 1px solid #8c8f94;
+                gap: 6px;
+                padding: 8px;
+                border: 1px solid #ddd;
                 border-radius: 4px;
-                background-color: #fff;
-                min-height: 40px;
+                background: #fff;
+                min-height: 36px;
                 cursor: pointer;
-                font-size: 14px;
+                font-size: 13px;
                 transition: all 0.2s ease;
-                align-items: center;
-                position: relative;
             }
 
             .fplms-multiselect-display:hover {
                 border-color: #0073aa;
-                box-shadow: 0 0 0 1px #0073aa;
-            }
-
-            .fplms-multiselect-display:focus-within {
-                border-color: #0073aa;
-                box-shadow: 0 0 0 1px #0073aa;
-                outline: 2px solid transparent;
-            }
-
-            .fplms-multiselect-display::after {
-                content: '';
-                position: absolute;
-                right: 10px;
-                top: 50%;
-                transform: translateY(-50%);
-                width: 6px;
-                height: 6px;
-                border-right: 2px solid #555;
-                border-bottom: 2px solid #555;
-                transform: translateY(-65%) rotate(45deg);
-                pointer-events: none;
             }
 
             .fplms-multiselect-tag {
                 display: inline-flex;
                 align-items: center;
-                gap: 6px;
+                gap: 4px;
                 padding: 4px 8px;
-                background-color: #0073aa;
+                background: #0073aa;
                 color: #fff;
                 border-radius: 3px;
-                font-size: 13px;
-                font-weight: 500;
+                font-size: 12px;
                 white-space: nowrap;
-                animation: slideIn 0.2s ease;
             }
 
-            @keyframes slideIn {
-                from {
-                    opacity: 0;
-                    transform: scale(0.9);
+            @media (max-width: 768px) {
+                .fplms-term-header {
+                    flex-direction: column;
+                    align-items: flex-start;
                 }
-                to {
-                    opacity: 1;
-                    transform: scale(1);
+
+                .fplms-term-actions {
+                    width: 100%;
+                    justify-content: flex-start;
                 }
-            }
 
-            .fplms-multiselect-tag.removing {
-                animation: slideOut 0.2s ease;
-            }
-
-            @keyframes slideOut {
-                from {
-                    opacity: 1;
-                    transform: scale(1);
+                .fplms-form-row {
+                    flex-direction: column;
                 }
-                to {
-                    opacity: 0;
-                    transform: scale(0.9);
+
+                .fplms-form-row input[type="text"],
+                .fplms-form-row .fplms-multiselect-wrapper {
+                    width: 100%;
+                    min-width: auto;
                 }
-            }
-
-            .fplms-multiselect-tag-remove {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                width: 16px;
-                height: 16px;
-                cursor: pointer;
-                border-radius: 2px;
-                transition: background-color 0.15s ease;
-                font-weight: bold;
-                line-height: 1;
-            }
-
-            .fplms-multiselect-tag-remove:hover {
-                background-color: rgba(255, 255, 255, 0.3);
-            }
-
-            .fplms-multiselect-dropdown {
-                position: absolute;
-                top: 100%;
-                left: 0;
-                right: 0;
-                background-color: #fff;
-                border: 1px solid #8c8f94;
-                border-top: none;
-                border-radius: 0 0 4px 4px;
-                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-                max-height: 200px;
-                overflow-y: auto;
-                z-index: 1000;
-                display: none;
-                margin-top: -1px;
-            }
-
-            .fplms-multiselect-dropdown.open {
-                display: block;
-            }
-
-            .fplms-multiselect-option {
-                padding: 10px 12px;
-                cursor: pointer;
-                transition: background-color 0.15s ease;
-                user-select: none;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }
-
-            .fplms-multiselect-option:hover {
-                background-color: #f0f0f1;
-            }
-
-            .fplms-multiselect-option.selected {
-                background-color: #e7f3ff;
-                color: #0073aa;
-            }
-
-            .fplms-multiselect-option input[type="checkbox"] {
-                margin: 0;
-                cursor: pointer;
-            }
-
-            .fplms-multiselect-placeholder {
-                color: #999;
-                font-style: italic;
-                padding: 10px 12px;
-            }
-
-            .fplms-multiselect-display.empty {
-                color: #999;
-            }
-
-            .fplms-multiselect-display.empty::before {
-                content: 'Selecciona una o múltiples ciudades';
-                font-style: italic;
             }
             </style>
 
             <script>
-            class FairPlayMultiSelect {
-                constructor(selectElement) {
-                    this.select = selectElement;
-                    this.wrapper = selectElement.closest('.fplms-multiselect-wrapper');
-                    this.display = this.wrapper.querySelector('.fplms-multiselect-display');
-                    this.dropdown = null;
-                    this.isOpen = false;
+            // Manejo del Acordeón
+            document.addEventListener('DOMContentLoaded', function() {
+                const headers = document.querySelectorAll('.fplms-accordion-header');
+                
+                headers.forEach(header => {
+                    header.addEventListener('click', function() {
+                        const item = this.parentElement;
+                        const body = item.querySelector('.fplms-accordion-body');
+                        const isActive = item.classList.contains('active');
 
-                    this.init();
-                }
-
-                init() {
-                    this.createDropdown();
-                    this.bindEvents();
-                    this.updateDisplay();
-                }
-
-                createDropdown() {
-                    this.dropdown = document.createElement('div');
-                    this.dropdown.className = 'fplms-multiselect-dropdown';
-
-                    const options = this.select.querySelectorAll('option');
-                    
-                    if (options.length === 0) {
-                        const placeholder = document.createElement('div');
-                        placeholder.className = 'fplms-multiselect-placeholder';
-                        placeholder.textContent = 'No hay opciones disponibles';
-                        this.dropdown.appendChild(placeholder);
-                    } else {
-                        options.forEach(option => {
-                            const optionDiv = document.createElement('div');
-                            optionDiv.className = 'fplms-multiselect-option';
-                            if (option.selected) {
-                                optionDiv.classList.add('selected');
-                            }
-
-                            const checkbox = document.createElement('input');
-                            checkbox.type = 'checkbox';
-                            checkbox.checked = option.selected;
-                            checkbox.value = option.value;
-
-                            const label = document.createElement('label');
-                            label.style.margin = '0';
-                            label.style.cursor = 'pointer';
-                            label.style.flex = '1';
-                            label.textContent = option.textContent;
-
-                            optionDiv.appendChild(checkbox);
-                            optionDiv.appendChild(label);
-
-                            optionDiv.addEventListener('click', (e) => {
-                                e.stopPropagation();
-                                checkbox.checked = !checkbox.checked;
-                                this.updateSelectFromCheckbox(option, checkbox.checked);
-                                this.updateDisplay();
-                                optionDiv.classList.toggle('selected', checkbox.checked);
-                            });
-
-                            this.dropdown.appendChild(optionDiv);
+                        // Cerrar otros accordeones
+                        document.querySelectorAll('.fplms-accordion-item.active').forEach(activeItem => {
+                            activeItem.classList.remove('active');
+                            activeItem.querySelector('.fplms-accordion-body').style.display = 'none';
                         });
-                    }
 
-                    this.display.parentNode.insertBefore(this.dropdown, this.display.nextSibling);
-                }
-
-                bindEvents() {
-                    this.display.addEventListener('click', () => this.toggleDropdown());
-                    
-                    document.addEventListener('click', (e) => {
-                        if (!this.wrapper.contains(e.target)) {
-                            this.closeDropdown();
+                        // Abrir/cerrar este acordeón
+                        if (!isActive) {
+                            item.classList.add('active');
+                            body.style.display = 'block';
                         }
                     });
+                });
 
-                    this.select.addEventListener('change', () => this.updateDisplay());
-                }
+                // Inicializar multiselects
+                initializeMultiSelects();
+            });
 
-                toggleDropdown() {
-                    if (this.isOpen) {
-                        this.closeDropdown();
-                    } else {
-                        this.openDropdown();
+            function initializeMultiSelects() {
+                const wrappers = document.querySelectorAll('.fplms-multiselect-wrapper');
+                wrappers.forEach(wrapper => {
+                    const select = wrapper.querySelector('.fplms-multiselect');
+                    const display = wrapper.querySelector('.fplms-multiselect-display');
+                    
+                    if (select && display) {
+                        select.addEventListener('change', () => updateMultiSelectDisplay(wrapper));
+                        updateMultiSelectDisplay(wrapper);
                     }
-                }
-
-                openDropdown() {
-                    this.dropdown.classList.add('open');
-                    this.isOpen = true;
-                    this.display.focus();
-                }
-
-                closeDropdown() {
-                    this.dropdown.classList.remove('open');
-                    this.isOpen = false;
-                }
-
-                updateSelectFromCheckbox(option, checked) {
-                    option.selected = checked;
-                    this.select.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-
-                updateDisplay() {
-                    const selected = Array.from(this.select.querySelectorAll('option:checked'));
-
-                    if (selected.length === 0) {
-                        this.display.innerHTML = '';
-                        this.display.classList.add('empty');
-                    } else {
-                        this.display.classList.remove('empty');
-                        this.display.innerHTML = selected.map(option => {
-                            return `
-                                <div class="fplms-multiselect-tag" data-value="${option.value}">
-                                    <span>${option.textContent}</span>
-                                    <span class="fplms-multiselect-tag-remove" onclick="event.stopPropagation(); this.closest('.fplms-multiselect-wrapper').fpMultiSelect.removeTag('${option.value}')">×</span>
-                                </div>
-                            `;
-                        }).join('');
-                    }
-                }
-
-                removeTag(value) {
-                    const option = this.select.querySelector(`option[value="${value}"]`);
-                    if (option) {
-                        const tag = this.display.querySelector(`[data-value="${value}"]`);
-                        tag.classList.add('removing');
-                        setTimeout(() => {
-                            option.selected = false;
-                            this.select.dispatchEvent(new Event('change', { bubbles: true }));
-                            this.updateDisplay();
-                            this.updateDropdownOptions();
-                        }, 200);
-                    }
-                }
-
-                updateDropdownOptions() {
-                    const options = this.dropdown.querySelectorAll('.fplms-multiselect-option');
-                    options.forEach(optionDiv => {
-                        const checkbox = optionDiv.querySelector('input[type="checkbox"]');
-                        optionDiv.classList.toggle('selected', checkbox.checked);
-                    });
-                }
+                });
             }
 
-            // Inicializar todos los multiselects cuando el DOM esté listo
-            document.addEventListener('DOMContentLoaded', function() {
-                const selects = document.querySelectorAll('.fplms-multiselect');
-                selects.forEach(select => {
-                    const wrapper = select.closest('.fplms-multiselect-wrapper');
-                    wrapper.fpMultiSelect = new FairPlayMultiSelect(select);
-                });
-            });
+            function updateMultiSelectDisplay(wrapper) {
+                const select = wrapper.querySelector('.fplms-multiselect');
+                const display = wrapper.querySelector('.fplms-multiselect-display');
+                const selected = Array.from(select.options).filter(opt => opt.selected);
 
-            // Re-inicializar si el DOM cambia (útil después de cargar modal)
-            const observer = new MutationObserver(function(mutations) {
-                mutations.forEach(function(mutation) {
-                    if (mutation.addedNodes.length) {
-                        const selects = document.querySelectorAll('.fplms-multiselect:not([data-initialized])');
-                        selects.forEach(select => {
-                            select.setAttribute('data-initialized', 'true');
-                            const wrapper = select.closest('.fplms-multiselect-wrapper');
-                            if (wrapper && !wrapper.fpMultiSelect) {
-                                wrapper.fpMultiSelect = new FairPlayMultiSelect(select);
-                            }
-                        });
-                    }
-                });
-            });
+                display.innerHTML = selected.map(opt => 
+                    `<span class="fplms-multiselect-tag">${opt.textContent}</span>`
+                ).join('');
+            }
 
-            observer.observe(document.body, { childList: true, subtree: true });
+            // Funciones de Modal
+            let deleteData = { termId: null, taxonomy: null, tab: null };
 
             function fplmsEditStructure(termId, termName, cityIds, taxonomy) {
                 document.getElementById('fplms_edit_term_id').value = termId;
                 document.getElementById('fplms_edit_name').value = termName;
                 document.getElementById('fplms_edit_taxonomy').value = taxonomy;
                 
-                // Mostrar campo de ciudades solo si no es la pestaña de ciudades
-                const cityRow = document.getElementById('fplms_edit_city_row');
+                const cityGroup = document.getElementById('fplms_edit_city_group');
                 const citySelect = document.getElementById('fplms_edit_cities');
                 
                 if (taxonomy !== 'fplms_city') {
-                    cityRow.style.display = 'table-row';
-                    
-                    // Limpiar selección anterior
+                    cityGroup.style.display = 'block';
                     Array.from(citySelect.options).forEach(opt => opt.selected = false);
                     
-                    // Seleccionar ciudades del término (puede ser un array)
                     if (cityIds && Array.isArray(cityIds) && cityIds.length > 0) {
                         cityIds.forEach(cityId => {
                             const option = citySelect.querySelector(`option[value="${cityId}"]`);
@@ -745,29 +1209,283 @@ class FairPlay_LMS_Structures_Controller {
                         });
                     }
                     
-                    // Actualizar display del multiselect
                     const wrapper = citySelect.closest('.fplms-multiselect-wrapper');
-                    if (wrapper && wrapper.fpMultiSelect) {
-                        wrapper.fpMultiSelect.updateDisplay();
-                        wrapper.fpMultiSelect.updateDropdownOptions();
-                    }
+                    setTimeout(() => updateMultiSelectDisplay(wrapper), 100);
                 } else {
-                    cityRow.style.display = 'none';
+                    cityGroup.style.display = 'none';
                 }
                 
-                document.getElementById('fplms-edit-modal').style.display = 'block';
+                document.getElementById('fplms-edit-modal').style.display = 'flex';
             }
 
             function fplmsCloseEditModal() {
                 document.getElementById('fplms-edit-modal').style.display = 'none';
             }
 
-            // Cerrar modal al hacer clic fuera
-            document.addEventListener('click', function(event) {
-                const modal = document.getElementById('fplms-edit-modal');
-                if (event.target === modal) {
-                    modal.style.display = 'none';
+            function fplmsDeleteStructure(termId, taxonomy, tab) {
+                const termName = event.target.closest('.fplms-term-item').querySelector('.fplms-term-name').textContent;
+                deleteData = { termId, taxonomy, tab };
+                document.getElementById('fplms_delete_name').textContent = `"${termName}"`;
+                document.getElementById('fplms-delete-modal').style.display = 'flex';
+            }
+
+            function fplmsCloseDeleteModal() {
+                document.getElementById('fplms-delete-modal').style.display = 'none';
+            }
+
+            function fplmsConfirmDelete() {
+                if (!deleteData.termId) return;
+
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.innerHTML = `
+                    <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
+                    <input type="hidden" name="fplms_structures_action" value="delete">
+                    <input type="hidden" name="fplms_taxonomy" value="${deleteData.taxonomy}">
+                    <input type="hidden" name="fplms_term_id" value="${deleteData.termId}">
+                    <input type="hidden" name="fplms_tab" value="${deleteData.tab}">
+                `;
+                document.body.appendChild(form);
+                form.submit();
+            }
+
+            // Cerrar modales al hacer clic fuera
+            window.addEventListener('click', function(event) {
+                const editModal = document.getElementById('fplms-edit-modal');
+                const deleteModal = document.getElementById('fplms-delete-modal');
+                
+                if (event.target === editModal) editModal.style.display = 'none';
+                if (event.target === deleteModal) deleteModal.style.display = 'none';
+            });
+
+            /* ==================== FUNCIONES DE EDICIÓN INLINE ==================== */
+
+            /**
+             * Alterna la visibilidad del formulario de edición inline
+             */
+            function fplmsToggleEdit(button) {
+                const termItem = button.closest('.fplms-term-item');
+                const editForm = termItem.querySelector('.fplms-term-edit-form');
+                const header = termItem.querySelector('.fplms-term-header');
+                
+                if (editForm.style.display === 'none' || !editForm.style.display) {
+                    editForm.style.display = 'block';
+                    button.textContent = 'Cancelar';
+                    button.classList.add('fplms-cancel-edit');
+                } else {
+                    editForm.style.display = 'none';
+                    button.textContent = 'Editar Estructura';
+                    button.classList.remove('fplms-cancel-edit');
                 }
+            }
+
+            /**
+             * Filtra la lista de ciudades según el término de búsqueda
+             */
+            function fplmsFilterCities(searchInput) {
+                const cityList = searchInput.parentElement.querySelector('.fplms-cities-list');
+                const searchTerm = searchInput.value.toLowerCase();
+                const cityOptions = cityList.querySelectorAll('.fplms-city-option');
+
+                cityOptions.forEach(option => {
+                    const cityName = option.textContent.toLowerCase();
+                    if (cityName.includes(searchTerm)) {
+                        option.style.display = 'flex';
+                    } else {
+                        option.style.display = 'none';
+                    }
+                });
+            }
+
+            /**
+             * Envía el formulario de edición inline
+             */
+            function fplmsSubmitEdit(form, event) {
+                if (event) event.preventDefault();
+
+                const termItem = form.closest('.fplms-term-item');
+                const termId = form.querySelector('input[name="fplms_edit_term_id"]').value;
+                const termName = form.querySelector('input[name="fplms_edit_name"]').value;
+                const taxonomy = form.querySelector('input[name="fplms_edit_taxonomy"]').value;
+                
+                // Obtener ciudades seleccionadas
+                const selectedCities = Array.from(form.querySelectorAll('.fplms-city-option input[type="checkbox"]:checked'))
+                    .map(checkbox => checkbox.value);
+
+                // Validación básica
+                if (!termName.trim()) {
+                    alert('Por favor, ingresa un nombre para la estructura');
+                    return;
+                }
+
+                // Crear formulario para envío
+                const submitForm = document.createElement('form');
+                submitForm.method = 'POST';
+                submitForm.style.display = 'none';
+                
+                let nonceField = form.querySelector('input[name="fplms_structures_nonce"]');
+                let nonce = nonceField ? nonceField.value : '';
+
+                submitForm.innerHTML = `
+                    <input type="hidden" name="fplms_structures_action" value="save">
+                    <input type="hidden" name="fplms_structures_nonce" value="${nonce}">
+                    <input type="hidden" name="fplms_edit_term_id" value="${termId}">
+                    <input type="hidden" name="fplms_edit_name" value="${termName}">
+                    <input type="hidden" name="fplms_edit_taxonomy" value="${taxonomy}">
+                    <input type="hidden" name="fplms_tab" value="${taxonomy}">
+                    ${selectedCities.map((cityId, index) => 
+                        `<input type="hidden" name="fplms_edit_cities[${index}]" value="${cityId}">`
+                    ).join('')}
+                `;
+
+                document.body.appendChild(submitForm);
+                
+                // Mostrar mensaje de éxito
+                const cityText = selectedCities.length > 0 
+                    ? ` con ${selectedCities.length} ciudad(es) relacionada(s)` 
+                    : '';
+                fplmsShowSuccess(`✓ Cambio guardado: "${termName}"${cityText}`);
+
+                // Cerrar el formulario
+                const editForm = termItem.querySelector('.fplms-term-edit-form');
+                editForm.style.display = 'none';
+                
+                const editButton = termItem.querySelector('.fplms-term-header .fplms-btn-edit');
+                if (editButton) {
+                    editButton.textContent = 'Editar Estructura';
+                    editButton.classList.remove('fplms-cancel-edit');
+                }
+
+                // Enviar formulario
+                setTimeout(() => submitForm.submit(), 300);
+            }
+
+            /**
+             * Muestra un mensaje de éxito con duración extendida
+             */
+            function fplmsShowSuccess(message) {
+                const container = document.getElementById('fplms-success-message');
+                
+                if (!container) return;
+
+                const noticeHTML = `
+                    <div class="fplms-success-notice">
+                        <div class="fplms-notice-content">
+                            <span class="fplms-notice-icon">✓</span>
+                            <span class="fplms-notice-text">${message}</span>
+                            <button type="button" class="fplms-notice-close" onclick="fplmsCloseNotice(this.closest('.fplms-success-notice'))">×</button>
+                        </div>
+                    </div>
+                `;
+
+                container.insertAdjacentHTML('beforeend', noticeHTML);
+
+                // Auto-cerrar después de 8 segundos (aumentado de 4)
+                const notice = container.querySelector('.fplms-success-notice:last-child');
+                const autoCloseTimer = setTimeout(() => {
+                    if (notice && notice.parentElement) {
+                        fplmsCloseNoticeWithAnimation(notice);
+                    }
+                }, 8000);
+
+                // Cancelar auto-cierre si el usuario cierra manualmente
+                const closeBtn = notice.querySelector('.fplms-notice-close');
+                closeBtn.addEventListener('click', () => {
+                    clearTimeout(autoCloseTimer);
+                });
+            }
+
+            /**
+             * Muestra un mensaje de error
+             */
+            function fplmsShowError(message) {
+                const container = document.getElementById('fplms-error-message');
+                
+                if (!container) return;
+
+                const noticeHTML = `
+                    <div class="fplms-error-notice">
+                        <div class="fplms-notice-content">
+                            <span class="fplms-notice-icon">⚠</span>
+                            <span class="fplms-notice-text">${message}</span>
+                            <button type="button" class="fplms-notice-close" onclick="fplmsCloseNotice(this.closest('.fplms-error-notice'))">×</button>
+                        </div>
+                    </div>
+                `;
+
+                container.insertAdjacentHTML('beforeend', noticeHTML);
+
+                // Auto-cerrar después de 10 segundos (más tiempo que éxito)
+                const notice = container.querySelector('.fplms-error-notice:last-child');
+                const autoCloseTimer = setTimeout(() => {
+                    if (notice && notice.parentElement) {
+                        fplmsCloseNoticeWithAnimation(notice);
+                    }
+                }, 10000);
+
+                // Cancelar auto-cierre si el usuario cierra manualmente
+                const closeBtn = notice.querySelector('.fplms-notice-close');
+                closeBtn.addEventListener('click', () => {
+                    clearTimeout(autoCloseTimer);
+                });
+            }
+
+            /**
+             * Cierra una notificación con animación
+             */
+            function fplmsCloseNoticeWithAnimation(noticeElement) {
+                if (noticeElement) {
+                    noticeElement.classList.add('fplms-notice-closing');
+                    setTimeout(() => {
+                        if (noticeElement.parentElement) {
+                            noticeElement.remove();
+                        }
+                    }, 300);
+                }
+            }
+
+            /**
+             * Cierra una notificación (llamada por botón close)
+             */
+            function fplmsCloseNotice(noticeElement) {
+                if (noticeElement) {
+                    fplmsCloseNoticeWithAnimation(noticeElement);
+                }
+            }
+
+            /**
+             * Versión anterior para compatibilidad
+             */
+            function fplmsCloseSuccess(noticeElement) {
+                fplmsCloseNotice(noticeElement);
+            }
+
+            /**
+             * Inicializa los controles de búsqueda de ciudades
+             */
+            document.addEventListener('DOMContentLoaded', function() {
+                const citySearches = document.querySelectorAll('.fplms-city-search');
+                
+                citySearches.forEach(searchInput => {
+                    searchInput.addEventListener('keyup', function(e) {
+                        fplmsFilterCities(this);
+                    });
+
+                    // Permitir búsqueda inmediata
+                    searchInput.addEventListener('input', function(e) {
+                        fplmsFilterCities(this);
+                    });
+                });
+
+                // Manejador para cambios en checkboxes de ciudades
+                const cityCheckboxes = document.querySelectorAll('.fplms-city-option input[type="checkbox"]');
+                
+                cityCheckboxes.forEach(checkbox => {
+                    checkbox.addEventListener('change', function() {
+                        // Aquí puedes agregar lógica adicional si es necesaria
+                        // Por ejemplo, actualizar contador de ciudades seleccionadas
+                    });
+                });
             });
             </script>
         </div>

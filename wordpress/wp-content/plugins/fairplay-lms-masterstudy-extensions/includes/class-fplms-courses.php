@@ -267,6 +267,7 @@ class FairPlay_LMS_Courses_Controller {
                     <th>Curso</th>
                     <th>ID</th>
                     <th>Profesor actual</th>
+                    <th>Estructuras asignadas</th>
                     <th>Asignar / cambiar profesor</th>
                     <th>Acciones</th>
                 </tr>
@@ -297,11 +298,18 @@ class FairPlay_LMS_Courses_Controller {
                 if ( ! $teacher_name ) {
                     $teacher_name = '— Sin asignar —';
                 }
+
+                // Obtener y formatear estructuras del curso
+                $course_structures = $this->get_course_structures( $course->ID );
+                $structures_display = $this->format_course_structures_display( $course_structures );
                 ?>
                 <tr>
                     <td><?php echo esc_html( get_the_title( $course ) ); ?></td>
                     <td><?php echo esc_html( $course->ID ); ?></td>
                     <td><?php echo esc_html( $teacher_name ); ?></td>
+                    <td style="font-size: 0.9em; line-height: 1.6;">
+                        <?php echo wp_kses_post( $structures_display ); ?>
+                    </td>
                     <td>
                         <form method="post" style="display:flex; gap:4px; align-items:center;">
                             <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
@@ -739,43 +747,84 @@ class FairPlay_LMS_Courses_Controller {
                     if ( ! this.checked ) {
                         return;
                     }
-
                     // Cargar dinámicamente canales, sucursales y cargos
                     const taxonomies = ['<?php echo FairPlay_LMS_Config::TAX_CHANNEL; ?>', '<?php echo FairPlay_LMS_Config::TAX_BRANCH; ?>', '<?php echo FairPlay_LMS_Config::TAX_ROLE; ?>'];
                     const fieldsetIds = ['fplms_channels_fieldset', 'fplms_branches_fieldset', 'fplms_roles_fieldset'];
+                    const nonce = '<?php echo wp_create_nonce( 'fplms_get_terms' ); ?>';
 
                     taxonomies.forEach(function(taxonomy, index) {
                         const formData = new FormData();
                         formData.append('action', 'fplms_get_terms_by_city');
                         formData.append('city_id', cityId);
                         formData.append('taxonomy', taxonomy);
+                        formData.append('nonce', nonce);
 
                         fetch(ajaxUrl, {
                             method: 'POST',
-                            body: formData
-                        })
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.success) {
-                                const fieldset = document.getElementById(fieldsetIds[index]);
-                                let html = '';
-
-                                for (const [termId, termName] of Object.entries(data.data)) {
-                                    if (termId === '') continue;
-                                    html += '<label><input type="checkbox" name="fplms_course_' + taxonomy + '[]" value="' + termId + '"> ' + termName + '</label><br>';
-                                }
-
-                                if (html === '') {
-                                    html = '<p><em>No hay opciones disponibles para esta ciudad.</em></p>';
-                                }
-
-                                fieldset.innerHTML = html;
+                            body: formData,
+                            headers: {
+                                'X-Requested-With': 'XMLHttpRequest'
                             }
                         })
-                        .catch(error => console.error('Error:', error));
+                        .then(response => {
+                            if (!response.ok) throw new Error('Network response was not ok');
+                            return response.json();
+                        })
+                        .then(data => {
+                            const fieldset = document.getElementById(fieldsetIds[index]);
+                            let html = '';
+
+                            if (data.success && data.data) {
+                                for (const [termId, termName] of Object.entries(data.data)) {
+                                    if (termId === '') continue;
+                                    
+                                    // Determinar el nombre correcto del input según taxonomía
+                                    let inputName = 'fplms_course_';
+                                    if (taxonomy === '<?php echo FairPlay_LMS_Config::TAX_CHANNEL; ?>') {
+                                        inputName += 'channels[]';
+                                    } else if (taxonomy === '<?php echo FairPlay_LMS_Config::TAX_BRANCH; ?>') {
+                                        inputName += 'branches[]';
+                                    } else if (taxonomy === '<?php echo FairPlay_LMS_Config::TAX_ROLE; ?>') {
+                                        inputName += 'roles[]';
+                                    }
+                                    
+                                    html += '<label style="display: block; margin: 5px 0;"><input type="checkbox" name="' + inputName + '" value="' + termId + '"> ' + escapeHtml(termName) + '</label>';
+                                }
+                            }
+
+                            if (html === '') {
+                                html = '<p><em>No hay opciones disponibles para esta ciudad.</em></p>';
+                            }
+
+                            fieldset.innerHTML = html;
+                        })
+                        .catch(error => {
+                            console.error('Error al cargar estructuras:', error);
+                            const fieldset = document.getElementById(fieldsetIds[index]);
+                            fieldset.innerHTML = '<p><em style="color: red;">Error al cargar opciones. Intenta de nuevo.</em></p>';
+                        });
                     });
                 });
             });
+
+            // Función auxiliar para escapar HTML
+            function escapeHtml(unsafe) {
+                return unsafe
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;")
+                    .replace(/'/g, "&#039;");
+            }
+
+            // Al cargar, si hay ciudades seleccionadas, cargar sus estructuras
+            const selectedCities = Array.from(document.querySelectorAll('.fplms-city-checkbox')).filter(cb => cb.checked);
+            if (selectedCities.length > 0) {
+                const firstCity = selectedCities[0];
+                // Simular cambio para cargar datos
+                const event = new Event('change');
+                firstCity.dispatchEvent(event);
+            }
         });
         </script>
         <?php
@@ -843,6 +892,71 @@ class FairPlay_LMS_Courses_Controller {
             'branches' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
             'roles'    => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
         ];
+    }
+
+    /**
+     * Formatea las estructuras de un curso para mostrar en la tabla.
+     * 
+     * @param array $structures Array con estructura: ['cities' => [ids], 'channels' => [ids], 'branches' => [ids], 'roles' => [ids]].
+     * @return string HTML formateado para mostrar.
+     */
+    private function format_course_structures_display( array $structures ): string {
+        $display = [];
+
+        // Ciudades
+        if ( ! empty( $structures['cities'] ) ) {
+            $city_names = $this->get_term_names_by_ids( $structures['cities'] );
+            if ( ! empty( $city_names ) ) {
+                $display[] = '<strong>📍 Ciudades:</strong> ' . esc_html( implode( ', ', $city_names ) );
+            }
+        }
+
+        // Canales
+        if ( ! empty( $structures['channels'] ) ) {
+            $channel_names = $this->get_term_names_by_ids( $structures['channels'] );
+            if ( ! empty( $channel_names ) ) {
+                $display[] = '<strong>🏪 Canales:</strong> ' . esc_html( implode( ', ', $channel_names ) );
+            }
+        }
+
+        // Sucursales
+        if ( ! empty( $structures['branches'] ) ) {
+            $branch_names = $this->get_term_names_by_ids( $structures['branches'] );
+            if ( ! empty( $branch_names ) ) {
+                $display[] = '<strong>🏢 Sucursales:</strong> ' . esc_html( implode( ', ', $branch_names ) );
+            }
+        }
+
+        // Cargos
+        if ( ! empty( $structures['roles'] ) ) {
+            $role_names = $this->get_term_names_by_ids( $structures['roles'] );
+            if ( ! empty( $role_names ) ) {
+                $display[] = '<strong>👔 Cargos:</strong> ' . esc_html( implode( ', ', $role_names ) );
+            }
+        }
+
+        if ( empty( $display ) ) {
+            return '<em style="color: #666;">Sin restricción (visible para todos)</em>';
+        }
+
+        return implode( '<br>', $display );
+    }
+
+    /**
+     * Obtiene los nombres de términos por sus IDs.
+     * 
+     * @param array $term_ids Array de IDs de términos.
+     * @return array Array de nombres de términos.
+     */
+    private function get_term_names_by_ids( array $term_ids ): array {
+        $names = [];
+        foreach ( $term_ids as $term_id ) {
+            $term = get_term( (int) $term_id );
+            if ( $term && ! is_wp_error( $term ) ) {
+                $names[] = $term->name;
+            }
+        }
+        return $names;
     }
 }
 
