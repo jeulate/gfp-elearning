@@ -15,10 +15,12 @@ class FairPlay_LMS_Config {
     public const META_ACTIVE = 'fplms_active';
 
     // Meta de términos para relaciones jerárquicas (Ciudad -> Canal -> Sucursal -> Cargo)
-    public const META_TERM_PARENT_CITY   = 'fplms_parent_city';      // Para canales, sucursales, cargos (DEPRECATED)
-    public const META_TERM_PARENT_CHANNEL = 'fplms_parent_channel';  // Para sucursales, cargos
-    public const META_TERM_PARENT_BRANCH  = 'fplms_parent_branch';   // Para cargos
-    public const META_TERM_CITIES        = 'fplms_cities';           // NUEVO: Array JSON de ciudades para un término
+    public const META_TERM_PARENT_CITY    = 'fplms_parent_city';     // Para canales, sucursales, cargos (DEPRECATED)
+    public const META_TERM_PARENT_CHANNEL = 'fplms_parent_channel';  // Para sucursales, cargos (DEPRECATED)
+    public const META_TERM_PARENT_BRANCH  = 'fplms_parent_branch';   // Para cargos (DEPRECATED)
+    public const META_TERM_CITIES         = 'fplms_cities';          // Array JSON de ciudades (para canales)
+    public const META_TERM_CHANNELS       = 'fplms_channels';        // Array JSON de canales (para sucursales)
+    public const META_TERM_BRANCHES       = 'fplms_branches';        // Array JSON de sucursales (para cargos)
 
     // Meta en usuarios (link a estructuras)
     public const USER_META_CITY    = 'fplms_city';

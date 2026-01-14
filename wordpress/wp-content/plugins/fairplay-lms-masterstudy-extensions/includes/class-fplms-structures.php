@@ -86,13 +86,33 @@ class FairPlay_LMS_Structures_Controller {
                 if ( ! is_wp_error( $term ) ) {
                     update_term_meta( $term['term_id'], FairPlay_LMS_Config::META_ACTIVE, $active );
 
-                    // Guardar múltiples ciudades si viene en el formulario (nuevo sistema)
-                    if ( FairPlay_LMS_Config::TAX_CITY !== $taxonomy && ! empty( $_POST['fplms_cities'] ) ) {
+                    // Guardar múltiples ciudades para Canales
+                    if ( FairPlay_LMS_Config::TAX_CHANNEL === $taxonomy && ! empty( $_POST['fplms_cities'] ) ) {
                         $city_ids = array_map( 'absint', (array) $_POST['fplms_cities'] );
                         $city_ids = array_filter( $city_ids );
 
-                        if ( ! empty( $city_ids ) ) {
+                        if ( ! empty( $city_ids ) && $this->validate_hierarchy( $taxonomy, $term['term_id'], $city_ids ) ) {
                             $this->save_multiple_cities( $term['term_id'], $city_ids );
+                        }
+                    }
+
+                    // Guardar múltiples canales para Sucursales
+                    if ( FairPlay_LMS_Config::TAX_BRANCH === $taxonomy && ! empty( $_POST['fplms_channels'] ) ) {
+                        $channel_ids = array_map( 'absint', (array) $_POST['fplms_channels'] );
+                        $channel_ids = array_filter( $channel_ids );
+
+                        if ( ! empty( $channel_ids ) && $this->validate_hierarchy( $taxonomy, $term['term_id'], $channel_ids ) ) {
+                            $this->save_term_channels( $term['term_id'], $channel_ids );
+                        }
+                    }
+
+                    // Guardar múltiples sucursales para Cargos
+                    if ( FairPlay_LMS_Config::TAX_ROLE === $taxonomy && ! empty( $_POST['fplms_branches'] ) ) {
+                        $branch_ids = array_map( 'absint', (array) $_POST['fplms_branches'] );
+                        $branch_ids = array_filter( $branch_ids );
+
+                        if ( ! empty( $branch_ids ) && $this->validate_hierarchy( $taxonomy, $term['term_id'], $branch_ids ) ) {
+                            $this->save_term_branches( $term['term_id'], $branch_ids );
                         }
                     }
                 }
@@ -118,13 +138,33 @@ class FairPlay_LMS_Structures_Controller {
                 // Actualizar nombre del término
                 wp_update_term( $term_id, $taxonomy, [ 'name' => $name ] );
 
-                // Actualizar múltiples ciudades si viene en el formulario (nuevo sistema)
-                if ( FairPlay_LMS_Config::TAX_CITY !== $taxonomy && ! empty( $_POST['fplms_cities'] ) ) {
+                // Actualizar múltiples ciudades para Canales
+                if ( FairPlay_LMS_Config::TAX_CHANNEL === $taxonomy && ! empty( $_POST['fplms_cities'] ) ) {
                     $city_ids = array_map( 'absint', (array) $_POST['fplms_cities'] );
                     $city_ids = array_filter( $city_ids );
 
-                    if ( ! empty( $city_ids ) ) {
+                    if ( ! empty( $city_ids ) && $this->validate_hierarchy( $taxonomy, $term_id, $city_ids ) ) {
                         $this->save_multiple_cities( $term_id, $city_ids );
+                    }
+                }
+
+                // Actualizar múltiples canales para Sucursales
+                if ( FairPlay_LMS_Config::TAX_BRANCH === $taxonomy && ! empty( $_POST['fplms_channels'] ) ) {
+                    $channel_ids = array_map( 'absint', (array) $_POST['fplms_channels'] );
+                    $channel_ids = array_filter( $channel_ids );
+
+                    if ( ! empty( $channel_ids ) && $this->validate_hierarchy( $taxonomy, $term_id, $channel_ids ) ) {
+                        $this->save_term_channels( $term_id, $channel_ids );
+                    }
+                }
+
+                // Actualizar múltiples sucursales para Cargos
+                if ( FairPlay_LMS_Config::TAX_ROLE === $taxonomy && ! empty( $_POST['fplms_branches'] ) ) {
+                    $branch_ids = array_map( 'absint', (array) $_POST['fplms_branches'] );
+                    $branch_ids = array_filter( $branch_ids );
+
+                    if ( ! empty( $branch_ids ) && $this->validate_hierarchy( $taxonomy, $term_id, $branch_ids ) ) {
+                        $this->save_term_branches( $term_id, $branch_ids );
                     }
                 }
             }
@@ -135,7 +175,10 @@ class FairPlay_LMS_Structures_Controller {
             $term_id = isset( $_POST['fplms_term_id'] ) ? absint( $_POST['fplms_term_id'] ) : 0;
 
             if ( $term_id ) {
-                // Eliminar relaciones de ciudades si existen
+                // Eliminar todas las relaciones jerárquicas
+                delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_CITIES );
+                delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_CHANNELS );
+                delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_BRANCHES );
                 delete_term_meta( $term_id, FairPlay_LMS_Config::META_CITY_RELATIONS );
                 
                 // Eliminar el término completamente
@@ -225,15 +268,40 @@ class FairPlay_LMS_Structures_Controller {
                                         <?php
                                         $active = get_term_meta( $term->term_id, FairPlay_LMS_Config::META_ACTIVE, true );
                                         $active = ( '1' === $active );
-                                        $city_ids = [];
-                                        $city_names = [];
                                         
-                                        if ( 'city' !== $tab_key ) {
-                                            $city_ids = $this->get_term_cities( $term->term_id );
-                                            foreach ( $city_ids as $city_id ) {
-                                                $city_name = $this->get_term_name_by_id( $city_id );
-                                                if ( $city_name ) {
-                                                    $city_names[] = $city_name;
+                                        // Obtener relaciones según el tipo de término
+                                        $parent_ids = [];
+                                        $parent_names = [];
+                                        $parent_label = '';
+                                        
+                                        if ( 'channel' === $tab_key ) {
+                                            // Los canales se relacionan con ciudades
+                                            $parent_ids = $this->get_term_cities( $term->term_id );
+                                            $parent_label = '📍';
+                                            foreach ( $parent_ids as $parent_id ) {
+                                                $parent_name = $this->get_term_name_by_id( $parent_id );
+                                                if ( $parent_name ) {
+                                                    $parent_names[] = $parent_name;
+                                                }
+                                            }
+                                        } elseif ( 'branch' === $tab_key ) {
+                                            // Las sucursales se relacionan con canales
+                                            $parent_ids = $this->get_term_channels( $term->term_id );
+                                            $parent_label = '🏪';
+                                            foreach ( $parent_ids as $parent_id ) {
+                                                $parent_name = $this->get_term_name_by_id( $parent_id );
+                                                if ( $parent_name ) {
+                                                    $parent_names[] = $parent_name;
+                                                }
+                                            }
+                                        } elseif ( 'role' === $tab_key ) {
+                                            // Los cargos se relacionan con sucursales
+                                            $parent_ids = $this->get_term_branches( $term->term_id );
+                                            $parent_label = '🏢';
+                                            foreach ( $parent_ids as $parent_id ) {
+                                                $parent_name = $this->get_term_name_by_id( $parent_id );
+                                                if ( $parent_name ) {
+                                                    $parent_names[] = $parent_name;
                                                 }
                                             }
                                         }
@@ -242,8 +310,8 @@ class FairPlay_LMS_Structures_Controller {
                                             <div class="fplms-term-header">
                                                 <div class="fplms-term-info">
                                                     <span class="fplms-term-name"><?php echo esc_html( $term->name ); ?></span>
-                                                    <?php if ( 'city' !== $tab_key && ! empty( $city_names ) ) : ?>
-                                                        <span class="fplms-term-cities">🔗 <?php echo esc_html( implode( ', ', $city_names ) ); ?></span>
+                                                    <?php if ( 'city' !== $tab_key && ! empty( $parent_names ) ) : ?>
+                                                        <span class="fplms-term-cities">🔗 <?php echo esc_html( $parent_label ); ?> <?php echo esc_html( implode( ', ', $parent_names ) ); ?></span>
                                                     <?php endif; ?>
                                                     <span class="fplms-term-status <?php echo $active ? 'active' : 'inactive'; ?>">
                                                         <?php echo $active ? '✓ Activo' : '✗ Inactivo'; ?>
@@ -292,24 +360,64 @@ class FairPlay_LMS_Structures_Controller {
                                                             <input type="text" name="fplms_name" class="regular-text" value="<?php echo esc_attr( $term->name ); ?>" required>
                                                         </div>
                                                         
-                                                        <div class="fplms-edit-field fplms-cities-field">
-                                                            <label>Ciudades Relacionadas</label>
-                                                            <div class="fplms-city-selector">
-                                                                <input type="text" class="fplms-city-search" placeholder="🔍 Buscar ciudad..." data-field-id="city_<?php echo esc_attr( $term->term_id ); ?>">
-                                                                <div class="fplms-cities-list" id="city_<?php echo esc_attr( $term->term_id ); ?>">
+                                                        <?php if ( 'channel' === $tab_key ) : ?>
+                                                        <div class="fplms-edit-field fplms-parent-field">
+                                                            <label>📍 Ciudades Relacionadas</label>
+                                                            <div class="fplms-parent-selector">
+                                                                <input type="text" class="fplms-parent-search" placeholder="🔍 Buscar ciudad...">
+                                                                <div class="fplms-parent-list">
                                                                     <?php
-                                                                    $all_cities = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
-                                                                    foreach ( $all_cities as $city_id => $city_name ) :
-                                                                        $is_selected = in_array( $city_id, $city_ids, true );
+                                                                    $all_parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
+                                                                    $selected_parents = $this->get_term_cities( $term->term_id );
+                                                                    foreach ( $all_parents as $parent_id => $parent_name ) :
                                                                     ?>
-                                                                        <label class="fplms-city-option">
-                                                                            <input type="checkbox" name="fplms_cities[]" value="<?php echo esc_attr( $city_id ); ?>" <?php checked( $is_selected ); ?> data-city-name="<?php echo esc_attr( $city_name ); ?>">
-                                                                            <span><?php echo esc_html( $city_name ); ?></span>
+                                                                        <label class="fplms-parent-option">
+                                                                            <input type="checkbox" name="fplms_cities[]" value="<?php echo esc_attr( $parent_id ); ?>" <?php checked( in_array( $parent_id, $selected_parents, true ) ); ?>>
+                                                                            <span><?php echo esc_html( $parent_name ); ?></span>
                                                                         </label>
                                                                     <?php endforeach; ?>
                                                                 </div>
                                                             </div>
                                                         </div>
+                                                        <?php elseif ( 'branch' === $tab_key ) : ?>
+                                                        <div class="fplms-edit-field fplms-parent-field">
+                                                            <label>🏪 Canales Relacionados</label>
+                                                            <div class="fplms-parent-selector">
+                                                                <input type="text" class="fplms-parent-search" placeholder="🔍 Buscar canal...">
+                                                                <div class="fplms-parent-list">
+                                                                    <?php
+                                                                    $all_parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
+                                                                    $selected_parents = $this->get_term_channels( $term->term_id );
+                                                                    foreach ( $all_parents as $parent_id => $parent_name ) :
+                                                                    ?>
+                                                                        <label class="fplms-parent-option">
+                                                                            <input type="checkbox" name="fplms_channels[]" value="<?php echo esc_attr( $parent_id ); ?>" <?php checked( in_array( $parent_id, $selected_parents, true ) ); ?>>
+                                                                            <span><?php echo esc_html( $parent_name ); ?></span>
+                                                                        </label>
+                                                                    <?php endforeach; ?>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <?php elseif ( 'role' === $tab_key ) : ?>
+                                                        <div class="fplms-edit-field fplms-parent-field">
+                                                            <label>🏢 Sucursales Relacionadas</label>
+                                                            <div class="fplms-parent-selector">
+                                                                <input type="text" class="fplms-parent-search" placeholder="🔍 Buscar sucursal...">
+                                                                <div class="fplms-parent-list">
+                                                                    <?php
+                                                                    $all_parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH );
+                                                                    $selected_parents = $this->get_term_branches( $term->term_id );
+                                                                    foreach ( $all_parents as $parent_id => $parent_name ) :
+                                                                    ?>
+                                                                        <label class="fplms-parent-option">
+                                                                            <input type="checkbox" name="fplms_branches[]" value="<?php echo esc_attr( $parent_id ); ?>" <?php checked( in_array( $parent_id, $selected_parents, true ) ); ?>>
+                                                                            <span><?php echo esc_html( $parent_name ); ?></span>
+                                                                        </label>
+                                                                    <?php endforeach; ?>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <?php endif; ?>
                                                     </div>
                                                     
                                                     <div class="fplms-edit-actions">
@@ -340,29 +448,76 @@ class FairPlay_LMS_Structures_Controller {
                                         <input name="fplms_name" type="text" class="regular-text" placeholder="Nombre del elemento..." required>
                                         
                                         <?php if ( 'city' !== $tab_key ) : ?>
-                                            <div class="fplms-edit-field fplms-cities-field">
-                                                <label>Ciudades Asociadas</label>
-                                                <div class="fplms-city-selector">
+                                            <?php if ( 'channel' === $tab_key ) : ?>
+                                            <div class="fplms-edit-field fplms-parent-field">
+                                                <label>📍 Ciudades Asociadas</label>
+                                                <div class="fplms-parent-selector">
                                                     <input type="text" 
-                                                           class="fplms-city-search" 
-                                                           placeholder="Buscar ciudades...">
+                                                           class="fplms-parent-search" 
+                                                           placeholder="🔍 Buscar ciudad...">
                                                     
-                                                    <div class="fplms-cities-list">
+                                                    <div class="fplms-parent-list">
                                                         <?php 
-                                                        $cities = $this->get_active_terms_for_select('fplms_city');
-                                                        foreach ($cities as $city_id => $city_name) : 
+                                                        $parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
+                                                        foreach ( $parents as $parent_id => $parent_name ) : 
                                                         ?>
-                                                        <label class="fplms-city-option">
+                                                        <label class="fplms-parent-option">
                                                             <input type="checkbox" 
                                                                    name="fplms_cities[]" 
-                                                                   value="<?php echo $city_id; ?>"
-                                                                   data-city-name="<?php echo esc_attr($city_name); ?>">
-                                                            <span><?php echo esc_html($city_name); ?></span>
+                                                                   value="<?php echo esc_attr( $parent_id ); ?>">
+                                                            <span><?php echo esc_html( $parent_name ); ?></span>
                                                         </label>
                                                         <?php endforeach; ?>
                                                     </div>
                                                 </div>
                                             </div>
+                                            <?php elseif ( 'branch' === $tab_key ) : ?>
+                                            <div class="fplms-edit-field fplms-parent-field">
+                                                <label>🏪 Canales Asociados</label>
+                                                <div class="fplms-parent-selector">
+                                                    <input type="text" 
+                                                           class="fplms-parent-search" 
+                                                           placeholder="🔍 Buscar canal...">
+                                                    
+                                                    <div class="fplms-parent-list">
+                                                        <?php 
+                                                        $parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
+                                                        foreach ( $parents as $parent_id => $parent_name ) : 
+                                                        ?>
+                                                        <label class="fplms-parent-option">
+                                                            <input type="checkbox" 
+                                                                   name="fplms_channels[]" 
+                                                                   value="<?php echo esc_attr( $parent_id ); ?>">
+                                                            <span><?php echo esc_html( $parent_name ); ?></span>
+                                                        </label>
+                                                        <?php endforeach; ?>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <?php elseif ( 'role' === $tab_key ) : ?>
+                                            <div class="fplms-edit-field fplms-parent-field">
+                                                <label>🏢 Sucursales Asociadas</label>
+                                                <div class="fplms-parent-selector">
+                                                    <input type="text" 
+                                                           class="fplms-parent-search" 
+                                                           placeholder="🔍 Buscar sucursal...">
+                                                    
+                                                    <div class="fplms-parent-list">
+                                                        <?php 
+                                                        $parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH );
+                                                        foreach ( $parents as $parent_id => $parent_name ) : 
+                                                        ?>
+                                                        <label class="fplms-parent-option">
+                                                            <input type="checkbox" 
+                                                                   name="fplms_branches[]" 
+                                                                   value="<?php echo esc_attr( $parent_id ); ?>">
+                                                            <span><?php echo esc_html( $parent_name ); ?></span>
+                                                        </label>
+                                                        <?php endforeach; ?>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                         
                                         <label class="fplms-checkbox">
@@ -632,6 +787,77 @@ class FairPlay_LMS_Structures_Controller {
             }
 
             .fplms-cities-field {
+                flex: 2;
+                min-width: 300px;
+            }
+
+            /* SELECTOR GENÉRICO DE PADRES (Canales, Sucursales, Cargos) */
+            .fplms-parent-selector {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .fplms-parent-search {
+                padding: 8px 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                font-size: 13px;
+                width: 100%;
+            }
+
+            .fplms-parent-search:focus {
+                outline: none;
+                border-color: #0073aa;
+                box-shadow: 0 0 0 2px rgba(0,115,170,0.1);
+            }
+
+            .fplms-parent-list {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                max-height: 200px;
+                overflow-y: auto;
+                padding: 8px;
+                background: white;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+
+            .fplms-parent-option {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 6px 10px;
+                background: white;
+                border: 1px solid #ddd;
+                border-radius: 3px;
+                cursor: pointer;
+                font-size: 12px;
+                transition: all 0.2s ease;
+                white-space: nowrap;
+            }
+
+            .fplms-parent-option:hover {
+                background: #f0f0f0;
+                border-color: #0073aa;
+            }
+
+            .fplms-parent-option input[type="checkbox"] {
+                margin: 0;
+                cursor: pointer;
+            }
+
+            .fplms-parent-option input[type="checkbox"]:checked {
+                accent-color: #0073aa;
+            }
+
+            .fplms-parent-option input[type="checkbox"]:checked + span {
+                color: #0073aa;
+                font-weight: 600;
+            }
+
+            .fplms-parent-field {
                 flex: 2;
                 min-width: 300px;
             }
@@ -1298,6 +1524,24 @@ class FairPlay_LMS_Structures_Controller {
             }
 
             /**
+             * Filtra opciones de padres (canales, sucursales, cargos) basado en búsqueda
+             */
+            function fplmsFilterParents(searchInput) {
+                const parentList = searchInput.parentElement.querySelector('.fplms-parent-list');
+                const searchTerm = searchInput.value.toLowerCase();
+                const parentOptions = parentList.querySelectorAll('.fplms-parent-option');
+
+                parentOptions.forEach(option => {
+                    const parentName = option.textContent.toLowerCase();
+                    if (parentName.includes(searchTerm)) {
+                        option.style.display = 'flex';
+                    } else {
+                        option.style.display = 'none';
+                    }
+                });
+            }
+
+            /**
              * Envía el formulario de edición inline
              */
             function fplmsSubmitEdit(form, event) {
@@ -1464,6 +1708,7 @@ class FairPlay_LMS_Structures_Controller {
              * Inicializa los controles de búsqueda de ciudades
              */
             document.addEventListener('DOMContentLoaded', function() {
+                // Manejo de búsqueda de ciudades
                 const citySearches = document.querySelectorAll('.fplms-city-search');
                 
                 citySearches.forEach(searchInput => {
@@ -1484,6 +1729,29 @@ class FairPlay_LMS_Structures_Controller {
                     checkbox.addEventListener('change', function() {
                         // Aquí puedes agregar lógica adicional si es necesaria
                         // Por ejemplo, actualizar contador de ciudades seleccionadas
+                    });
+                });
+
+                // Manejo de búsqueda de padres (genérico para canales, sucursales, cargos)
+                const parentSearches = document.querySelectorAll('.fplms-parent-search');
+                
+                parentSearches.forEach(searchInput => {
+                    searchInput.addEventListener('keyup', function(e) {
+                        fplmsFilterParents(this);
+                    });
+
+                    // Permitir búsqueda inmediata
+                    searchInput.addEventListener('input', function(e) {
+                        fplmsFilterParents(this);
+                    });
+                });
+
+                // Manejador para cambios en checkboxes de padres
+                const parentCheckboxes = document.querySelectorAll('.fplms-parent-option input[type="checkbox"]');
+                
+                parentCheckboxes.forEach(checkbox => {
+                    checkbox.addEventListener('change', function() {
+                        // Lógica adicional si es necesaria
                     });
                 });
             });
@@ -1904,5 +2172,333 @@ class FairPlay_LMS_Structures_Controller {
         }
 
         return $result;
+    }
+
+    /**
+     * Guarda múltiples canales asignados a una sucursal.
+     * Serializa como JSON para almacenar en term meta.
+     *
+     * @param int   $term_id ID del término (sucursal)
+     * @param array $channel_ids Array de IDs de canales
+     * @return bool true si se guardó correctamente
+     */
+    public function save_term_channels( int $term_id, array $channel_ids ): bool {
+
+        if ( ! $term_id || empty( $channel_ids ) ) {
+            return false;
+        }
+
+        // Sanitizar y validar IDs
+        $channel_ids = array_map( 'absint', $channel_ids );
+        $channel_ids = array_filter( $channel_ids );
+
+        if ( empty( $channel_ids ) ) {
+            return false;
+        }
+
+        // Eliminar duplicados
+        $channel_ids = array_unique( $channel_ids );
+
+        // Guardar como JSON serializado
+        $serialized = wp_json_encode( $channel_ids );
+        update_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_CHANNELS, $serialized );
+
+        return true;
+    }
+
+    /**
+     * Obtiene todos los canales asignados a una sucursal.
+     *
+     * @param int $term_id ID del término (sucursal)
+     * @return array Array de IDs de canales
+     */
+    public function get_term_channels( int $term_id ): array {
+
+        if ( ! $term_id ) {
+            return [];
+        }
+
+        // Obtener canales en formato JSON
+        $serialized = get_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_CHANNELS, true );
+
+        if ( $serialized ) {
+            $channel_ids = json_decode( $serialized, true );
+            return is_array( $channel_ids ) ? $channel_ids : [];
+        }
+
+        return [];
+    }
+
+    /**
+     * Obtiene términos (sucursales) que están asignados a uno o varios canales.
+     *
+     * @param string $taxonomy Taxonomía a consultar (debe ser fplms_branch)
+     * @param array  $channel_ids Array de IDs de canales
+     * @return array Array de sucursales que pertenecen a esos canales
+     */
+    public function get_branches_by_channels( string $taxonomy, array $channel_ids ): array {
+
+        if ( $taxonomy !== FairPlay_LMS_Config::TAX_BRANCH || empty( $channel_ids ) ) {
+            return [];
+        }
+
+        $channel_ids = array_map( 'absint', array_filter( $channel_ids ) );
+
+        if ( empty( $channel_ids ) ) {
+            return [];
+        }
+
+        $all_terms = get_terms(
+            [
+                'taxonomy'   => $taxonomy,
+                'hide_empty' => false,
+            ]
+        );
+
+        if ( is_wp_error( $all_terms ) || empty( $all_terms ) ) {
+            return [];
+        }
+
+        $result = [];
+
+        foreach ( $all_terms as $term ) {
+            $term_channels = $this->get_term_channels( $term->term_id );
+
+            // Si el término está en cualquiera de los canales solicitados
+            if ( array_intersect( $term_channels, $channel_ids ) ) {
+                $result[] = $term;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Obtiene todas las sucursales de una taxonomía con todos sus canales asignados.
+     * Útil para mostrar en tabla cuáles canales tiene cada sucursal.
+     *
+     * @param string $taxonomy Taxonomía a consultar (debe ser fplms_branch)
+     * @return array Array con estructura: [term_id => ['name' => 'xxx', 'channels' => [1,2,3], 'active' => '1']]
+     */
+    public function get_branches_all_channels( string $taxonomy ): array {
+
+        if ( $taxonomy !== FairPlay_LMS_Config::TAX_BRANCH ) {
+            return [];
+        }
+
+        $terms = get_terms(
+            [
+                'taxonomy'   => $taxonomy,
+                'hide_empty' => false,
+            ]
+        );
+
+        if ( is_wp_error( $terms ) || empty( $terms ) ) {
+            return [];
+        }
+
+        $result = [];
+
+        foreach ( $terms as $term ) {
+            $channels = $this->get_term_channels( $term->term_id );
+            $result[ $term->term_id ] = [
+                'name'     => $term->name,
+                'channels' => $channels,
+                'active'   => get_term_meta( $term->term_id, FairPlay_LMS_Config::META_ACTIVE, true ),
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Guarda múltiples sucursales asignadas a un cargo.
+     * Serializa como JSON para almacenar en term meta.
+     *
+     * @param int   $term_id ID del término (cargo)
+     * @param array $branch_ids Array de IDs de sucursales
+     * @return bool true si se guardó correctamente
+     */
+    public function save_term_branches( int $term_id, array $branch_ids ): bool {
+
+        if ( ! $term_id || empty( $branch_ids ) ) {
+            return false;
+        }
+
+        // Sanitizar y validar IDs
+        $branch_ids = array_map( 'absint', $branch_ids );
+        $branch_ids = array_filter( $branch_ids );
+
+        if ( empty( $branch_ids ) ) {
+            return false;
+        }
+
+        // Eliminar duplicados
+        $branch_ids = array_unique( $branch_ids );
+
+        // Guardar como JSON serializado
+        $serialized = wp_json_encode( $branch_ids );
+        update_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_BRANCHES, $serialized );
+
+        return true;
+    }
+
+    /**
+     * Obtiene todas las sucursales asignadas a un cargo.
+     *
+     * @param int $term_id ID del término (cargo)
+     * @return array Array de IDs de sucursales
+     */
+    public function get_term_branches( int $term_id ): array {
+
+        if ( ! $term_id ) {
+            return [];
+        }
+
+        // Obtener sucursales en formato JSON
+        $serialized = get_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_BRANCHES, true );
+
+        if ( $serialized ) {
+            $branch_ids = json_decode( $serialized, true );
+            return is_array( $branch_ids ) ? $branch_ids : [];
+        }
+
+        return [];
+    }
+
+    /**
+     * Obtiene términos (cargos) que están asignados a una o varias sucursales.
+     *
+     * @param string $taxonomy Taxonomía a consultar (debe ser fplms_job_role)
+     * @param array  $branch_ids Array de IDs de sucursales
+     * @return array Array de cargos que pertenecen a esas sucursales
+     */
+    public function get_roles_by_branches( string $taxonomy, array $branch_ids ): array {
+
+        if ( $taxonomy !== FairPlay_LMS_Config::TAX_ROLE || empty( $branch_ids ) ) {
+            return [];
+        }
+
+        $branch_ids = array_map( 'absint', array_filter( $branch_ids ) );
+
+        if ( empty( $branch_ids ) ) {
+            return [];
+        }
+
+        $all_terms = get_terms(
+            [
+                'taxonomy'   => $taxonomy,
+                'hide_empty' => false,
+            ]
+        );
+
+        if ( is_wp_error( $all_terms ) || empty( $all_terms ) ) {
+            return [];
+        }
+
+        $result = [];
+
+        foreach ( $all_terms as $term ) {
+            $term_branches = $this->get_term_branches( $term->term_id );
+
+            // Si el término está en cualquiera de las sucursales solicitadas
+            if ( array_intersect( $term_branches, $branch_ids ) ) {
+                $result[] = $term;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Obtiene todos los cargos de una taxonomía con todas sus sucursales asignadas.
+     * Útil para mostrar en tabla cuáles sucursales tiene cada cargo.
+     *
+     * @param string $taxonomy Taxonomía a consultar (debe ser fplms_job_role)
+     * @return array Array con estructura: [term_id => ['name' => 'xxx', 'branches' => [1,2,3], 'active' => '1']]
+     */
+    public function get_roles_all_branches( string $taxonomy ): array {
+
+        if ( $taxonomy !== FairPlay_LMS_Config::TAX_ROLE ) {
+            return [];
+        }
+
+        $terms = get_terms(
+            [
+                'taxonomy'   => $taxonomy,
+                'hide_empty' => false,
+            ]
+        );
+
+        if ( is_wp_error( $terms ) || empty( $terms ) ) {
+            return [];
+        }
+
+        $result = [];
+
+        foreach ( $terms as $term ) {
+            $branches = $this->get_term_branches( $term->term_id );
+            $result[ $term->term_id ] = [
+                'name'     => $term->name,
+                'branches' => $branches,
+                'active'   => get_term_meta( $term->term_id, FairPlay_LMS_Config::META_ACTIVE, true ),
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Valida la integridad de la jerarquía.
+     * Verifica que una relación sea válida según el tipo de taxonomía.
+     *
+     * @param string $taxonomy Taxonomía del término que se va a relacionar
+     * @param int    $term_id ID del término
+     * @param array  $parent_ids IDs de los términos padre (ciudades, canales o sucursales)
+     * @return bool true si la relación es válida
+     */
+    public function validate_hierarchy( string $taxonomy, int $term_id, array $parent_ids ): bool {
+
+        if ( ! $term_id || empty( $parent_ids ) ) {
+            return false;
+        }
+
+        // Validar que no exista auto-referencia
+        $parent_ids = array_map( 'absint', array_filter( $parent_ids ) );
+
+        if ( in_array( $term_id, $parent_ids, true ) ) {
+            return false; // El término no puede ser su propio padre
+        }
+
+        // Verificar que los IDs padres existan en la taxonomía correcta
+        switch ( $taxonomy ) {
+            case FairPlay_LMS_Config::TAX_CHANNEL:
+                // Los canales se relacionan con ciudades
+                $parent_taxonomy = FairPlay_LMS_Config::TAX_CITY;
+                break;
+
+            case FairPlay_LMS_Config::TAX_BRANCH:
+                // Las sucursales se relacionan con canales
+                $parent_taxonomy = FairPlay_LMS_Config::TAX_CHANNEL;
+                break;
+
+            case FairPlay_LMS_Config::TAX_ROLE:
+                // Los cargos se relacionan con sucursales
+                $parent_taxonomy = FairPlay_LMS_Config::TAX_BRANCH;
+                break;
+
+            default:
+                return false;
+        }
+
+        // Verificar que todos los IDs padres existan
+        foreach ( $parent_ids as $parent_id ) {
+            $parent_term = get_term( $parent_id, $parent_taxonomy );
+            if ( ! $parent_term || is_wp_error( $parent_term ) ) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
