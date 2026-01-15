@@ -95,6 +95,9 @@ class FairPlay_LMS_Plugin {
         // Matriz de privilegios
         add_action( 'admin_init', [ $this->users, 'handle_caps_matrix_form' ] );
 
+        // Registrar último login de usuario
+        add_action( 'wp_login', [ $this->users, 'record_user_login' ], 10, 2 );
+
         // Exportaciones / informes
         add_action( 'admin_init', [ $this->reports, 'handle_export' ] );
 

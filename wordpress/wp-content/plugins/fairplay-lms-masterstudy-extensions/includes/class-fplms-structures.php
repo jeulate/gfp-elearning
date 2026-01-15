@@ -1910,21 +1910,8 @@ class FairPlay_LMS_Structures_Controller {
             return $result;
         }
 
-        // Determinar el tipo de relación según la taxonomía
-        $relation_type = '';
-        if ( FairPlay_LMS_Config::TAX_CHANNEL === $taxonomy ) {
-            $relation_type = 'city';
-        } elseif ( FairPlay_LMS_Config::TAX_BRANCH === $taxonomy ) {
-            $relation_type = 'city'; // Las sucursales pueden depender también de la ciudad
-        } elseif ( FairPlay_LMS_Config::TAX_ROLE === $taxonomy ) {
-            $relation_type = 'city'; // Los cargos también por ciudad
-        }
-
-        if ( ! $relation_type ) {
-            return $result;
-        }
-
-        $terms = $this->get_terms_by_parent( $taxonomy, $relation_type, $city_term_id );
+        // Usar el nuevo sistema que soporta múltiples ciudades
+        $terms = $this->get_terms_by_cities( $taxonomy, [ $city_term_id ] );
 
         if ( ! empty( $terms ) ) {
             foreach ( $terms as $term ) {
