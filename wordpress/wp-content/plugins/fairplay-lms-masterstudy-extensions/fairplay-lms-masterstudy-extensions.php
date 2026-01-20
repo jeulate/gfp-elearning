@@ -39,6 +39,36 @@ register_deactivation_hook(
     [ 'FairPlay_LMS_Capabilities', 'deactivate' ]
 );
 
+// Al activar el plugin, crear la tabla para registrar los inicios de sesión de usuario
+register_activation_hook(__FILE__, 'fplms_create_user_logins_table');
+function fplms_create_user_logins_table() {
+    if ( ! function_exists('dbDelta') ) {
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+    }
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'fplms_user_logins';
+    $charset_collate = $wpdb->get_charset_collate();
+
+    // Verifica si la tabla ya existe
+    $table_exists = $wpdb->get_var($wpdb->prepare(
+        "SHOW TABLES LIKE %s",
+        $table_name
+    ));
+    if ($table_exists === $table_name) {
+        return; // Ya existe, no hacer nada
+    }
+
+    $sql = "CREATE TABLE $table_name (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id BIGINT UNSIGNED NOT NULL,
+        login_time DATETIME NOT NULL,
+        INDEX (user_id),
+        INDEX (login_time)
+    ) $charset_collate;";
+
+    dbDelta($sql);
+}
+
 // Bootstrap del plugin
 function fairplay_lms_extensions_bootstrap() {
     global $fairplay_lms_plugin;

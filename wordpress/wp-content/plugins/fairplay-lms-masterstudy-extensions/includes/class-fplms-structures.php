@@ -236,11 +236,56 @@ class FairPlay_LMS_Structures_Controller {
         ];
 
         ?>
-        <div class="wrap">
-            <h1>⚙️ Gestión de Estructuras</h1>
-            <p style="font-size: 16px; color: #666; margin-bottom: 30px;">
-                Organiza tu empresa en ciudades, canales, sucursales y cargos. Expande cada sección para ver, editar o eliminar elementos.
-            </p>
+        <style>
+            .fplms-structures-wrapper {
+                background: #f5f7fa;
+                min-height: 100vh;
+                padding: 20px;
+                margin-left: -20px;
+            }
+            .fplms-structures-container {
+                max-width: 1200px;
+                margin: 0 auto;
+                background: #fff;
+                border-radius: 12px;
+                padding: 30px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            }
+            .fplms-structures-header {
+                display: flex;
+                align-items: center;
+                gap: 15px;
+                margin-bottom: 15px;
+                padding-bottom: 20px;
+                border-bottom: 2px solid #f0f0f0;
+            }
+            .fplms-structures-icon {
+                font-size: 32px;
+                flex-shrink: 0;
+            }
+            .fplms-structures-title {
+                margin: 0;
+                font-size: 24px;
+                font-weight: 700;
+                color: #1a1a1a;
+            }
+            .fplms-structures-subtitle {
+                margin: 0 0 25px 47px;
+                font-size: 14px;
+                color: #6b7280;
+                font-weight: 400;
+                line-height: 1.6;
+            }
+        </style>
+        <div class="fplms-structures-wrapper">
+            <div class="fplms-structures-container">
+                <div class="fplms-structures-header">
+                    <div class="fplms-structures-icon">⚙️</div>
+                    <h1 class="fplms-structures-title">Gestión de Estructuras</h1>
+                </div>
+                <p class="fplms-structures-subtitle">
+                    Organiza tu empresa en ciudades, canales, sucursales y cargos. Expande cada sección para ver, editar o eliminar elementos.
+                </p>
 
             <div class="fplms-accordion-container">
                 <?php foreach ( $tabs as $tab_key => $tab_info ) : ?>
@@ -558,6 +603,9 @@ class FairPlay_LMS_Structures_Controller {
                         <button type="button" class="button button-primary" style="background-color: #c00; border-color: #c00;" onclick="fplmsConfirmDelete()">Eliminar Definitivamente</button>
                     </div>
                 </div>
+            </div>
+            </div>
+        </div>
             </div>
 
             <style>

@@ -134,9 +134,33 @@ class FairPlay_LMS_Users_Controller {
      * @param WP_User $user Objeto del usuario
      */
     public function record_user_login( string $user_login, $user ): void {
+        if ( ! function_exists('update_user_meta') || ! function_exists('current_time') ) {
+            return; // Solo ejecutar en entorno WordPress
+        }
         if ( isset( $user->ID ) ) {
             $current_time = current_time( 'mysql' );
             update_user_meta( $user->ID, 'last_login', $current_time );
+
+            // Registrar el login en la tabla personalizada solo si existe
+            global $wpdb;
+            $table_name = $wpdb->prefix . 'fplms_user_logins';
+            $table_exists = $wpdb->get_var($wpdb->prepare(
+                "SHOW TABLES LIKE %s",
+                $table_name
+            ));
+            if ($table_exists === $table_name) {
+                $wpdb->insert(
+                    $table_name,
+                    [
+                        'user_id'    => $user->ID,
+                        'login_time' => $current_time
+                    ],
+                    [
+                        '%d',
+                        '%s'
+                    ]
+                );
+            }
         }
     }
 
@@ -240,84 +264,259 @@ class FairPlay_LMS_Users_Controller {
         $structure_relations = $this->get_structure_relations();
         
         ?>
-        <div class="wrap">
-            <h1>Usuarios</h1>
-
-            <!-- BOTONES DE ACCIONES RÁPIDAS -->
-            <div style="margin: 20px 0; display: flex; gap: 10px;">
-                <a href="#crear-usuario" class="button button-primary" id="btn-crear-usuario">
-                    ➕ Crear usuario
-                </a>
-                <a href="#matriz-privilegios" class="button" id="btn-matriz-privilegios">
-                    🔐 Matriz de privilegios
-                </a>
-            </div>
-
-            <!-- TABLA DE USUARIOS -->
-            <h2 style="margin-top: 30px;">Usuarios registrados</h2>
-
-            <?php if ( isset( $_GET['user_created'] ) ) : ?>
-                <div id="message" class="updated notice notice-success is-dismissible">
-                    <p>Usuario creado correctamente. ID: <?php echo esc_html( absint( $_GET['user_created'] ) ); ?></p>
+        <style>
+            .fplms-users-wrapper {
+                background: #f5f7fa;
+                min-height: 100vh;
+                padding: 20px;
+                margin-left: -20px;
+            }
+            .fplms-users-container {
+                max-width: 1200px;
+                margin: 0 auto;
+                background: #fff;
+                border-radius: 12px;
+                padding: 30px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            }
+            .fplms-users-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 25px;
+                padding-bottom: 20px;
+                border-bottom: 2px solid #f0f0f0;
+                flex-wrap: wrap;
+                gap: 15px;
+            }
+            .fplms-users-title-section {
+                display: flex;
+                align-items: center;
+                gap: 15px;
+            }
+            .fplms-users-icon {
+                font-size: 32px;
+                flex-shrink: 0;
+            }
+            .fplms-users-title {
+                margin: 0;
+                font-size: 24px;
+                font-weight: 700;
+                color: #1a1a1a;
+            }
+            .fplms-users-actions {
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+            .fplms-action-button {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                background: linear-gradient(135deg, #F44336 0%, #D32F2F 100%);
+                color: white;
+                padding: 10px 20px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-size: 14px;
+                font-weight: 600;
+                transition: all 0.3s ease;
+                border: none;
+                cursor: pointer;
+                box-shadow: 0 2px 8px rgba(244, 67, 54, 0.3);
+            }
+            .fplms-action-button:hover {
+                background: linear-gradient(135deg, #D32F2F 0%, #B71C1C 100%);
+                box-shadow: 0 4px 16px rgba(244, 67, 54, 0.4);
+                transform: translateY(-2px);
+                color: white;
+                text-decoration: none;
+            }
+            .fplms-action-button.secondary {
+                background: linear-gradient(135deg, #607D8B 0%, #455A64 100%);
+                box-shadow: 0 2px 8px rgba(96, 125, 139, 0.3);
+            }
+            .fplms-action-button.secondary:hover {
+                background: linear-gradient(135deg, #455A64 0%, #37474F 100%);
+                box-shadow: 0 4px 16px rgba(96, 125, 139, 0.4);
+            }
+            .fplms-filters-section {
+                background: #f8f9fa;
+                border-radius: 10px;
+                padding: 25px;
+                margin-bottom: 25px;
+                border: 1px solid #e9ecef;
+            }
+            .fplms-filters-title {
+                margin: 0 0 20px 0;
+                font-size: 16px;
+                font-weight: 600;
+                color: #333;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .fplms-filters-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 20px;
+                margin-bottom: 20px;
+            }
+            .fplms-filter-field {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            .fplms-filter-field label {
+                font-weight: 600;
+                color: #555;
+                font-size: 13px;
+            }
+            .fplms-filter-field select {
+                padding: 10px 35px 10px 15px;
+                border: 2px solid #e0e0e0;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 500;
+                color: #333;
+                background-color: #fff;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                -webkit-appearance: none;
+                -moz-appearance: none;
+                appearance: none;
+                background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23333%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E');
+                background-repeat: no-repeat;
+                background-position: right 10px top 50%;
+                background-size: 10px auto;
+            }
+            .fplms-filter-field select:hover {
+                border-color: #F44336;
+            }
+            .fplms-filter-field select:focus {
+                outline: none;
+                border-color: #F44336;
+                box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.1);
+            }
+            .fplms-filter-button {
+                background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%);
+                color: white;
+                padding: 10px 24px;
+                border-radius: 8px;
+                border: none;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
+            }
+            .fplms-filter-button:hover {
+                background: linear-gradient(135deg, #1976D2 0%, #1565C0 100%);
+                box-shadow: 0 4px 16px rgba(33, 150, 243, 0.4);
+                transform: translateY(-2px);
+            }
+            .fplms-section-title {
+                margin: 30px 0 20px 0;
+                font-size: 18px;
+                font-weight: 700;
+                color: #1a1a1a;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .fplms-section-title:before {
+                content: '📋';
+                font-size: 22px;
+            }
+            @media (max-width: 768px) {
+                .fplms-users-header {
+                    flex-direction: column;
+                    align-items: flex-start;
+                }
+                .fplms-filters-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+        <div class="fplms-users-wrapper">
+            <div class="fplms-users-container">
+                <div class="fplms-users-header">
+                    <div class="fplms-users-title-section">
+                        <div class="fplms-users-icon">👥</div>
+                        <h1 class="fplms-users-title">Usuarios</h1>
+                    </div>
+                    <div class="fplms-users-actions">
+                        <a href="#crear-usuario" class="fplms-action-button" id="btn-crear-usuario">
+                            ➕ Crear usuario
+                        </a>
+                        <a href="#matriz-privilegios" class="fplms-action-button secondary" id="btn-matriz-privilegios">
+                            🔐 Matriz de privilegios
+                        </a>
+                    </div>
                 </div>
-            <?php endif; ?>
 
-            <form method="get" style="margin-bottom:1em;">
-                <input type="hidden" name="page" value="fplms-users">
-                <table class="form-table">
-                    <tr>
-                        <th>Ciudad</th>
-                        <td>
-                            <select name="fplms_filter_city" id="fplms_filter_city">
-                                <option value="">Todas</option>
-                                <?php foreach ( $cities as $id => $name ) : ?>
-                                    <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_city, $id ); ?>>
-                                        <?php echo esc_html( $name ); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </td>
-                        <th>Canal</th>
-                        <td>
-                            <select name="fplms_filter_channel" id="fplms_filter_channel">
-                                <option value="">Todos</option>
-                                <?php foreach ( $channels as $id => $name ) : ?>
-                                    <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_channel, $id ); ?>>
-                                        <?php echo esc_html( $name ); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th>Sucursal</th>
-                        <td>
-                            <select name="fplms_filter_branch" id="fplms_filter_branch">
-                                <option value="">Todas</option>
-                                <?php foreach ( $branches as $id => $name ) : ?>
-                                    <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_branch, $id ); ?>>
-                                        <?php echo esc_html( $name ); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </td>
-                        <th>Cargo</th>
-                        <td>
-                            <select name="fplms_filter_role" id="fplms_filter_role">
-                                <option value="">Todos</option>
-                                <?php foreach ( $roles as $id => $name ) : ?>
-                                    <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_role, $id ); ?>>
-                                        <?php echo esc_html( $name ); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </td>
-                    </tr>
-                </table>
-                <p class="submit">
-                    <button type="submit" class="button">Filtrar</button>
-                </p>
-            </form>
+                <!-- FILTROS -->
+                <div class="fplms-filters-section">
+                    <h3 class="fplms-filters-title">🔍 Filtrar usuarios</h3>
+                    <form method="get">
+                        <input type="hidden" name="page" value="fplms-users">
+                        <div class="fplms-filters-grid">
+                            <div class="fplms-filter-field">
+                                <label for="fplms_filter_city">Ciudad</label>
+                                <select name="fplms_filter_city" id="fplms_filter_city">
+                                    <option value="">Todas</option>
+                                    <?php foreach ( $cities as $id => $name ) : ?>
+                                        <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_city, $id ); ?>>
+                                            <?php echo esc_html( $name ); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="fplms-filter-field">
+                                <label for="fplms_filter_channel">Canal</label>
+                                <select name="fplms_filter_channel" id="fplms_filter_channel">
+                                    <option value="">Todos</option>
+                                    <?php foreach ( $channels as $id => $name ) : ?>
+                                        <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_channel, $id ); ?>>
+                                            <?php echo esc_html( $name ); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="fplms-filter-field">
+                                <label for="fplms_filter_branch">Sucursal</label>
+                                <select name="fplms_filter_branch" id="fplms_filter_branch">
+                                    <option value="">Todas</option>
+                                    <?php foreach ( $branches as $id => $name ) : ?>
+                                        <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_branch, $id ); ?>>
+                                            <?php echo esc_html( $name ); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="fplms-filter-field">
+                                <label for="fplms_filter_role">Cargo</label>
+                                <select name="fplms_filter_role" id="fplms_filter_role">
+                                    <option value="">Todos</option>
+                                    <?php foreach ( $roles as $id => $name ) : ?>
+                                        <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_role, $id ); ?>>
+                                            <?php echo esc_html( $name ); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <button type="submit" class="fplms-filter-button">🔍 Filtrar usuarios</button>
+                    </form>
+                </div>
+
+                <?php if ( isset( $_GET['user_created'] ) ) : ?>
+                    <div id="message" class="updated notice notice-success is-dismissible">
+                        <p>Usuario creado correctamente. ID: <?php echo esc_html( absint( $_GET['user_created'] ) ); ?></p>
+                    </div>
+                <?php endif; ?>
+
+                <h2 class="fplms-section-title">Usuarios registrados</h2>
 
             <style>
                 .fplms-users-table-wrapper {
@@ -1013,6 +1212,7 @@ class FairPlay_LMS_Users_Controller {
                     }
                 });
             </script>
+            </div>
         </div>
         <?php
     }
