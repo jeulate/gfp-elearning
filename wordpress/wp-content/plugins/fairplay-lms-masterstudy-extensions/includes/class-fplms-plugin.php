@@ -98,6 +98,15 @@ class FairPlay_LMS_Plugin {
         // Registrar último login de usuario
         add_action( 'wp_login', [ $this->users, 'record_user_login' ], 10, 2 );
 
+        // Registrar actividad del usuario en cada carga de página
+        add_action( 'init', [ $this->users, 'record_user_activity' ] );
+
+        // Heartbeat para detectar usuarios activos
+        add_filter( 'heartbeat_received', [ $this->users, 'heartbeat_received' ], 10, 2 );
+
+        // Enqueue scripts para heartbeat
+        add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_heartbeat_script' ] );
+
         // Exportaciones / informes
         add_action( 'admin_init', [ $this->reports, 'handle_export' ] );
 
@@ -108,6 +117,36 @@ class FairPlay_LMS_Plugin {
         // AJAX: Cargar dinámicamente términos filtrados por ciudad
         add_action( 'wp_ajax_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
         add_action( 'wp_ajax_nopriv_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
+    }
+
+    /**
+     * Encola el script del heartbeat para rastrear actividad de usuarios.
+     */
+    public function enqueue_heartbeat_script(): void {
+        if ( ! is_user_logged_in() ) {
+            return;
+        }
+
+        // Asegurar que el heartbeat está habilitado
+        wp_enqueue_script( 'heartbeat' );
+
+        // Script inline para enviar señal de actividad
+        $inline_script = "
+        jQuery(document).ready(function($) {
+            // Enviar señal de actividad cada minuto mediante heartbeat
+            $(document).on('heartbeat-send', function(e, data) {
+                data.fplms_user_active = true;
+            });
+
+            // Manejar respuesta del servidor
+            $(document).on('heartbeat-tick', function(e, data) {
+                if (data.fplms_activity_recorded) {
+                    console.log('Actividad registrada');
+                }
+            });
+        });
+        ";
+        wp_add_inline_script( 'heartbeat', $inline_script );
     }
 
     /**

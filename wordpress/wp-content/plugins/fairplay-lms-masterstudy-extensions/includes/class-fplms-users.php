@@ -140,6 +140,7 @@ class FairPlay_LMS_Users_Controller {
         if ( isset( $user->ID ) ) {
             $current_time = current_time( 'mysql' );
             update_user_meta( $user->ID, 'last_login', $current_time );
+            update_user_meta( $user->ID, 'last_activity', $current_time );
 
             // Registrar el login en la tabla personalizada solo si existe
             global $wpdb;
@@ -162,6 +163,81 @@ class FairPlay_LMS_Users_Controller {
                 );
             }
         }
+    }
+
+    /**
+     * Registra la actividad del usuario en la plataforma.
+     * Se ejecuta en cada carga de página para rastrear usuarios activos.
+     * Esto permite detectar usuarios que mantienen sesión abierta sin cerrarla.
+     */
+    public function record_user_activity(): void {
+        if ( ! is_user_logged_in() ) {
+            return;
+        }
+
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) {
+            return;
+        }
+
+        $current_time = current_time( 'mysql' );
+        $last_activity = get_user_meta( $user_id, 'last_activity', true );
+
+        // Solo actualizar si han pasado más de 5 minutos desde la última actividad
+        // Esto evita escrituras excesivas en la BD
+        if ( $last_activity ) {
+            $time_diff = strtotime( $current_time ) - strtotime( $last_activity );
+            if ( $time_diff < 300 ) { // 5 minutos = 300 segundos
+                return;
+            }
+        }
+
+        // Actualizar timestamp de última actividad
+        update_user_meta( $user_id, 'last_activity', $current_time );
+
+        // Registrar en la tabla de actividad si existe
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'fplms_user_activity';
+        $table_exists = $wpdb->get_var( $wpdb->prepare(
+            "SHOW TABLES LIKE %s",
+            $table_name
+        ));
+
+        if ( $table_exists === $table_name ) {
+            $wpdb->insert(
+                $table_name,
+                [
+                    'user_id'       => $user_id,
+                    'activity_time' => $current_time,
+                    'page_url'      => esc_url_raw( $_SERVER['REQUEST_URI'] ?? '' )
+                ],
+                [ '%d', '%s', '%s' ]
+            );
+        }
+    }
+
+    /**
+     * Maneja el heartbeat de WordPress para actualizar actividad de usuarios.
+     * Se ejecuta cada minuto mientras el usuario tiene la página abierta.
+     *
+     * @param array $response Datos de respuesta del heartbeat
+     * @param array $data Datos enviados desde el cliente
+     * @return array Respuesta modificada
+     */
+    public function heartbeat_received( $response, $data ): array {
+        if ( ! is_user_logged_in() || ! isset( $data['fplms_user_active'] ) ) {
+            return $response;
+        }
+
+        $user_id = get_current_user_id();
+        $current_time = current_time( 'mysql' );
+
+        // Actualizar actividad sin restricción de tiempo
+        update_user_meta( $user_id, 'last_activity', $current_time );
+
+        $response['fplms_activity_recorded'] = true;
+
+        return $response;
     }
 
     // ==========================
