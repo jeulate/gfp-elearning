@@ -7,6 +7,7 @@ class FairPlay_LMS_Config {
 
     // Taxonomías de estructuras
     public const TAX_CITY    = 'fplms_city';
+    public const TAX_COMPANY = 'fplms_company';
     public const TAX_CHANNEL = 'fplms_channel';
     public const TAX_BRANCH  = 'fplms_branch';
     public const TAX_ROLE    = 'fplms_job_role';
@@ -14,16 +15,18 @@ class FairPlay_LMS_Config {
     // Meta de términos (activo/inactivo)
     public const META_ACTIVE = 'fplms_active';
 
-    // Meta de términos para relaciones jerárquicas (Ciudad -> Canal -> Sucursal -> Cargo)
+    // Meta de términos para relaciones jerárquicas (Ciudad -> Empresa -> Canal -> Sucursal -> Cargo)
     public const META_TERM_PARENT_CITY    = 'fplms_parent_city';     // Para canales, sucursales, cargos (DEPRECATED)
     public const META_TERM_PARENT_CHANNEL = 'fplms_parent_channel';  // Para sucursales, cargos (DEPRECATED)
     public const META_TERM_PARENT_BRANCH  = 'fplms_parent_branch';   // Para cargos (DEPRECATED)
-    public const META_TERM_CITIES         = 'fplms_cities';          // Array JSON de ciudades (para canales)
+    public const META_TERM_CITIES         = 'fplms_cities';          // Array JSON de ciudades (para empresas)
+    public const META_TERM_COMPANIES      = 'fplms_companies';       // Array JSON de empresas (para canales)
     public const META_TERM_CHANNELS       = 'fplms_channels';        // Array JSON de canales (para sucursales)
     public const META_TERM_BRANCHES       = 'fplms_branches';        // Array JSON de sucursales (para cargos)
 
     // Meta en usuarios (link a estructuras)
     public const USER_META_CITY    = 'fplms_city';
+    public const USER_META_COMPANY = 'fplms_company';
     public const USER_META_CHANNEL = 'fplms_channel';
     public const USER_META_BRANCH  = 'fplms_branch';
     public const USER_META_ROLE    = 'fplms_job_role';
@@ -39,10 +42,11 @@ class FairPlay_LMS_Config {
     public const META_TOPIC_RESOURCE_TYPE = 'fplms_resource_type';
 
     // Meta de cursos para visibilidad por estructura
-    public const META_COURSE_CITIES   = 'fplms_course_cities';
-    public const META_COURSE_CHANNELS = 'fplms_course_channels';
-    public const META_COURSE_BRANCHES = 'fplms_course_branches';
-    public const META_COURSE_ROLES    = 'fplms_course_roles';
+    public const META_COURSE_CITIES    = 'fplms_course_cities';
+    public const META_COURSE_COMPANIES = 'fplms_course_companies';
+    public const META_COURSE_CHANNELS  = 'fplms_course_channels';
+    public const META_COURSE_BRANCHES  = 'fplms_course_branches';
+    public const META_COURSE_ROLES     = 'fplms_course_roles';
 
     // Opción para matriz de privilegios
     public const OPTION_CAP_MATRIX = 'fplms_capability_matrix';
@@ -54,9 +58,11 @@ class FairPlay_LMS_Config {
     public const MS_PT_QUIZ          = 'stm-quizzes';
     public const MS_META_COURSE_TEACHER = 'stm_lms_course_teacher';
 
-    // Roles propios
-    public const ROLE_STUDENT = 'fplms_student';
-    public const ROLE_TUTOR   = 'fplms_tutor';
+    // Roles propios (DEPRECATED - mantener por compatibilidad temporal)
+    // Los estudiantes ahora usan 'subscriber' (rol nativo WordPress/MasterStudy)
+    // Los docentes usan directamente 'stm_lms_instructor' (rol MasterStudy)
+    public const ROLE_STUDENT = 'fplms_student'; // @deprecated Use 'subscriber' instead
+    public const ROLE_TUTOR   = 'fplms_tutor';   // @deprecated Use 'stm_lms_instructor' instead
 
     // Capabilities del plugin
     public const CAP_MANAGE_STRUCTURES = 'fplms_manage_structures';

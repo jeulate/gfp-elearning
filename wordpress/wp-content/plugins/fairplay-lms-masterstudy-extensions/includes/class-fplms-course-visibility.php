@@ -78,12 +78,13 @@ class FairPlay_LMS_Course_Visibility_Service {
      * Obtiene las estructuras asignadas a un usuario.
      *
      * @param int $user_id ID del usuario.
-     * @return array Array con estructura: ['city' => id, 'channel' => id, 'branch' => id, 'role' => id].
+     * @return array Array con estructura: ['city' => id, 'company' => id, 'channel' => id, 'branch' => id, 'role' => id].
      */
     private function get_user_structures( int $user_id ): array {
 
         $structures = [
             'city'    => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CITY, true ),
+            'company' => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_COMPANY, true ),
             'channel' => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CHANNEL, true ),
             'branch'  => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_BRANCH, true ),
             'role'    => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ROLE, true ),
@@ -99,15 +100,16 @@ class FairPlay_LMS_Course_Visibility_Service {
      * Obtiene las estructuras asignadas a un curso.
      *
      * @param int $course_id ID del curso.
-     * @return array Array con estructura: ['cities' => [ids], 'channels' => [ids], 'branches' => [ids], 'roles' => [ids]].
+     * @return array Array con estructura: ['cities' => [ids], 'companies' => [ids], 'channels' => [ids], 'branches' => [ids], 'roles' => [ids]].
      */
     private function get_course_structures( int $course_id ): array {
 
         return [
-            'cities'   => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
-            'channels' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
-            'branches' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
-            'roles'    => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
+            'cities'    => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
+            'companies' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ),
+            'channels'  => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
+            'branches'  => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
+            'roles'     => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
         ];
     }
 
@@ -143,6 +145,7 @@ class FairPlay_LMS_Course_Visibility_Service {
         // Mapeo de claves: usuario vs curso
         $mapping = [
             'city'    => 'cities',
+            'company' => 'companies',
             'channel' => 'channels',
             'branch'  => 'branches',
             'role'    => 'roles',

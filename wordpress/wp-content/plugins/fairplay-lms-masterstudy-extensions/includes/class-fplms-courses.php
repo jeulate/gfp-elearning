@@ -223,7 +223,6 @@ class FairPlay_LMS_Courses_Controller {
             [
                 'role__in' => [
                     FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR,
-                    FairPlay_LMS_Config::ROLE_TUTOR,
                     'administrator',
                 ],
                 'number'   => 300,

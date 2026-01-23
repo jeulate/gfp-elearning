@@ -34,14 +34,16 @@ class FairPlay_LMS_Users_Controller {
         }
 
         $user_city    = get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_CITY, true );
+        $user_company = get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_COMPANY, true );
         $user_channel = get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_CHANNEL, true );
         $user_branch  = get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_BRANCH, true );
         $user_role    = get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_ROLE, true );
 
-        $cities   = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
-        $channels = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
-        $branches = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH );
-        $roles    = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE );
+        $cities    = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
+        $companies = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_COMPANY );
+        $channels  = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
+        $branches  = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH );
+        $roles     = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE );
         ?>
         <h2>Estructura organizacional FairPlay</h2>
         <table class="form-table">
@@ -52,6 +54,19 @@ class FairPlay_LMS_Users_Controller {
                         <option value="">— Sin asignar —</option>
                         <?php foreach ( $cities as $term_id => $name ) : ?>
                             <option value="<?php echo esc_attr( $term_id ); ?>" <?php selected( (int) $user_city, $term_id ); ?>>
+                                <?php echo esc_html( $name ); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </td>
+            </tr>
+            <tr>
+                <th><label for="fplms_company">Empresa</label></th>
+                <td>
+                    <select name="fplms_company" id="fplms_company">
+                        <option value="">— Sin asignar —</option>
+                        <?php foreach ( $companies as $term_id => $name ) : ?>
+                            <option value="<?php echo esc_attr( $term_id ); ?>" <?php selected( (int) $user_company, $term_id ); ?>>
                                 <?php echo esc_html( $name ); ?>
                             </option>
                         <?php endforeach; ?>
@@ -109,6 +124,7 @@ class FairPlay_LMS_Users_Controller {
 
         $fields = [
             'fplms_city'     => FairPlay_LMS_Config::USER_META_CITY,
+            'fplms_company'  => FairPlay_LMS_Config::USER_META_COMPANY,
             'fplms_channel'  => FairPlay_LMS_Config::USER_META_CHANNEL,
             'fplms_branch'   => FairPlay_LMS_Config::USER_META_BRANCH,
             'fplms_job_role' => FairPlay_LMS_Config::USER_META_ROLE,
@@ -262,9 +278,9 @@ class FairPlay_LMS_Users_Controller {
             return;
         }
 
+        // Roles válidos del sistema simplificado
         $roles_def = [
-            FairPlay_LMS_Config::ROLE_STUDENT,
-            FairPlay_LMS_Config::ROLE_TUTOR,
+            'subscriber',
             FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR,
             'administrator',
         ];
@@ -306,25 +322,28 @@ class FairPlay_LMS_Users_Controller {
             wp_die( 'No tienes permisos para acceder a esta sección.' );
         }
 
-        $cities   = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
-        $channels = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
-        $branches = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH );
-        $roles    = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE );
+        $cities    = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
+        $companies = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_COMPANY );
+        $channels  = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
+        $branches  = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH );
+        $roles     = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE );
 
         $filter_city    = isset( $_GET['fplms_filter_city'] ) ? absint( $_GET['fplms_filter_city'] ) : 0;
+        $filter_company = isset( $_GET['fplms_filter_company'] ) ? absint( $_GET['fplms_filter_company'] ) : 0;
         $filter_channel = isset( $_GET['fplms_filter_channel'] ) ? absint( $_GET['fplms_filter_channel'] ) : 0;
         $filter_branch  = isset( $_GET['fplms_filter_branch'] ) ? absint( $_GET['fplms_filter_branch'] ) : 0;
         $filter_role    = isset( $_GET['fplms_filter_role'] ) ? absint( $_GET['fplms_filter_role'] ) : 0;
 
-        $users  = $this->get_users_filtered_by_structure( $filter_city, $filter_channel, $filter_branch, $filter_role );
+        $users  = $this->get_users_filtered_by_structure( $filter_city, $filter_company, $filter_channel, $filter_branch, $filter_role );
         $matrix = FairPlay_LMS_Capabilities::get_matrix();
         $can_edit = current_user_can( 'manage_options' );
 
+        // Roles simplificados: 3 opciones con nombres en español
+        // Mapeo: Estudiante->subscriber (MasterStudy), Docente->stm_lms_instructor, Administrador->administrator
         $roles_def_labels = [
-            FairPlay_LMS_Config::ROLE_STUDENT => 'Alumno FairPlay (fplms_student)',
-            FairPlay_LMS_Config::ROLE_TUTOR   => 'Tutor FairPlay (fplms_tutor)',
-            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Instructor MasterStudy (stm_lms_instructor)',
-            'administrator'                   => 'Administrador (administrator)',
+            'subscriber'                      => 'Estudiante',
+            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Docente',
+            'administrator'                   => 'Administrador',
         ];
 
         $caps_def_labels = [
@@ -543,6 +562,17 @@ class FairPlay_LMS_Users_Controller {
                                     <option value="">Todas</option>
                                     <?php foreach ( $cities as $id => $name ) : ?>
                                         <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_city, $id ); ?>>
+                                            <?php echo esc_html( $name ); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="fplms-filter-field">
+                                <label for="fplms_filter_company">Empresa</label>
+                                <select name="fplms_filter_company" id="fplms_filter_company">
+                                    <option value="">Todas</option>
+                                    <?php foreach ( $companies as $id => $name ) : ?>
+                                        <option value="<?php echo esc_attr( $id ); ?>" <?php selected( $filter_company, $id ); ?>>
                                             <?php echo esc_html( $name ); ?>
                                         </option>
                                     <?php endforeach; ?>
@@ -947,28 +977,52 @@ class FairPlay_LMS_Users_Controller {
                         color: #666;
                     }
 
-                    .fplms-form-checkboxes {
-                        display: grid;
-                        grid-template-columns: 1fr 1fr;
-                        gap: 12px;
+                    /* Estilos especiales para el select de tipo de usuario */
+                    #fplms_user_role {
+                        padding: 12px 16px;
+                        font-size: 15px;
+                        font-weight: 600;
+                        color: #333;
+                        background: linear-gradient(to bottom, #ffffff 0%, #f8f9fa 100%);
+                        border: 2px solid #ddd;
+                        border-radius: 8px;
+                        cursor: pointer;
+                        transition: all 0.3s ease;
+                        appearance: none;
+                        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23333' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+                        background-repeat: no-repeat;
+                        background-position: right 12px center;
+                        padding-right: 36px;
+                    }
+
+                    #fplms_user_role:hover {
+                        border-color: #ff9800;
+                        background: linear-gradient(to bottom, #ffffff 0%, #fff8f0 100%);
+                    }
+
+                    #fplms_user_role:focus {
+                        outline: none;
+                        border-color: #ff9800;
+                        box-shadow: 0 0 0 4px rgba(255, 152, 0, 0.15);
+                        background: #ffffff;
+                    }
+
+                    #fplms_user_role option {
                         padding: 12px;
-                        background: #fafafa;
-                        border-radius: 6px;
+                        font-weight: 500;
+                    }
+
+                    /* Estilos deprecados de checkboxes - se mantienen por compatibilidad */
+                    .fplms-form-checkboxes {
+                        display: none;
                     }
 
                     .fplms-form-checkboxes label {
-                        display: flex;
-                        align-items: center;
-                        cursor: pointer;
-                        font-weight: normal;
-                        margin-bottom: 0;
+                        display: none;
                     }
 
                     .fplms-form-checkboxes input[type="checkbox"] {
-                        margin-right: 10px;
-                        cursor: pointer;
-                        width: 18px;
-                        height: 18px;
+                        display: none;
                         accent-color: #ff9800;
                     }
 
@@ -1106,38 +1160,51 @@ class FairPlay_LMS_Users_Controller {
                                         </select>
                                     </div>
                                     <div class="fplms-form-group">
-                                        <label for="fplms_channel">Canal / Franquicia</label>
-                                        <select name="fplms_channel" id="fplms_channel">
+                                        <label for="fplms_company">Empresa</label>
+                                        <select name="fplms_company" id="fplms_company">
                                             <option value="">— Sin asignar —</option>
                                         </select>
                                     </div>
                                 </div>
                                 <div class="fplms-form-row">
                                     <div class="fplms-form-group">
+                                        <label for="fplms_channel">Canal / Franquicia</label>
+                                        <select name="fplms_channel" id="fplms_channel">
+                                            <option value="">— Sin asignar —</option>
+                                        </select>
+                                    </div>
+                                    <div class="fplms-form-group">
                                         <label for="fplms_branch">Sucursal</label>
                                         <select name="fplms_branch" id="fplms_branch">
                                             <option value="">— Sin asignar —</option>
                                         </select>
                                     </div>
+                                </div>
+                                <div class="fplms-form-row">
                                     <div class="fplms-form-group">
                                         <label for="fplms_job_role">Cargo</label>
                                         <select name="fplms_job_role" id="fplms_job_role">
                                             <option value="">— Sin asignar —</option>
                                         </select>
                                     </div>
+                                    <div class="fplms-form-group"></div>
                                 </div>
                             </div>
 
                             <!-- Tipo de usuario -->
                             <div>
                                 <div class="fplms-form-section-title">Tipo de Usuario <span class="required">*</span></div>
-                                <div class="fplms-form-checkboxes">
-                                    <?php foreach ( $roles_def_labels as $role_key => $role_label ) : ?>
-                                        <label>
-                                            <input type="checkbox" name="fplms_roles[]" value="<?php echo esc_attr( $role_key ); ?>">
-                                            <?php echo esc_html( $role_label ); ?>
-                                        </label>
-                                    <?php endforeach; ?>
+                                <div class="fplms-form-row full">
+                                    <div class="fplms-form-group">
+                                        <select name="fplms_user_role" id="fplms_user_role" required>
+                                            <option value="">— Seleccionar tipo de usuario —</option>
+                                            <?php foreach ( $roles_def_labels as $role_key => $role_label ) : ?>
+                                                <option value="<?php echo esc_attr( $role_key ); ?>">
+                                                    <?php echo esc_html( $role_label ); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
                                 </div>
                             </div>
 
@@ -1187,14 +1254,15 @@ class FairPlay_LMS_Users_Controller {
                         });
                     }
 
-                    // CASCADA DE SELECTS: CIUDAD -> CANAL -> SUCURSAL -> CARGO
+                    // CASCADA DE SELECTS: CIUDAD -> EMPRESA -> CANAL -> SUCURSAL -> CARGO
                     const citySelect = document.getElementById('fplms_city');
+                    const companySelect = document.getElementById('fplms_company');
                     const channelSelect = document.getElementById('fplms_channel');
                     const branchSelect = document.getElementById('fplms_branch');
                     const jobRoleSelect = document.getElementById('fplms_job_role');
 
                     // Función para actualizar un select basado en otro
-                    function updateSelectOptions(parentSelect, childSelect, taxonomy) {
+                    function updateSelectOptions(parentSelect, childSelect, taxonomy, parentKey = 'city_id') {
                         if (!parentSelect || !childSelect) return;
 
                         parentSelect.addEventListener('change', function() {
@@ -1203,6 +1271,8 @@ class FairPlay_LMS_Users_Controller {
                             if (!parentValue) {
                                 // Si no hay selección, resetear a opciones iniciales
                                 childSelect.innerHTML = '<option value="">— Sin asignar —</option>';
+                                // Resetear selects descendientes
+                                resetDescendantSelects(childSelect);
                                 return;
                             }
 
@@ -1211,8 +1281,8 @@ class FairPlay_LMS_Users_Controller {
 
                             // Hacer petición AJAX
                             const formData = new FormData();
-                            formData.append('action', 'fplms_get_terms_by_city');
-                            formData.append('city_id', parentValue);
+                            formData.append('action', 'fplms_get_terms_by_parent');
+                            formData.append(parentKey, parentValue);
                             formData.append('taxonomy', taxonomy);
 
                             fetch(ajaxurl, {
@@ -1222,27 +1292,49 @@ class FairPlay_LMS_Users_Controller {
                             .then(response => response.json())
                             .then(data => {
                                 if (data.success && data.data) {
-                                    let html = '';
+                                    let html = '<option value="">— Sin asignar —</option>';
                                     for (const [termId, termName] of Object.entries(data.data)) {
                                         html += '<option value="' + termId + '">' + termName + '</option>';
                                     }
                                     childSelect.innerHTML = html;
                                 } else {
-                                    childSelect.innerHTML = '<option value="">Error al cargar opciones</option>';
+                                    childSelect.innerHTML = '<option value="">— Sin asignar —</option>';
                                 }
                             })
                             .catch(error => {
                                 console.error('Error:', error);
-                                childSelect.innerHTML = '<option value="">Error al cargar opciones</option>';
+                                childSelect.innerHTML = '<option value="">— Sin asignar —</option>';
                             });
                         });
                     }
 
+                    // Función para resetear selects descendientes
+                    function resetDescendantSelects(fromSelect) {
+                        const selectElements = [companySelect, channelSelect, branchSelect, jobRoleSelect];
+                        let shouldReset = false;
+                        
+                        for (const select of selectElements) {
+                            if (shouldReset && select) {
+                                select.innerHTML = '<option value="">— Sin asignar —</option>';
+                            }
+                            if (select === fromSelect) {
+                                shouldReset = true;
+                            }
+                        }
+                    }
+
                     // Configurar cascadas
-                    if (citySelect) {
-                        updateSelectOptions(citySelect, channelSelect, '<?php echo FairPlay_LMS_Config::TAX_CHANNEL; ?>');
-                        updateSelectOptions(citySelect, branchSelect, '<?php echo FairPlay_LMS_Config::TAX_BRANCH; ?>');
-                        updateSelectOptions(citySelect, jobRoleSelect, '<?php echo FairPlay_LMS_Config::TAX_ROLE; ?>');
+                    if (citySelect && companySelect) {
+                        updateSelectOptions(citySelect, companySelect, '<?php echo FairPlay_LMS_Config::TAX_COMPANY; ?>', 'city_id');
+                    }
+                    if (companySelect && channelSelect) {
+                        updateSelectOptions(companySelect, channelSelect, '<?php echo FairPlay_LMS_Config::TAX_CHANNEL; ?>', 'company_id');
+                    }
+                    if (channelSelect && branchSelect) {
+                        updateSelectOptions(channelSelect, branchSelect, '<?php echo FairPlay_LMS_Config::TAX_BRANCH; ?>', 'channel_id');
+                    }
+                    if (branchSelect && jobRoleSelect) {
+                        updateSelectOptions(branchSelect, jobRoleSelect, '<?php echo FairPlay_LMS_Config::TAX_ROLE; ?>', 'branch_id');
                     }
 
                     // MANEJO DE FOTOGRAFÍA
@@ -1300,6 +1392,7 @@ class FairPlay_LMS_Users_Controller {
      */
     public function get_users_filtered_by_structure(
         int $city_id,
+        int $company_id,
         int $channel_id,
         int $branch_id,
         int $role_id
@@ -1318,6 +1411,15 @@ class FairPlay_LMS_Users_Controller {
             $meta_query_clauses[] = [
                 'key'     => FairPlay_LMS_Config::USER_META_CITY,
                 'value'   => (string) $city_id,
+                'compare' => '=',
+                'type'    => 'NUMERIC',
+            ];
+        }
+
+        if ( $company_id ) {
+            $meta_query_clauses[] = [
+                'key'     => FairPlay_LMS_Config::USER_META_COMPANY,
+                'value'   => (string) $company_id,
                 'compare' => '=',
                 'type'    => 'NUMERIC',
             ];
@@ -1392,13 +1494,14 @@ class FairPlay_LMS_Users_Controller {
             $first_name = sanitize_text_field( wp_unslash( $_POST['fplms_first_name'] ?? '' ) );
             $last_name  = sanitize_text_field( wp_unslash( $_POST['fplms_last_name'] ?? '' ) );
             $city_id    = isset( $_POST['fplms_city'] ) ? absint( $_POST['fplms_city'] ) : 0;
+            $company_id = isset( $_POST['fplms_company'] ) ? absint( $_POST['fplms_company'] ) : 0;
             $channel_id = isset( $_POST['fplms_channel'] ) ? absint( $_POST['fplms_channel'] ) : 0;
             $branch_id  = isset( $_POST['fplms_branch'] ) ? absint( $_POST['fplms_branch'] ) : 0;
             $role_id    = isset( $_POST['fplms_job_role'] ) ? absint( $_POST['fplms_job_role'] ) : 0;
-            $user_roles = isset( $_POST['fplms_roles'] ) && is_array( $_POST['fplms_roles'] ) ? array_map( 'sanitize_text_field', wp_unslash( $_POST['fplms_roles'] ) ) : [];
+            $user_role  = isset( $_POST['fplms_user_role'] ) ? sanitize_text_field( wp_unslash( $_POST['fplms_user_role'] ) ) : '';
 
-            // Validar datos requeridos (nombre y apellido ahora también son requeridos)
-            if ( ! $user_login || ! $user_email || ! $user_pass || ! $first_name || ! $last_name ) {
+            // Validar datos requeridos (nombre, apellido y rol son requeridos)
+            if ( ! $user_login || ! $user_email || ! $user_pass || ! $first_name || ! $last_name || ! $user_role ) {
                 wp_safe_redirect(
                     add_query_arg(
                         [ 'page' => 'fplms-users', 'error' => 'incomplete_data' ],
@@ -1434,18 +1537,21 @@ class FairPlay_LMS_Users_Controller {
                 $this->handle_user_photo_upload( $user_id, $_FILES['fplms_user_photo'] );
             }
 
-            // Asignar roles - Remover "subscriber" automático de wp_create_user
+            // Asignar rol - Remover "subscriber" automático de wp_create_user
             $user = new WP_User( $user_id );
             // Remover rol "subscriber" que wp_create_user() asigna automáticamente
             $user->remove_role( 'subscriber' );
-            // Asignar solo los roles seleccionados
-            foreach ( $user_roles as $role ) {
-                $user->add_role( $role );
+            // Asignar el rol seleccionado
+            if ( $user_role ) {
+                $user->add_role( $user_role );
             }
 
             // Asignar estructuras
             if ( $city_id ) {
                 update_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CITY, $city_id );
+            }
+            if ( $company_id ) {
+                update_user_meta( $user_id, FairPlay_LMS_Config::USER_META_COMPANY, $company_id );
             }
             if ( $channel_id ) {
                 update_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CHANNEL, $channel_id );

@@ -117,6 +117,10 @@ class FairPlay_LMS_Plugin {
         // AJAX: Cargar dinámicamente términos filtrados por ciudad
         add_action( 'wp_ajax_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
         add_action( 'wp_ajax_nopriv_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
+        
+        // AJAX: Cargar términos filtrados por padre (sistema jerárquico completo)
+        add_action( 'wp_ajax_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
+        add_action( 'wp_ajax_nopriv_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
     }
 
     /**

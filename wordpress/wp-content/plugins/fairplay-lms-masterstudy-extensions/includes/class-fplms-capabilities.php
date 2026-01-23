@@ -10,29 +10,12 @@ class FairPlay_LMS_Capabilities {
      */
     public static function activate() {
 
-        // Rol Alumno
-        add_role(
-            FairPlay_LMS_Config::ROLE_STUDENT,
-            'Alumno FairPlay',
-            [
-                'read'                                 => true,
-                FairPlay_LMS_Config::CAP_VIEW_PROGRESS => true,
-                FairPlay_LMS_Config::CAP_VIEW_CALENDAR => true,
-            ]
-        );
-
-        // Rol Tutor
-        add_role(
-            FairPlay_LMS_Config::ROLE_TUTOR,
-            'Tutor FairPlay',
-            [
-                'read'                                 => true,
-                'edit_posts'                           => true,
-                FairPlay_LMS_Config::CAP_MANAGE_COURSES => true,
-                FairPlay_LMS_Config::CAP_VIEW_PROGRESS  => true,
-                FairPlay_LMS_Config::CAP_VIEW_CALENDAR  => true,
-            ]
-        );
+        // Subscriber (rol nativo WP/MasterStudy para estudiantes): agregar capabilities del plugin
+        $subscriber = get_role( 'subscriber' );
+        if ( $subscriber ) {
+            $subscriber->add_cap( FairPlay_LMS_Config::CAP_VIEW_PROGRESS );
+            $subscriber->add_cap( FairPlay_LMS_Config::CAP_VIEW_CALENDAR );
+        }
 
         // Administrador WP: asegurar capabilities del plugin
         $admin = get_role( 'administrator' );
@@ -42,10 +25,11 @@ class FairPlay_LMS_Capabilities {
             }
         }
 
-        // Instructor MasterStudy: capacidades mínimas del plugin
+        // Instructor MasterStudy (Docente): capacidades del plugin
         $ms_instructor_role = get_role( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR );
         if ( $ms_instructor_role ) {
             $ms_instructor_role->add_cap( FairPlay_LMS_Config::CAP_MANAGE_COURSES );
+            $ms_instructor_role->add_cap( FairPlay_LMS_Config::CAP_VIEW_REPORTS );
             $ms_instructor_role->add_cap( FairPlay_LMS_Config::CAP_VIEW_PROGRESS );
             $ms_instructor_role->add_cap( FairPlay_LMS_Config::CAP_VIEW_CALENDAR );
         }
@@ -70,10 +54,12 @@ class FairPlay_LMS_Capabilities {
 
     /**
      * Matriz de privilegios por defecto.
+     * Roles simplificados: subscriber (Estudiante), stm_lms_instructor (Docente), administrator
      */
     public static function get_default_capability_matrix(): array {
         return [
-            FairPlay_LMS_Config::ROLE_STUDENT => [
+            // Subscriber (Estudiante) - Rol nativo de WordPress usado por MasterStudy
+            'subscriber' => [
                 FairPlay_LMS_Config::CAP_MANAGE_STRUCTURES => false,
                 FairPlay_LMS_Config::CAP_MANAGE_USERS      => false,
                 FairPlay_LMS_Config::CAP_MANAGE_COURSES    => false,
@@ -81,22 +67,16 @@ class FairPlay_LMS_Capabilities {
                 FairPlay_LMS_Config::CAP_VIEW_PROGRESS     => true,
                 FairPlay_LMS_Config::CAP_VIEW_CALENDAR     => true,
             ],
-            FairPlay_LMS_Config::ROLE_TUTOR => [
-                FairPlay_LMS_Config::CAP_MANAGE_STRUCTURES => false,
-                FairPlay_LMS_Config::CAP_MANAGE_USERS      => false,
-                FairPlay_LMS_Config::CAP_MANAGE_COURSES    => true,
-                FairPlay_LMS_Config::CAP_VIEW_REPORTS      => false,
-                FairPlay_LMS_Config::CAP_VIEW_PROGRESS     => true,
-                FairPlay_LMS_Config::CAP_VIEW_CALENDAR     => true,
-            ],
+            // Instructor MasterStudy (Docente)
             FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => [
                 FairPlay_LMS_Config::CAP_MANAGE_STRUCTURES => false,
                 FairPlay_LMS_Config::CAP_MANAGE_USERS      => false,
                 FairPlay_LMS_Config::CAP_MANAGE_COURSES    => true,
-                FairPlay_LMS_Config::CAP_VIEW_REPORTS      => false,
+                FairPlay_LMS_Config::CAP_VIEW_REPORTS      => true,
                 FairPlay_LMS_Config::CAP_VIEW_PROGRESS     => true,
                 FairPlay_LMS_Config::CAP_VIEW_CALENDAR     => true,
             ],
+            // Administrador
             'administrator' => [
                 FairPlay_LMS_Config::CAP_MANAGE_STRUCTURES => true,
                 FairPlay_LMS_Config::CAP_MANAGE_USERS      => true,

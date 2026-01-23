@@ -103,10 +103,10 @@ class FairPlay_LMS_Progress_Service {
             'total_users' => 0,
         ];
 
-        // Por defecto solo consideramos alumnos FairPlay
+        // Por defecto solo consideramos estudiantes (subscribers)
         $query = new WP_User_Query(
             [
-                'role'   => FairPlay_LMS_Config::ROLE_STUDENT,
+                'role'   => 'subscriber',
                 'number' => 1000,
             ]
         );
