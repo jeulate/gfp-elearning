@@ -23,6 +23,12 @@ class FairPlay_LMS_Config {
     public const META_TERM_COMPANIES      = 'fplms_companies';       // Array JSON de empresas (para canales)
     public const META_TERM_CHANNELS       = 'fplms_channels';        // Array JSON de canales (para sucursales)
     public const META_TERM_BRANCHES       = 'fplms_branches';        // Array JSON de sucursales (para cargos)
+    
+    // Aliases para relaciones jerárquicas (más explícitas)
+    public const META_COMPANY_CITIES    = 'fplms_cities';      // Array de IDs de ciudades asociadas a una empresa
+    public const META_CHANNEL_COMPANIES = 'fplms_companies';   // Array de IDs de empresas asociadas a un canal
+    public const META_BRANCH_CHANNELS   = 'fplms_channels';    // Array de IDs de canales asociados a una sucursal
+    public const META_ROLE_BRANCHES     = 'fplms_branches';    // Array de IDs de sucursales asociadas a un cargo
 
     // Meta en usuarios (link a estructuras)
     public const USER_META_CITY    = 'fplms_city';
@@ -48,15 +54,19 @@ class FairPlay_LMS_Config {
     public const META_COURSE_BRANCHES  = 'fplms_course_branches';
     public const META_COURSE_ROLES     = 'fplms_course_roles';
 
+    // Meta para lecciones asignadas a cursos
+    public const META_COURSE_LESSONS = 'fplms_course_lessons'; // Array de IDs de lecciones
+
     // Opción para matriz de privilegios
     public const OPTION_CAP_MATRIX = 'fplms_capability_matrix';
 
     // Config MasterStudy – centralizamos aquí para facilitar cambios futuros
-    public const MS_ROLE_INSTRUCTOR  = 'stm_lms_instructor';
-    public const MS_PT_COURSE        = 'stm-courses';
-    public const MS_PT_LESSON        = 'stm-lessons';
-    public const MS_PT_QUIZ          = 'stm-quizzes';
+    public const MS_ROLE_INSTRUCTOR     = 'stm_lms_instructor';
+    public const MS_PT_COURSE           = 'stm-courses';
+    public const MS_PT_LESSON           = 'stm-lessons';
+    public const MS_PT_QUIZ             = 'stm-quizzes';
     public const MS_META_COURSE_TEACHER = 'stm_lms_course_teacher';
+    public const MS_META_CURRICULUM     = 'curriculum'; // Meta key para el curriculum de MasterStudy
 
     // Roles propios (DEPRECATED - mantener por compatibilidad temporal)
     // Los estudiantes ahora usan 'subscriber' (rol nativo WordPress/MasterStudy)

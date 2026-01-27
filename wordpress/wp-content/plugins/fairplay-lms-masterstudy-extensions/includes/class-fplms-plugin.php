@@ -45,16 +45,22 @@ class FairPlay_LMS_Plugin {
      */
     private $menu;
 
+    /**
+     * @var FairPlay_LMS_Course_Display
+     */
+    private $course_display;
+
     public function __construct() {
 
-        $this->structures = new FairPlay_LMS_Structures_Controller();
-        $this->progress   = new FairPlay_LMS_Progress_Service();
-        $this->users      = new FairPlay_LMS_Users_Controller( $this->structures, $this->progress );
-        $this->courses    = new FairPlay_LMS_Courses_Controller( $this->structures );
-        $this->visibility = new FairPlay_LMS_Course_Visibility_Service();
-        $this->reports    = new FairPlay_LMS_Reports_Controller( $this->users, $this->structures, $this->progress );
-        $this->pages      = new FairPlay_LMS_Admin_Pages();
-        $this->menu       = new FairPlay_LMS_Admin_Menu(
+        $this->structures     = new FairPlay_LMS_Structures_Controller();
+        $this->progress       = new FairPlay_LMS_Progress_Service();
+        $this->users          = new FairPlay_LMS_Users_Controller( $this->structures, $this->progress );
+        $this->courses        = new FairPlay_LMS_Courses_Controller( $this->structures );
+        $this->visibility     = new FairPlay_LMS_Course_Visibility_Service();
+        $this->reports        = new FairPlay_LMS_Reports_Controller( $this->users, $this->structures, $this->progress );
+        $this->pages          = new FairPlay_LMS_Admin_Pages();
+        $this->course_display = new FairPlay_LMS_Course_Display();
+        $this->menu           = new FairPlay_LMS_Admin_Menu(
             $this->pages,
             $this->structures,
             $this->users,
@@ -113,6 +119,9 @@ class FairPlay_LMS_Plugin {
         // Filtrado de cursos por visibilidad de estructura
         add_filter( 'stm_lms_get_user_courses', [ $this->visibility, 'filter_courses_array' ], 10, 1 );
         add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
+
+        // Visualización de cursos en frontend (estructuras, ocultar ratings/estudiantes)
+        $this->course_display->register_hooks();
 
         // AJAX: Cargar dinámicamente términos filtrados por ciudad
         add_action( 'wp_ajax_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );

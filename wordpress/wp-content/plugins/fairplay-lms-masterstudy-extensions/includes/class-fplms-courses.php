@@ -183,6 +183,183 @@ class FairPlay_LMS_Courses_Controller {
             );
             exit;
         }
+
+        // Crear lección MasterStudy
+        if ( 'create_lesson' === $action && $course_id ) {
+            $this->handle_create_lesson( $course_id );
+        }
+
+        // Asignar lecciones a curso
+        if ( 'assign_lessons' === $action && $course_id ) {
+            $this->handle_assign_lessons( $course_id );
+        }
+
+        // Desasignar lección de curso
+        if ( 'unassign_lesson' === $action && $course_id ) {
+            $lesson_id = isset( $_POST['fplms_lesson_id'] ) ? absint( $_POST['fplms_lesson_id'] ) : 0;
+            if ( $lesson_id ) {
+                $this->unassign_lesson_from_course( $course_id, $lesson_id );
+            }
+            wp_safe_redirect(
+                add_query_arg(
+                    [
+                        'page'      => 'fplms-courses',
+                        'view'      => 'lessons',
+                        'course_id' => $course_id,
+                        'unassigned' => 1,
+                    ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
+        // Eliminar lección
+        if ( 'delete_lesson' === $action ) {
+            $lesson_id = isset( $_POST['fplms_lesson_id'] ) ? absint( $_POST['fplms_lesson_id'] ) : 0;
+            if ( $lesson_id ) {
+                wp_delete_post( $lesson_id, true );
+            }
+            wp_safe_redirect(
+                add_query_arg(
+                    [
+                        'page'      => 'fplms-courses',
+                        'view'      => 'lessons',
+                        'course_id' => $course_id,
+                    ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
+        // Crear sección en el curriculum
+        if ( 'create_section' === $action && $course_id ) {
+            $section_title = sanitize_text_field( wp_unslash( $_POST['section_title'] ?? '' ) );
+            
+            if ( $section_title ) {
+                $curriculum = get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, true );
+                if ( ! is_array( $curriculum ) ) {
+                    $curriculum = [];
+                }
+
+                // Agregar nueva sección al curriculum
+                $curriculum[] = [
+                    'title'     => $section_title,
+                    'materials' => [],
+                ];
+
+                update_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, $curriculum );
+            }
+
+            wp_safe_redirect(
+                add_query_arg(
+                    [
+                        'page'      => 'fplms-courses',
+                        'view'      => 'modules',
+                        'course_id' => $course_id,
+                        'created'   => 1,
+                    ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
+        // Agregar lecciones a una sección
+        if ( 'add_lessons_to_section' === $action && $course_id ) {
+            $section_index = isset( $_POST['section_index'] ) ? absint( $_POST['section_index'] ) : 0;
+            $lesson_ids = isset( $_POST['lesson_ids'] ) && is_array( $_POST['lesson_ids'] ) 
+                ? array_map( 'absint', $_POST['lesson_ids'] ) 
+                : [];
+
+            if ( ! empty( $lesson_ids ) ) {
+                $curriculum = get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, true );
+                
+                if ( is_array( $curriculum ) && isset( $curriculum[ $section_index ] ) ) {
+                    if ( ! isset( $curriculum[ $section_index ]['materials'] ) ) {
+                        $curriculum[ $section_index ]['materials'] = [];
+                    }
+
+                    // Agregar cada lección a los materiales de la sección
+                    foreach ( $lesson_ids as $lesson_id ) {
+                        $lesson = get_post( $lesson_id );
+                        if ( $lesson && FairPlay_LMS_Config::MS_PT_LESSON === $lesson->post_type ) {
+                            $curriculum[ $section_index ]['materials'][] = [
+                                'post_id' => $lesson_id,
+                                'title'   => $lesson->post_title,
+                            ];
+                        }
+                    }
+
+                    update_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, $curriculum );
+                }
+            }
+
+            wp_safe_redirect(
+                add_query_arg(
+                    [
+                        'page'      => 'fplms-courses',
+                        'view'      => 'modules',
+                        'course_id' => $course_id,
+                        'added'     => count( $lesson_ids ),
+                    ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
+        // Eliminar sección del curriculum
+        if ( 'delete_section' === $action && $course_id ) {
+            $section_index = isset( $_POST['section_index'] ) ? absint( $_POST['section_index'] ) : 0;
+
+            $curriculum = get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, true );
+            
+            if ( is_array( $curriculum ) && isset( $curriculum[ $section_index ] ) ) {
+                array_splice( $curriculum, $section_index, 1 );
+                update_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, $curriculum );
+            }
+
+            wp_safe_redirect(
+                add_query_arg(
+                    [
+                        'page'      => 'fplms-courses',
+                        'view'      => 'modules',
+                        'course_id' => $course_id,
+                        'deleted'   => 1,
+                    ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
+        // Remover material de una sección
+        if ( 'remove_material_from_section' === $action && $course_id ) {
+            $section_index = isset( $_POST['section_index'] ) ? absint( $_POST['section_index'] ) : 0;
+            $material_index = isset( $_POST['material_index'] ) ? absint( $_POST['material_index'] ) : 0;
+
+            $curriculum = get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, true );
+            
+            if ( is_array( $curriculum ) && isset( $curriculum[ $section_index ]['materials'][ $material_index ] ) ) {
+                array_splice( $curriculum[ $section_index ]['materials'], $material_index, 1 );
+                update_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, $curriculum );
+            }
+
+            wp_safe_redirect(
+                add_query_arg(
+                    [
+                        'page'      => 'fplms-courses',
+                        'view'      => 'modules',
+                        'course_id' => $course_id,
+                        'removed'   => 1,
+                    ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
     }
 
     /**
@@ -205,6 +382,8 @@ class FairPlay_LMS_Courses_Controller {
             $this->render_course_modules_view( $course_id );
         } elseif ( 'topics' === $view && $course_id && $module_id ) {
             $this->render_module_topics_view( $course_id, $module_id );
+        } elseif ( 'lessons' === $view && $course_id ) {
+            $this->render_course_lessons_view( $course_id );
         } elseif ( 'structures' === $view && $course_id ) {
             $this->render_course_structures_view( $course_id );
         } else {
@@ -244,105 +423,400 @@ class FairPlay_LMS_Courses_Controller {
             return;
         }
 
+        // Paginación
+        $paged = isset( $_GET['paged'] ) ? absint( $_GET['paged'] ) : 1;
+        $per_page = 10;
+        $offset = ( $paged - 1 ) * $per_page;
+
+        $total_courses = wp_count_posts( FairPlay_LMS_Config::MS_PT_COURSE );
+        $total_published = isset( $total_courses->publish ) ? (int) $total_courses->publish : 0;
+        $total_pages = ceil( $total_published / $per_page );
+
         $courses = get_posts(
             [
                 'post_type'      => FairPlay_LMS_Config::MS_PT_COURSE,
-                'posts_per_page' => 50,
+                'posts_per_page' => $per_page,
+                'offset'         => $offset,
                 'post_status'    => 'publish',
+                'orderby'        => 'date',
+                'order'          => 'DESC',
             ]
         );
 
-        if ( empty( $courses ) ) {
-            echo '<p>No hay cursos creados todavía.</p>';
-            return;
-        }
-
         $instructors = $this->get_available_instructors();
+        
+        // Estilos CSS para diseño minimalista
         ?>
-        <p><strong>Nota:</strong> Haz clic en "Gestionar estructuras" para asignar a qué estructuras será visible cada curso.</p>
-        <table class="widefat striped">
-            <thead>
-                <tr>
-                    <th>Curso</th>
-                    <th>ID</th>
-                    <th>Profesor actual</th>
-                    <th>Estructuras asignadas</th>
-                    <th>Asignar / cambiar profesor</th>
-                    <th>Acciones</th>
-                </tr>
-            </thead>
-            <tbody>
-            <?php foreach ( $courses as $course ) : ?>
-                <?php
-                $modules_url = add_query_arg(
-                    [
-                        'page'      => 'fplms-courses',
-                        'view'      => 'modules',
-                        'course_id' => $course->ID,
-                    ],
-                    admin_url( 'admin.php' )
-                );
+        <style>
+            .fplms-courses-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 20px;
+                padding: 15px 0;
+                border-bottom: 2px solid #2271b1;
+            }
+            .fplms-create-course-btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                background: #2271b1;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 4px;
+                text-decoration: none;
+                font-weight: 600;
+                transition: background 0.2s;
+            }
+            .fplms-create-course-btn:hover {
+                background: #135e96;
+                color: white;
+            }
+            .fplms-actions-compact {
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+            }
+            .fplms-action-btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 36px;
+                height: 36px;
+                padding: 0;
+                border: 1px solid #c3c4c7;
+                border-radius: 4px;
+                background: #fff;
+                color: #2c3338;
+                cursor: pointer;
+                transition: all 0.2s;
+                position: relative;
+                font-size: 16px;
+            }
+            .fplms-action-btn:hover {
+                background: #2271b1;
+                color: white;
+                border-color: #2271b1;
+                transform: translateY(-2px);
+            }
+            .fplms-action-btn .tooltip {
+                visibility: hidden;
+                position: absolute;
+                bottom: 100%;
+                left: 50%;
+                transform: translateX(-50%);
+                background: #1d2327;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-size: 12px;
+                white-space: nowrap;
+                margin-bottom: 8px;
+                opacity: 0;
+                transition: opacity 0.2s;
+                z-index: 1000;
+            }
+            .fplms-action-btn .tooltip::after {
+                content: '';
+                position: absolute;
+                top: 100%;
+                left: 50%;
+                transform: translateX(-50%);
+                border: 4px solid transparent;
+                border-top-color: #1d2327;
+            }
+            .fplms-action-btn:hover .tooltip {
+                visibility: visible;
+                opacity: 1;
+            }
+            .fplms-edit-btn {
+                background: #f0f0f1;
+            }
+            .fplms-edit-btn:hover {
+                background: #646970;
+                color: white;
+                border-color: #646970;
+            }
+            .fplms-instructor-form {
+                display: flex;
+                gap: 6px;
+                align-items: center;
+            }
+            .fplms-instructor-form select {
+                max-width: 200px;
+                font-size: 13px;
+            }
+            .fplms-instructor-form .button {
+                padding: 4px 12px;
+                height: 32px;
+                font-size: 13px;
+            }
+            .fplms-course-title {
+                font-weight: 600;
+                color: #2271b1;
+            }
+            .fplms-course-id {
+                color: #646970;
+                font-size: 0.9em;
+            }
+            .fplms-structures-tags {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+                font-size: 0.85em;
+            }
+            .fplms-structure-tag {
+                display: inline-block;
+                padding: 3px 8px;
+                background: #f0f0f1;
+                border-radius: 3px;
+                color: #2c3338;
+            }
+            .fplms-pagination {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                gap: 10px;
+                margin-top: 20px;
+                padding: 15px 0;
+            }
+            .fplms-pagination a,
+            .fplms-pagination span {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 36px;
+                height: 36px;
+                padding: 0 12px;
+                border: 1px solid #c3c4c7;
+                border-radius: 4px;
+                background: #fff;
+                color: #2c3338;
+                text-decoration: none;
+                transition: all 0.2s;
+            }
+            .fplms-pagination a:hover {
+                background: #2271b1;
+                color: white;
+                border-color: #2271b1;
+            }
+            .fplms-pagination .current {
+                background: #2271b1;
+                color: white;
+                border-color: #2271b1;
+                font-weight: 600;
+            }
+            .fplms-info-box {
+                background: #e7f5fe;
+                border-left: 4px solid #2271b1;
+                padding: 12px 16px;
+                margin-bottom: 20px;
+                border-radius: 4px;
+            }
+            .fplms-info-box p {
+                margin: 0;
+                color: #1d2327;
+            }
+            .fplms-table-minimal {
+                background: white;
+                border: 1px solid #c3c4c7;
+                border-radius: 4px;
+                overflow: hidden;
+            }
+            .fplms-table-minimal thead {
+                background: #f6f7f7;
+            }
+            .fplms-table-minimal th {
+                font-weight: 600;
+                font-size: 13px;
+                color: #1d2327;
+                padding: 12px;
+            }
+            .fplms-table-minimal td {
+                padding: 12px;
+                border-top: 1px solid #f0f0f1;
+                vertical-align: middle;
+            }
+            .fplms-empty-state {
+                text-align: center;
+                padding: 60px 20px;
+            }
+            .fplms-empty-state-icon {
+                font-size: 64px;
+                margin-bottom: 20px;
+                opacity: 0.3;
+            }
+            .fplms-empty-state h3 {
+                color: #646970;
+                margin-bottom: 10px;
+            }
+            .fplms-empty-state p {
+                color: #787c82;
+                margin-bottom: 20px;
+            }
+        </style>
 
-                $structures_url = add_query_arg(
-                    [
-                        'page'      => 'fplms-courses',
-                        'view'      => 'structures',
-                        'course_id' => $course->ID,
-                    ],
-                    admin_url( 'admin.php' )
-                );
+        <div class="fplms-courses-header">
+            <div>
+                <h2 style="margin: 0;">📚 Cursos MasterStudy</h2>
+                <p style="margin: 5px 0 0 0; color: #646970;">
+                    <?php echo esc_html( $total_published ); ?> curso<?php echo $total_published !== 1 ? 's' : ''; ?> encontrado<?php echo $total_published !== 1 ? 's' : ''; ?>
+                </p>
+            </div>
+            <a href="<?php echo esc_url( admin_url( 'post-new.php?post_type=' . FairPlay_LMS_Config::MS_PT_COURSE ) ); ?>" class="fplms-create-course-btn">
+                <span style="font-size: 18px;">➕</span>
+                <span>Crear Nuevo Curso</span>
+            </a>
+        </div>
 
-                $teacher_id   = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
-                $teacher_name = $teacher_id ? get_the_author_meta( 'display_name', $teacher_id ) : '';
-                if ( ! $teacher_name ) {
-                    $teacher_name = '— Sin asignar —';
-                }
+        <?php if ( empty( $courses ) ) : ?>
+            <div class="fplms-empty-state">
+                <div class="fplms-empty-state-icon">📚</div>
+                <h3>No hay cursos creados todavía</h3>
+                <p>Crea tu primer curso para comenzar a organizar tu contenido educativo.</p>
+                <a href="<?php echo esc_url( admin_url( 'post-new.php?post_type=' . FairPlay_LMS_Config::MS_PT_COURSE ) ); ?>" class="button button-primary button-hero">
+                    ➕ Crear Primer Curso
+                </a>
+            </div>
+        <?php else : ?>
+            <div class="fplms-info-box">
+                <p><strong>💡 Consejo:</strong> Usa los iconos de acción para gestionar cada curso. Puedes administrar módulos, lecciones, estructuras y editar el contenido.</p>
+            </div>
 
-                // Obtener y formatear estructuras del curso
-                $course_structures = $this->get_course_structures( $course->ID );
-                $structures_display = $this->format_course_structures_display( $course_structures );
-                ?>
-                <tr>
-                    <td><?php echo esc_html( get_the_title( $course ) ); ?></td>
-                    <td><?php echo esc_html( $course->ID ); ?></td>
-                    <td><?php echo esc_html( $teacher_name ); ?></td>
-                    <td style="font-size: 0.9em; line-height: 1.6;">
-                        <?php echo wp_kses_post( $structures_display ); ?>
-                    </td>
-                    <td>
-                        <form method="post" style="display:flex; gap:4px; align-items:center;">
-                            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
-                            <input type="hidden" name="fplms_courses_action" value="assign_instructor">
-                            <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course->ID ); ?>">
+            <table class="widefat striped fplms-table-minimal">
+                <thead>
+                    <tr>
+                        <th style="width: 30%;">Curso</th>
+                        <th style="width: 15%;">Profesor</th>
+                        <th style="width: 25%;">Estructuras</th>
+                        <th style="width: 15%;">Asignar Profesor</th>
+                        <th style="width: 15%;">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php foreach ( $courses as $course ) : ?>
+                    <?php
+                    $modules_url = add_query_arg(
+                        [
+                            'page'      => 'fplms-courses',
+                            'view'      => 'modules',
+                            'course_id' => $course->ID,
+                        ],
+                        admin_url( 'admin.php' )
+                    );
 
-                            <select name="fplms_instructor_id">
-                                <option value="0">— Sin profesor —</option>
-                                <?php foreach ( $instructors as $user ) : ?>
-                                    <option value="<?php echo esc_attr( $user->ID ); ?>" <?php selected( $teacher_id, $user->ID ); ?>>
-                                        <?php echo esc_html( $user->display_name . ' (' . implode( ', ', $user->roles ) . ')' ); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
+                    $lessons_url = add_query_arg(
+                        [
+                            'page'      => 'fplms-courses',
+                            'view'      => 'lessons',
+                            'course_id' => $course->ID,
+                        ],
+                        admin_url( 'admin.php' )
+                    );
 
-                            <button type="submit" class="button button-primary">
-                                Guardar
-                            </button>
-                        </form>
-                    </td>
-                    <td>
-                        <a href="<?php echo esc_url( $modules_url ); ?>" class="button">Gestionar módulos</a>
-                        <a href="<?php echo esc_url( $structures_url ); ?>" class="button">Gestionar estructuras</a>
-                        <a href="<?php echo esc_url( get_edit_post_link( $course->ID ) ); ?>" class="button-secondary">Editar curso (MasterStudy)</a>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
+                    $structures_url = add_query_arg(
+                        [
+                            'page'      => 'fplms-courses',
+                            'view'      => 'structures',
+                            'course_id' => $course->ID,
+                        ],
+                        admin_url( 'admin.php' )
+                    );
+
+                    $teacher_id   = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
+                    $teacher_name = $teacher_id ? get_the_author_meta( 'display_name', $teacher_id ) : '';
+                    if ( ! $teacher_name ) {
+                        $teacher_name = '— Sin asignar —';
+                    }
+
+                    // Obtener estructuras del curso
+                    $course_structures = $this->get_course_structures( $course->ID );
+                    ?>
+                    <tr>
+                        <td>
+                            <div class="fplms-course-title"><?php echo esc_html( get_the_title( $course ) ); ?></div>
+                            <div class="fplms-course-id">ID: <?php echo esc_html( $course->ID ); ?></div>
+                        </td>
+                        <td><?php echo esc_html( $teacher_name ); ?></td>
+                        <td>
+                            <div class="fplms-structures-tags">
+                                <?php echo wp_kses_post( $this->format_course_structures_compact( $course_structures ) ); ?>
+                            </div>
+                        </td>
+                        <td>
+                            <form method="post" class="fplms-instructor-form">
+                                <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                                <input type="hidden" name="fplms_courses_action" value="assign_instructor">
+                                <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course->ID ); ?>">
+
+                                <select name="fplms_instructor_id">
+                                    <option value="0">— Sin profesor —</option>
+                                    <?php foreach ( $instructors as $user ) : ?>
+                                        <option value="<?php echo esc_attr( $user->ID ); ?>" <?php selected( $teacher_id, $user->ID ); ?>>
+                                            <?php echo esc_html( $user->display_name ); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+
+                                <button type="submit" class="button button-primary button-small">💾</button>
+                            </form>
+                        </td>
+                        <td>
+                            <div class="fplms-actions-compact">
+                                <a href="<?php echo esc_url( $modules_url ); ?>" class="fplms-action-btn" title="Módulos">
+                                    📚
+                                    <span class="tooltip">Módulos</span>
+                                </a>
+                                <a href="<?php echo esc_url( $lessons_url ); ?>" class="fplms-action-btn" title="Lecciones">
+                                    📖
+                                    <span class="tooltip">Lecciones</span>
+                                </a>
+                                <a href="<?php echo esc_url( $structures_url ); ?>" class="fplms-action-btn" title="Estructuras">
+                                    🏢
+                                    <span class="tooltip">Estructuras</span>
+                                </a>
+                                <a href="<?php echo esc_url( get_edit_post_link( $course->ID ) ); ?>" class="fplms-action-btn fplms-edit-btn" title="Editar">
+                                    ✏️
+                                    <span class="tooltip">Editar Curso</span>
+                                </a>
+                            </div>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+
+            <?php if ( $total_pages > 1 ) : ?>
+                <div class="fplms-pagination">
+                    <?php if ( $paged > 1 ) : ?>
+                        <a href="<?php echo esc_url( add_query_arg( 'paged', $paged - 1 ) ); ?>">
+                            ← Anterior
+                        </a>
+                    <?php endif; ?>
+
+                    <?php for ( $i = 1; $i <= $total_pages; $i++ ) : ?>
+                        <?php if ( $i === $paged ) : ?>
+                            <span class="current"><?php echo esc_html( $i ); ?></span>
+                        <?php else : ?>
+                            <a href="<?php echo esc_url( add_query_arg( 'paged', $i ) ); ?>">
+                                <?php echo esc_html( $i ); ?>
+                            </a>
+                        <?php endif; ?>
+                    <?php endfor; ?>
+
+                    <?php if ( $paged < $total_pages ) : ?>
+                        <a href="<?php echo esc_url( add_query_arg( 'paged', $paged + 1 ) ); ?>">
+                            Siguiente →
+                        </a>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        <?php endif; ?>
         <?php
     }
 
     /**
-     * Vista de módulos por curso.
+     * Vista de gestión de módulos/secciones y lecciones del curriculum MasterStudy.
      */
     private function render_course_modules_view( int $course_id ): void {
 
@@ -354,92 +828,311 @@ class FairPlay_LMS_Courses_Controller {
 
         $back_url = add_query_arg( [ 'page' => 'fplms-courses' ], admin_url( 'admin.php' ) );
 
-        echo '<p><a href="' . esc_url( $back_url ) . '">&larr; Volver al listado de cursos</a></p>';
+        // Obtener curriculum actual
+        $curriculum = get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, true );
+        if ( ! is_array( $curriculum ) ) {
+            $curriculum = [];
+        }
 
-        echo '<h2>Curso: ' . esc_html( get_the_title( $course ) ) . ' (ID ' . esc_html( $course->ID ) . ')</h2>';
+        // Obtener todas las lecciones disponibles no asignadas
+        $all_lessons = $this->get_all_lessons();
+        $assigned_lesson_ids = [];
+        
+        // Recopilar IDs de lecciones ya asignadas
+        foreach ( $curriculum as $item ) {
+            if ( isset( $item['type'] ) && FairPlay_LMS_Config::MS_PT_LESSON === $item['type'] && isset( $item['id'] ) ) {
+                $assigned_lesson_ids[] = (int) $item['id'];
+            } elseif ( isset( $item['materials'] ) && is_array( $item['materials'] ) ) {
+                foreach ( $item['materials'] as $material ) {
+                    if ( isset( $material['post_id'] ) ) {
+                        $assigned_lesson_ids[] = (int) $material['post_id'];
+                    }
+                }
+            }
+        }
 
-        $modules = get_posts(
-            [
-                'post_type'   => FairPlay_LMS_Config::CPT_MODULE,
-                'meta_key'    => FairPlay_LMS_Config::META_MODULE_COURSE,
-                'meta_value'  => $course_id,
-                'numberposts' => -1,
-                'post_status' => 'publish',
-                'orderby'     => 'menu_order',
-                'order'       => 'ASC',
-            ]
-        );
+        $available_lessons = array_filter( $all_lessons, function( $lesson ) use ( $assigned_lesson_ids ) {
+            return ! in_array( $lesson->ID, $assigned_lesson_ids, true );
+        });
+
         ?>
-        <h3>Módulos del curso</h3>
-        <table class="widefat striped">
-            <thead>
-                <tr>
-                    <th>Título del módulo</th>
-                    <th>ID</th>
-                    <th>Resumen</th>
-                    <th>Temas</th>
-                </tr>
-            </thead>
-            <tbody>
-            <?php if ( ! empty( $modules ) ) : ?>
-                <?php foreach ( $modules as $module ) : ?>
-                    <?php
-                    $topics_url = add_query_arg(
-                        [
-                            'page'      => 'fplms-courses',
-                            'view'      => 'topics',
-                            'course_id' => $course_id,
-                            'module_id' => $module->ID,
-                        ],
-                        admin_url( 'admin.php' )
-                    );
-
-                    $topics_count = $this->count_topics_for_module( $module->ID );
-                    ?>
-                    <tr>
-                        <td>
-                            <a href="<?php echo esc_url( $topics_url ); ?>">
-                                <?php echo esc_html( get_the_title( $module ) ); ?>
-                            </a>
-                        </td>
-                        <td><?php echo esc_html( $module->ID ); ?></td>
-                        <td><?php echo wp_kses_post( wp_trim_words( $module->post_content, 25 ) ); ?></td>
-                        <td><?php echo esc_html( $topics_count ); ?></td>
-                    </tr>
-                <?php endforeach; ?>
-            <?php else : ?>
-                <tr>
-                    <td colspan="4">No hay módulos creados todavía para este curso.</td>
-                </tr>
-            <?php endif; ?>
-            </tbody>
-        </table>
-
-        <h3 style="margin-top:2em;">Crear nuevo módulo</h3>
-        <form method="post">
-            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
-            <input type="hidden" name="fplms_courses_action" value="create_module">
-            <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
-
-            <table class="form-table">
-                <tr>
-                    <th scope="row"><label for="fplms_module_title">Título del módulo</label></th>
-                    <td>
-                        <input name="fplms_module_title" id="fplms_module_title" type="text" class="regular-text" required>
-                    </td>
-                </tr>
-                <tr>
-                    <th scope="row"><label for="fplms_module_summary">Resumen</label></th>
-                    <td>
-                        <textarea name="fplms_module_summary" id="fplms_module_summary" class="large-text" rows="4"></textarea>
-                    </td>
-                </tr>
-            </table>
-
-            <p class="submit">
-                <button type="submit" class="button button-primary">Guardar módulo</button>
+        <div class="wrap">
+            <p><a href="<?php echo esc_url( $back_url ); ?>">&larr; Volver al listado de cursos</a></p>
+            
+            <h2>📚 Gestión de Curriculum: <?php echo esc_html( get_the_title( $course ) ); ?></h2>
+            <p class="description">
+                Organiza el contenido del curso en secciones y asigna lecciones a cada sección.
             </p>
-        </form>
+
+            <style>
+                .curriculum-builder { margin: 20px 0; }
+                .curriculum-section { 
+                    background: #fff;
+                    border: 1px solid #ccd0d4;
+                    border-radius: 4px;
+                    margin-bottom: 15px;
+                    padding: 15px;
+                }
+                .section-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding-bottom: 10px;
+                    border-bottom: 2px solid #f0f0f1;
+                    margin-bottom: 15px;
+                }
+                .section-title {
+                    font-size: 16px;
+                    font-weight: 600;
+                    color: #1d2327;
+                    margin: 0;
+                }
+                .section-actions {
+                    display: flex;
+                    gap: 8px;
+                }
+                .materials-list {
+                    list-style: none;
+                    margin: 0;
+                    padding: 0;
+                }
+                .material-item {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 10px;
+                    background: #f9f9f9;
+                    border-left: 3px solid #2271b1;
+                    margin-bottom: 8px;
+                    border-radius: 2px;
+                }
+                .material-item:hover {
+                    background: #f0f0f1;
+                }
+                .material-info {
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                    flex: 1;
+                }
+                .material-icon {
+                    font-size: 18px;
+                }
+                .material-title {
+                    font-weight: 500;
+                    color: #2271b1;
+                }
+                .material-meta {
+                    font-size: 12px;
+                    color: #646970;
+                }
+                .add-section-box,
+                .add-lesson-box {
+                    background: #f9f9f9;
+                    border: 2px dashed #c3c4c7;
+                    border-radius: 4px;
+                    padding: 20px;
+                    margin: 20px 0;
+                }
+                .lesson-select-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+                    gap: 10px;
+                    margin-top: 15px;
+                    max-height: 300px;
+                    overflow-y: auto;
+                    padding: 10px;
+                    background: #fff;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                }
+                .lesson-checkbox-label {
+                    display: flex;
+                    align-items: center;
+                    padding: 8px;
+                    background: #f9f9f9;
+                    border-radius: 3px;
+                    cursor: pointer;
+                }
+                .lesson-checkbox-label:hover {
+                    background: #e9e9e9;
+                }
+                .empty-curriculum {
+                    text-align: center;
+                    padding: 40px;
+                    color: #646970;
+                }
+            </style>
+
+            <div class="curriculum-builder">
+                <?php if ( empty( $curriculum ) ) : ?>
+                    <div class="empty-curriculum">
+                        <p>📝 El curriculum está vacío. Crea tu primera sección para comenzar.</p>
+                    </div>
+                <?php else : ?>
+                    <?php 
+                    $section_index = 0;
+                    foreach ( $curriculum as $index => $item ) : 
+                        if ( isset( $item['title'] ) ) :
+                            $section_index++;
+                            $is_section = ! isset( $item['type'] ) || '' === $item['type'];
+                            $materials = isset( $item['materials'] ) && is_array( $item['materials'] ) ? $item['materials'] : [];
+                    ?>
+                            <?php if ( $is_section ) : ?>
+                                <div class="curriculum-section">
+                                    <div class="section-header">
+                                        <h3 class="section-title">📂 <?php echo esc_html( $item['title'] ); ?></h3>
+                                        <div class="section-actions">
+                                            <form method="post" style="display:inline;" onsubmit="return confirm('¿Eliminar esta sección y todo su contenido?');">
+                                                <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                                                <input type="hidden" name="fplms_courses_action" value="delete_section">
+                                                <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+                                                <input type="hidden" name="section_index" value="<?php echo esc_attr( $index ); ?>">
+                                                <button type="submit" class="button button-small">🗑️ Eliminar</button>
+                                            </form>
+                                        </div>
+                                    </div>
+
+                                    <?php if ( ! empty( $materials ) ) : ?>
+                                        <ul class="materials-list">
+                                            <?php foreach ( $materials as $mat_index => $material ) : ?>
+                                                <?php 
+                                                $mat_id = isset( $material['post_id'] ) ? (int) $material['post_id'] : 0;
+                                                $mat_post = get_post( $mat_id );
+                                                if ( $mat_post ) :
+                                                    $mat_type = get_post_meta( $mat_id, 'type', true );
+                                                    $mat_duration = get_post_meta( $mat_id, 'duration', true );
+                                                    
+                                                    $icon = '📝';
+                                                    if ( 'video' === $mat_type ) $icon = '🎥';
+                                                    elseif ( 'slide' === $mat_type ) $icon = '📊';
+                                                    elseif ( 'stream' === $mat_type ) $icon = '📡';
+                                                    elseif ( 'zoom' === $mat_type ) $icon = '💻';
+                                                    elseif ( FairPlay_LMS_Config::MS_PT_QUIZ === $mat_post->post_type ) $icon = '❓';
+                                                ?>
+                                                    <li class="material-item">
+                                                        <div class="material-info">
+                                                            <span class="material-icon"><?php echo $icon; ?></span>
+                                                            <div>
+                                                                <div class="material-title"><?php echo esc_html( $mat_post->post_title ); ?></div>
+                                                                <div class="material-meta">
+                                                                    ID: <?php echo esc_html( $mat_id ); ?>
+                                                                    <?php if ( $mat_duration ) : ?>
+                                                                        | ⏱️ <?php echo esc_html( $mat_duration ); ?> min
+                                                                    <?php endif; ?>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <form method="post" style="display:inline;" onsubmit="return confirm('¿Eliminar esta lección de la sección?');">
+                                                            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                                                            <input type="hidden" name="fplms_courses_action" value="remove_material_from_section">
+                                                            <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+                                                            <input type="hidden" name="section_index" value="<?php echo esc_attr( $index ); ?>">
+                                                            <input type="hidden" name="material_index" value="<?php echo esc_attr( $mat_index ); ?>">
+                                                            <button type="submit" class="button button-small button-link-delete">❌</button>
+                                                        </form>
+                                                    </li>
+                                                <?php endif; ?>
+                                            <?php endforeach; ?>
+                                        </ul>
+                                    <?php else : ?>
+                                        <p style="color: #646970; font-style: italic;">Esta sección está vacía. Agrega lecciones abajo.</p>
+                                    <?php endif; ?>
+
+                                    <!-- Formulario para agregar lecciones a esta sección -->
+                                    <div class="add-lesson-box" style="margin-top: 15px;">
+                                        <form method="post">
+                                            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                                            <input type="hidden" name="fplms_courses_action" value="add_lessons_to_section">
+                                            <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+                                            <input type="hidden" name="section_index" value="<?php echo esc_attr( $index ); ?>">
+                                            
+                                            <h4>➕ Agregar Lecciones a esta Sección</h4>
+                                            
+                                            <?php if ( ! empty( $available_lessons ) ) : ?>
+                                                <div class="lesson-select-grid">
+                                                    <?php foreach ( $available_lessons as $lesson ) : ?>
+                                                        <label class="lesson-checkbox-label">
+                                                            <input type="checkbox" name="lesson_ids[]" value="<?php echo esc_attr( $lesson->ID ); ?>" style="margin-right: 8px;">
+                                                            <span>📝 <?php echo esc_html( $lesson->post_title ); ?></span>
+                                                        </label>
+                                                    <?php endforeach; ?>
+                                                </div>
+                                                <p class="submit" style="margin-top: 15px;">
+                                                    <button type="submit" class="button button-secondary">✅ Agregar Lecciones Seleccionadas</button>
+                                                </p>
+                                            <?php else : ?>
+                                                <p style="color: #646970;">No hay lecciones disponibles. Todas las lecciones están asignadas o no hay lecciones creadas.</p>
+                                            <?php endif; ?>
+                                        </form>
+                                    </div>
+                                </div>
+                            <?php else : ?>
+                                <!-- Lección suelta (sin sección) -->
+                                <?php
+                                $lesson_id = isset( $item['id'] ) ? (int) $item['id'] : 0;
+                                $lesson = get_post( $lesson_id );
+                                if ( $lesson ) :
+                                ?>
+                                    <div class="material-item" style="margin-bottom: 10px;">
+                                        <div class="material-info">
+                                            <span class="material-icon">📝</span>
+                                            <div>
+                                                <div class="material-title"><?php echo esc_html( $lesson->post_title ); ?></div>
+                                                <div class="material-meta">ID: <?php echo esc_html( $lesson_id ); ?> | Sin sección</div>
+                                            </div>
+                                        </div>
+                                        <form method="post" style="display:inline;" onsubmit="return confirm('¿Eliminar esta lección del curso?');">
+                                            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                                            <input type="hidden" name="fplms_courses_action" value="unassign_lesson">
+                                            <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+                                            <input type="hidden" name="lesson_id" value="<?php echo esc_attr( $lesson_id ); ?>">
+                                            <button type="submit" class="button button-small button-link-delete">❌</button>
+                                        </form>
+                                    </div>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        <?php 
+                        endif;
+                    endforeach; 
+                    ?>
+                <?php endif; ?>
+
+                <!-- Crear nueva sección -->
+                <div class="add-section-box">
+                    <form method="post">
+                        <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                        <input type="hidden" name="fplms_courses_action" value="create_section">
+                        <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+                        
+                        <h3>➕ Crear Nueva Sección</h3>
+                        <p class="description">Las secciones te permiten organizar las lecciones del curso en módulos o unidades temáticas.</p>
+                        
+                        <table class="form-table">
+                            <tr>
+                                <th scope="row">
+                                    <label for="section_title">Título de la Sección *</label>
+                                </th>
+                                <td>
+                                    <input 
+                                        type="text" 
+                                        name="section_title" 
+                                        id="section_title" 
+                                        class="regular-text" 
+                                        placeholder="Ej: Módulo 1, Introducción, etc."
+                                        required
+                                    >
+                                </td>
+                            </tr>
+                        </table>
+                        
+                        <p class="submit">
+                            <button type="submit" class="button button-primary">✅ Crear Sección</button>
+                        </p>
+                    </form>
+                </div>
+            </div>
+        </div>
         <?php
     }
 
@@ -624,22 +1317,24 @@ class FairPlay_LMS_Courses_Controller {
         $current_structures = $this->get_course_structures( $course_id );
 
         // Obtener términos activos
-        $cities   = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY ) : [];
-        $channels = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL ) : [];
-        $branches = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH ) : [];
-        $roles    = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE ) : [];
-        
-        // Obtener la ciudad seleccionada (si la hay)
-        $selected_city = ! empty( $current_structures['cities'] ) ? reset( $current_structures['cities'] ) : 0;
-        
-        // Si hay ciudad seleccionada, obtener canales, sucursales y cargos filtrados
-        if ( $selected_city ) {
-            $channels = $this->structures ? $this->structures->get_active_terms_by_city( FairPlay_LMS_Config::TAX_CHANNEL, $selected_city ) : [];
-            $branches = $this->structures ? $this->structures->get_active_terms_by_city( FairPlay_LMS_Config::TAX_BRANCH, $selected_city ) : [];
-            $roles    = $this->structures ? $this->structures->get_active_terms_by_city( FairPlay_LMS_Config::TAX_ROLE, $selected_city ) : [];
-        }
+        $cities    = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY ) : [];
+        $companies = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_COMPANY ) : [];
+        $channels  = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL ) : [];
+        $branches  = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH ) : [];
+        $roles     = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE ) : [];
         ?>
-        <p><strong>Nota:</strong> Si asignas una ciudad, el curso será visible para TODOS los canales, sucursales y cargos de esa ciudad, O selecciona específicamente cuáles podrán verlo.</p>
+        <div class="notice notice-info" style="padding: 15px; margin: 20px 0;">
+            <h3 style="margin-top: 0;">ℹ️ Lógica de asignación en cascada</h3>
+            <p><strong>Al asignar un curso a una estructura, automáticamente se asigna a todas las estructuras descendientes:</strong></p>
+            <ul style="margin-left: 20px;">
+                <li>📍 <strong>Ciudad</strong> → Se asigna a todas las empresas, canales, sucursales y cargos de esa ciudad</li>
+                <li>🏢 <strong>Empresa</strong> → Se asigna a todos los canales, sucursales y cargos de esa empresa</li>
+                <li>🏪 <strong>Canal</strong> → Se asigna a todas las sucursales y cargos de ese canal</li>
+                <li>🏢 <strong>Sucursal</strong> → Se asigna a todos los cargos de esa sucursal</li>
+                <li>👔 <strong>Cargo</strong> → Se asigna específicamente a ese cargo</li>
+            </ul>
+            <p><em>Los usuarios asignados a estas estructuras recibirán una notificación por correo electrónico.</em></p>
+        </div>
 
         <form method="post">
             <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
@@ -648,21 +1343,18 @@ class FairPlay_LMS_Courses_Controller {
 
             <table class="form-table">
                 <tr>
-                    <th scope="row"><label for="fplms_course_city_select">Ciudades</label></th>
+                    <th scope="row"><label>📍 Ciudades</label></th>
                     <td>
                         <?php if ( ! empty( $cities ) ) : ?>
                             <fieldset>
                                 <?php foreach ( $cities as $term_id => $term_name ) : ?>
-                                    <label>
+                                    <label style="display: block; margin: 5px 0;">
                                         <input type="checkbox" 
-                                               id="fplms_city_<?php echo esc_attr( $term_id ); ?>"
-                                               class="fplms-city-checkbox"
                                                name="fplms_course_cities[]" 
                                                value="<?php echo esc_attr( $term_id ); ?>" 
-                                               data-city-id="<?php echo esc_attr( $term_id ); ?>"
                                                <?php checked( in_array( $term_id, $current_structures['cities'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
-                                    </label><br>
+                                    </label>
                                 <?php endforeach; ?>
                             </fieldset>
                         <?php else : ?>
@@ -672,160 +1364,94 @@ class FairPlay_LMS_Courses_Controller {
                 </tr>
 
                 <tr>
-                    <th scope="row"><label for="fplms_course_channels">Canales / Franquicias</label></th>
+                    <th scope="row"><label>🏢 Empresas</label></th>
                     <td>
-                        <fieldset id="fplms_channels_fieldset">
-                            <?php if ( ! empty( $channels ) ) : ?>
+                        <?php if ( ! empty( $companies ) ) : ?>
+                            <fieldset>
+                                <?php foreach ( $companies as $term_id => $term_name ) : ?>
+                                    <label style="display: block; margin: 5px 0;">
+                                        <input type="checkbox" 
+                                               name="fplms_course_companies[]" 
+                                               value="<?php echo esc_attr( $term_id ); ?>" 
+                                               <?php checked( in_array( $term_id, $current_structures['companies'], true ) ); ?>>
+                                        <?php echo esc_html( $term_name ); ?>
+                                    </label>
+                                <?php endforeach; ?>
+                            </fieldset>
+                        <?php else : ?>
+                            <p><em>No hay empresas disponibles.</em></p>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+
+                <tr>
+                    <th scope="row"><label>🏪 Canales / Franquicias</label></th>
+                    <td>
+                        <?php if ( ! empty( $channels ) ) : ?>
+                            <fieldset>
                                 <?php foreach ( $channels as $term_id => $term_name ) : ?>
-                                    <label>
-                                        <input type="checkbox" name="fplms_course_channels[]" value="<?php echo esc_attr( $term_id ); ?>" 
-                                        <?php checked( in_array( $term_id, $current_structures['channels'], true ) ); ?>>
+                                    <label style="display: block; margin: 5px 0;">
+                                        <input type="checkbox" 
+                                               name="fplms_course_channels[]" 
+                                               value="<?php echo esc_attr( $term_id ); ?>" 
+                                               <?php checked( in_array( $term_id, $current_structures['channels'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
-                                    </label><br>
+                                    </label>
                                 <?php endforeach; ?>
-                            <?php else : ?>
-                                <p><em>Selecciona una ciudad para ver sus canales.</em></p>
-                            <?php endif; ?>
-                        </fieldset>
+                            </fieldset>
+                        <?php else : ?>
+                            <p><em>No hay canales disponibles.</em></p>
+                        <?php endif; ?>
                     </td>
                 </tr>
 
                 <tr>
-                    <th scope="row"><label for="fplms_course_branches">Sucursales</label></th>
+                    <th scope="row"><label>🏢 Sucursales</label></th>
                     <td>
-                        <fieldset id="fplms_branches_fieldset">
-                            <?php if ( ! empty( $branches ) ) : ?>
+                        <?php if ( ! empty( $branches ) ) : ?>
+                            <fieldset>
                                 <?php foreach ( $branches as $term_id => $term_name ) : ?>
-                                    <label>
-                                        <input type="checkbox" name="fplms_course_branches[]" value="<?php echo esc_attr( $term_id ); ?>" 
-                                        <?php checked( in_array( $term_id, $current_structures['branches'], true ) ); ?>>
+                                    <label style="display: block; margin: 5px 0;">
+                                        <input type="checkbox" 
+                                               name="fplms_course_branches[]" 
+                                               value="<?php echo esc_attr( $term_id ); ?>" 
+                                               <?php checked( in_array( $term_id, $current_structures['branches'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
-                                    </label><br>
+                                    </label>
                                 <?php endforeach; ?>
-                            <?php else : ?>
-                                <p><em>Selecciona una ciudad para ver sus sucursales.</em></p>
-                            <?php endif; ?>
-                        </fieldset>
+                            </fieldset>
+                        <?php else : ?>
+                            <p><em>No hay sucursales disponibles.</em></p>
+                        <?php endif; ?>
                     </td>
                 </tr>
 
                 <tr>
-                    <th scope="row"><label for="fplms_course_roles">Cargos</label></th>
+                    <th scope="row"><label>👔 Cargos</label></th>
                     <td>
-                        <fieldset id="fplms_roles_fieldset">
-                            <?php if ( ! empty( $roles ) ) : ?>
+                        <?php if ( ! empty( $roles ) ) : ?>
+                            <fieldset>
                                 <?php foreach ( $roles as $term_id => $term_name ) : ?>
-                                    <label>
-                                        <input type="checkbox" name="fplms_course_roles[]" value="<?php echo esc_attr( $term_id ); ?>" 
-                                        <?php checked( in_array( $term_id, $current_structures['roles'], true ) ); ?>>
+                                    <label style="display: block; margin: 5px 0;">
+                                        <input type="checkbox" 
+                                               name="fplms_course_roles[]" 
+                                               value="<?php echo esc_attr( $term_id ); ?>" 
+                                               <?php checked( in_array( $term_id, $current_structures['roles'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
-                                    </label><br>
+                                    </label>
                                 <?php endforeach; ?>
-                            <?php else : ?>
-                                <p><em>Selecciona una ciudad para ver sus cargos.</em></p>
-                            <?php endif; ?>
-                        </fieldset>
+                            </fieldset>
+                        <?php else : ?>
+                            <p><em>No hay cargos disponibles.</em></p>
+                        <?php endif; ?>
                     </td>
                 </tr>
             </table>
 
             <p class="submit">
-                <button type="submit" class="button button-primary">Guardar estructuras</button>
+                <button type="submit" class="button button-primary">💾 Guardar estructuras y notificar usuarios</button>
             </p>
         </form>
-
-        <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
-            const cityCheckboxes = document.querySelectorAll('.fplms-city-checkbox');
-
-            cityCheckboxes.forEach(function(checkbox) {
-                checkbox.addEventListener('change', function() {
-                    const cityId = this.value;
-                    
-                    if ( ! this.checked ) {
-                        return;
-                    }
-                    // Cargar dinámicamente canales, sucursales y cargos
-                    const taxonomies = ['<?php echo FairPlay_LMS_Config::TAX_CHANNEL; ?>', '<?php echo FairPlay_LMS_Config::TAX_BRANCH; ?>', '<?php echo FairPlay_LMS_Config::TAX_ROLE; ?>'];
-                    const fieldsetIds = ['fplms_channels_fieldset', 'fplms_branches_fieldset', 'fplms_roles_fieldset'];
-                    const nonce = '<?php echo wp_create_nonce( 'fplms_get_terms' ); ?>';
-
-                    taxonomies.forEach(function(taxonomy, index) {
-                        const formData = new FormData();
-                        formData.append('action', 'fplms_get_terms_by_city');
-                        formData.append('city_id', cityId);
-                        formData.append('taxonomy', taxonomy);
-                        formData.append('nonce', nonce);
-
-                        fetch(ajaxUrl, {
-                            method: 'POST',
-                            body: formData,
-                            headers: {
-                                'X-Requested-With': 'XMLHttpRequest'
-                            }
-                        })
-                        .then(response => {
-                            if (!response.ok) throw new Error('Network response was not ok');
-                            return response.json();
-                        })
-                        .then(data => {
-                            const fieldset = document.getElementById(fieldsetIds[index]);
-                            let html = '';
-
-                            if (data.success && data.data) {
-                                for (const [termId, termName] of Object.entries(data.data)) {
-                                    if (termId === '') continue;
-                                    
-                                    // Determinar el nombre correcto del input según taxonomía
-                                    let inputName = 'fplms_course_';
-                                    if (taxonomy === '<?php echo FairPlay_LMS_Config::TAX_CHANNEL; ?>') {
-                                        inputName += 'channels[]';
-                                    } else if (taxonomy === '<?php echo FairPlay_LMS_Config::TAX_BRANCH; ?>') {
-                                        inputName += 'branches[]';
-                                    } else if (taxonomy === '<?php echo FairPlay_LMS_Config::TAX_ROLE; ?>') {
-                                        inputName += 'roles[]';
-                                    }
-                                    
-                                    html += '<label style="display: block; margin: 5px 0;"><input type="checkbox" name="' + inputName + '" value="' + termId + '"> ' + escapeHtml(termName) + '</label>';
-                                }
-                            }
-
-                            if (html === '') {
-                                html = '<p><em>No hay opciones disponibles para esta ciudad.</em></p>';
-                            }
-
-                            fieldset.innerHTML = html;
-                        })
-                        .catch(error => {
-                            console.error('Error al cargar estructuras:', error);
-                            const fieldset = document.getElementById(fieldsetIds[index]);
-                            fieldset.innerHTML = '<p><em style="color: red;">Error al cargar opciones. Intenta de nuevo.</em></p>';
-                        });
-                    });
-                });
-            });
-
-            // Función auxiliar para escapar HTML
-            function escapeHtml(unsafe) {
-                return unsafe
-                    .replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;")
-                    .replace(/"/g, "&quot;")
-                    .replace(/'/g, "&#039;");
-            }
-
-            // Al cargar, si hay ciudades seleccionadas, cargar sus estructuras
-            const selectedCities = Array.from(document.querySelectorAll('.fplms-city-checkbox')).filter(cb => cb.checked);
-            if (selectedCities.length > 0) {
-                const firstCity = selectedCities[0];
-                // Simular cambio para cargar datos
-                const event = new Event('change');
-                firstCity.dispatchEvent(event);
-            }
-        });
-        </script>
         <?php
     }
 
@@ -867,18 +1493,28 @@ class FairPlay_LMS_Courses_Controller {
     }
 
     /**
-     * Guarda las estructuras asignadas a un curso.
+     * Guarda las estructuras asignadas a un curso con cascada jerárquica.
      */
     private function save_course_structures( int $course_id ): void {
-        $cities   = isset( $_POST['fplms_course_cities'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_cities'] ) ) : [];
-        $channels = isset( $_POST['fplms_course_channels'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_channels'] ) ) : [];
-        $branches = isset( $_POST['fplms_course_branches'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_branches'] ) ) : [];
-        $roles    = isset( $_POST['fplms_course_roles'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_roles'] ) ) : [];
+        // Obtener estructuras enviadas desde el formulario
+        $cities    = isset( $_POST['fplms_course_cities'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_cities'] ) ) : [];
+        $companies = isset( $_POST['fplms_course_companies'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_companies'] ) ) : [];
+        $channels  = isset( $_POST['fplms_course_channels'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_channels'] ) ) : [];
+        $branches  = isset( $_POST['fplms_course_branches'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_branches'] ) ) : [];
+        $roles     = isset( $_POST['fplms_course_roles'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_course_roles'] ) ) : [];
 
-        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, $cities );
-        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, $channels );
-        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, $branches );
-        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, $roles );
+        // Aplicar lógica de cascada: si se selecciona un nivel superior, automáticamente se incluyen todos los inferiores
+        $cascaded_structures = $this->apply_cascade_logic( $cities, $companies, $channels, $branches, $roles );
+
+        // Guardar estructuras
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, $cascaded_structures['cities'] );
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, $cascaded_structures['companies'] );
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, $cascaded_structures['channels'] );
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, $cascaded_structures['branches'] );
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, $cascaded_structures['roles'] );
+
+        // Enviar notificaciones por correo a los usuarios afectados
+        $this->send_course_assignment_notifications( $course_id, $cascaded_structures );
     }
 
     /**
@@ -886,17 +1522,81 @@ class FairPlay_LMS_Courses_Controller {
      */
     public function get_course_structures( int $course_id ): array {
         return [
-            'cities'   => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
-            'channels' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
-            'branches' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
-            'roles'    => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
+            'cities'    => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
+            'companies' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ),
+            'channels'  => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
+            'branches'  => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
+            'roles'     => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
         ];
+    }
+
+    /**
+     * Formatea las estructuras de un curso para mostrarlas de manera compacta con tags.
+     * 
+     * @param array $structures Array con estructura: ['cities' => [ids], 'companies' => [ids], 'channels' => [ids], 'branches' => [ids], 'roles' => [ids]].
+     * @return string HTML formateado para mostrar.
+     */
+    private function format_course_structures_compact( array $structures ): string {
+        $tags = [];
+
+        // Ciudades
+        if ( ! empty( $structures['cities'] ) ) {
+            $city_names = $this->get_term_names_by_ids( $structures['cities'] );
+            foreach ( $city_names as $name ) {
+                $tags[] = '<span class="fplms-structure-tag">📍 ' . esc_html( $name ) . '</span>';
+            }
+        }
+
+        // Empresas
+        if ( ! empty( $structures['companies'] ) ) {
+            $company_names = $this->get_term_names_by_ids( $structures['companies'] );
+            foreach ( $company_names as $name ) {
+                $tags[] = '<span class="fplms-structure-tag">🏢 ' . esc_html( $name ) . '</span>';
+            }
+        }
+
+        // Canales
+        if ( ! empty( $structures['channels'] ) ) {
+            $channel_names = $this->get_term_names_by_ids( $structures['channels'] );
+            foreach ( $channel_names as $name ) {
+                $tags[] = '<span class="fplms-structure-tag">🏪 ' . esc_html( $name ) . '</span>';
+            }
+        }
+
+        // Sucursales
+        if ( ! empty( $structures['branches'] ) ) {
+            $branch_names = $this->get_term_names_by_ids( $structures['branches'] );
+            foreach ( $branch_names as $name ) {
+                $tags[] = '<span class="fplms-structure-tag">🏢 ' . esc_html( $name ) . '</span>';
+            }
+        }
+
+        // Cargos
+        if ( ! empty( $structures['roles'] ) ) {
+            $role_names = $this->get_term_names_by_ids( $structures['roles'] );
+            foreach ( $role_names as $name ) {
+                $tags[] = '<span class="fplms-structure-tag">👔 ' . esc_html( $name ) . '</span>';
+            }
+        }
+
+        if ( empty( $tags ) ) {
+            return '<span class="fplms-structure-tag" style="background: #e7f5fe; color: #2271b1;">🌐 Sin restricción</span>';
+        }
+
+        // Limitar a 3 tags + "y X más" si hay muchos
+        if ( count( $tags ) > 3 ) {
+            $remaining = count( $tags ) - 3;
+            $tags = array_slice( $tags, 0, 3 );
+            $tags[] = '<span class="fplms-structure-tag" style="background: #f0f0f1;">+' . $remaining . ' más</span>';
+        }
+
+        return implode( '', $tags );
     }
 
     /**
      * Formatea las estructuras de un curso para mostrar en la tabla.
      * 
-     * @param array $structures Array con estructura: ['cities' => [ids], 'channels' => [ids], 'branches' => [ids], 'roles' => [ids]].
+     * @param array $structures Array con estructura: ['cities' => [ids], 'companies' => [ids], 'channels' => [ids], 'branches' => [ids], 'roles' => [ids]].
      * @return string HTML formateado para mostrar.
      */
     private function format_course_structures_display( array $structures ): string {
@@ -907,6 +1607,14 @@ class FairPlay_LMS_Courses_Controller {
             $city_names = $this->get_term_names_by_ids( $structures['cities'] );
             if ( ! empty( $city_names ) ) {
                 $display[] = '<strong>📍 Ciudades:</strong> ' . esc_html( implode( ', ', $city_names ) );
+            }
+        }
+
+        // Empresas
+        if ( ! empty( $structures['companies'] ) ) {
+            $company_names = $this->get_term_names_by_ids( $structures['companies'] );
+            if ( ! empty( $company_names ) ) {
+                $display[] = '<strong>🏢 Empresas:</strong> ' . esc_html( implode( ', ', $company_names ) );
             }
         }
 
@@ -956,6 +1664,725 @@ class FairPlay_LMS_Courses_Controller {
             }
         }
         return $names;
+    }
+
+    /**
+     * Aplica la lógica de cascada jerárquica.
+     * Si se selecciona un nivel superior, se incluyen automáticamente todos sus descendientes.
+     * 
+     * @param array $cities IDs de ciudades seleccionadas
+     * @param array $companies IDs de empresas seleccionadas
+     * @param array $channels IDs de canales seleccionados
+     * @param array $branches IDs de sucursales seleccionadas
+     * @param array $roles IDs de cargos seleccionados
+     * @return array Estructuras con cascada aplicada
+     */
+    private function apply_cascade_logic( array $cities, array $companies, array $channels, array $branches, array $roles ): array {
+        $result = [
+            'cities'    => $cities,
+            'companies' => $companies,
+            'channels'  => $channels,
+            'branches'  => $branches,
+            'roles'     => $roles,
+        ];
+
+        // Si hay ciudades seleccionadas, incluir todas las empresas de esas ciudades
+        if ( ! empty( $cities ) ) {
+            foreach ( $cities as $city_id ) {
+                $city_companies = $this->get_companies_by_city( $city_id );
+                $result['companies'] = array_unique( array_merge( $result['companies'], $city_companies ) );
+            }
+        }
+
+        // Si hay empresas seleccionadas, incluir todos los canales de esas empresas
+        if ( ! empty( $result['companies'] ) ) {
+            foreach ( $result['companies'] as $company_id ) {
+                $company_channels = $this->get_channels_by_company( $company_id );
+                $result['channels'] = array_unique( array_merge( $result['channels'], $company_channels ) );
+            }
+        }
+
+        // Si hay canales seleccionados, incluir todas las sucursales de esos canales
+        if ( ! empty( $result['channels'] ) ) {
+            foreach ( $result['channels'] as $channel_id ) {
+                $channel_branches = $this->get_branches_by_channel( $channel_id );
+                $result['branches'] = array_unique( array_merge( $result['branches'], $channel_branches ) );
+            }
+        }
+
+        // Si hay sucursales seleccionadas, incluir todos los cargos de esas sucursales
+        if ( ! empty( $result['branches'] ) ) {
+            foreach ( $result['branches'] as $branch_id ) {
+                $branch_roles = $this->get_roles_by_branch( $branch_id );
+                $result['roles'] = array_unique( array_merge( $result['roles'], $branch_roles ) );
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Obtiene todas las empresas asociadas a una ciudad.
+     * 
+     * @param int $city_id ID de la ciudad
+     * @return array Array de IDs de empresas
+     */
+    private function get_companies_by_city( int $city_id ): array {
+        $companies = get_terms( [
+            'taxonomy'   => FairPlay_LMS_Config::TAX_COMPANY,
+            'hide_empty' => false,
+        ] );
+
+        $result = [];
+        foreach ( $companies as $company ) {
+            $company_cities = get_term_meta( $company->term_id, FairPlay_LMS_Config::META_COMPANY_CITIES, true );
+            if ( is_array( $company_cities ) && in_array( $city_id, $company_cities, true ) ) {
+                $result[] = $company->term_id;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Obtiene todos los canales asociados a una empresa.
+     * 
+     * @param int $company_id ID de la empresa
+     * @return array Array de IDs de canales
+     */
+    private function get_channels_by_company( int $company_id ): array {
+        $channels = get_terms( [
+            'taxonomy'   => FairPlay_LMS_Config::TAX_CHANNEL,
+            'hide_empty' => false,
+        ] );
+
+        $result = [];
+        foreach ( $channels as $channel ) {
+            $channel_companies = get_term_meta( $channel->term_id, FairPlay_LMS_Config::META_CHANNEL_COMPANIES, true );
+            if ( is_array( $channel_companies ) && in_array( $company_id, $channel_companies, true ) ) {
+                $result[] = $channel->term_id;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Obtiene todas las sucursales asociadas a un canal.
+     * 
+     * @param int $channel_id ID del canal
+     * @return array Array de IDs de sucursales
+     */
+    private function get_branches_by_channel( int $channel_id ): array {
+        $branches = get_terms( [
+            'taxonomy'   => FairPlay_LMS_Config::TAX_BRANCH,
+            'hide_empty' => false,
+        ] );
+
+        $result = [];
+        foreach ( $branches as $branch ) {
+            $branch_channels = get_term_meta( $branch->term_id, FairPlay_LMS_Config::META_BRANCH_CHANNELS, true );
+            if ( is_array( $branch_channels ) && in_array( $channel_id, $branch_channels, true ) ) {
+                $result[] = $branch->term_id;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Obtiene todos los cargos asociados a una sucursal.
+     * 
+     * @param int $branch_id ID de la sucursal
+     * @return array Array de IDs de cargos
+     */
+    private function get_roles_by_branch( int $branch_id ): array {
+        $roles = get_terms( [
+            'taxonomy'   => FairPlay_LMS_Config::TAX_ROLE,
+            'hide_empty' => false,
+        ] );
+
+        $result = [];
+        foreach ( $roles as $role ) {
+            $role_branches = get_term_meta( $role->term_id, FairPlay_LMS_Config::META_ROLE_BRANCHES, true );
+            if ( is_array( $role_branches ) && in_array( $branch_id, $role_branches, true ) ) {
+                $result[] = $role->term_id;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Envía notificaciones por correo a los usuarios afectados cuando se asigna un curso.
+     * 
+     * @param int   $course_id ID del curso
+     * @param array $structures Estructuras asignadas al curso
+     */
+    private function send_course_assignment_notifications( int $course_id, array $structures ): void {
+        // Obtener información del curso
+        $course = get_post( $course_id );
+        if ( ! $course ) {
+            return;
+        }
+
+        $course_title = get_the_title( $course );
+        $course_url   = get_permalink( $course_id );
+
+        // Obtener todos los usuarios que coinciden con las estructuras asignadas
+        $affected_users = $this->get_users_by_structures( $structures );
+
+        // Enviar correo a cada usuario
+        foreach ( $affected_users as $user_id ) {
+            $user = get_user_by( 'id', $user_id );
+            if ( ! $user ) {
+                continue;
+            }
+
+            $subject = sprintf( 'Nuevo curso asignado: %s', $course_title );
+            
+            $message = sprintf(
+                "Hola %s,\n\n" .
+                "Se te ha asignado un nuevo curso:\n\n" .
+                "📚 Curso: %s\n" .
+                "🔗 Acceder al curso: %s\n\n" .
+                "¡Esperamos que disfrutes este contenido educativo!\n\n" .
+                "Saludos,\n" .
+                "Equipo de FairPlay LMS",
+                $user->display_name,
+                $course_title,
+                $course_url
+            );
+
+            wp_mail( $user->user_email, $subject, $message );
+        }
+    }
+
+    /**
+     * Obtiene los IDs de usuarios que pertenecen a las estructuras especificadas.
+     * 
+     * @param array $structures Estructuras asignadas
+     * @return array Array de IDs de usuarios
+     */
+    private function get_users_by_structures( array $structures ): array {
+        $user_ids = [];
+
+        // Construir meta_query para buscar usuarios
+        $meta_query = [ 'relation' => 'OR' ];
+
+        if ( ! empty( $structures['cities'] ) ) {
+            foreach ( $structures['cities'] as $city_id ) {
+                $meta_query[] = [
+                    'key'     => FairPlay_LMS_Config::USER_META_CITY,
+                    'value'   => $city_id,
+                    'compare' => '=',
+                ];
+            }
+        }
+
+        if ( ! empty( $structures['companies'] ) ) {
+            foreach ( $structures['companies'] as $company_id ) {
+                $meta_query[] = [
+                    'key'     => FairPlay_LMS_Config::USER_META_COMPANY,
+                    'value'   => $company_id,
+                    'compare' => '=',
+                ];
+            }
+        }
+
+        if ( ! empty( $structures['channels'] ) ) {
+            foreach ( $structures['channels'] as $channel_id ) {
+                $meta_query[] = [
+                    'key'     => FairPlay_LMS_Config::USER_META_CHANNEL,
+                    'value'   => $channel_id,
+                    'compare' => '=',
+                ];
+            }
+        }
+
+        if ( ! empty( $structures['branches'] ) ) {
+            foreach ( $structures['branches'] as $branch_id ) {
+                $meta_query[] = [
+                    'key'     => FairPlay_LMS_Config::USER_META_BRANCH,
+                    'value'   => $branch_id,
+                    'compare' => '=',
+                ];
+            }
+        }
+
+        if ( ! empty( $structures['roles'] ) ) {
+            foreach ( $structures['roles'] as $role_id ) {
+                $meta_query[] = [
+                    'key'     => FairPlay_LMS_Config::USER_META_ROLE,
+                    'value'   => $role_id,
+                    'compare' => '=',
+                ];
+            }
+        }
+
+        // Si no hay estructuras, no enviar notificaciones
+        if ( count( $meta_query ) === 1 ) {
+            return [];
+        }
+
+        // Buscar usuarios
+        $user_query = new WP_User_Query( [
+            'meta_query' => $meta_query,
+            'fields'     => 'ID',
+        ] );
+
+        return $user_query->get_results();
+    }
+
+    /**
+     * Vista para gestionar lecciones MasterStudy de un curso.
+     */
+    private function render_course_lessons_view( int $course_id ): void {
+        $course = get_post( $course_id );
+        if ( ! $course || FairPlay_LMS_Config::MS_PT_COURSE !== $course->post_type ) {
+            echo '<p>Curso no válido.</p>';
+            return;
+        }
+
+        $back_url = add_query_arg( [ 'page' => 'fplms-courses' ], admin_url( 'admin.php' ) );
+
+        echo '<p><a href="' . esc_url( $back_url ) . '">&larr; Volver al listado de cursos</a></p>';
+        echo '<h2>Gestión de Lecciones: ' . esc_html( get_the_title( $course ) ) . ' (ID ' . esc_html( $course->ID ) . ')</h2>';
+
+        // Obtener lecciones asignadas al curso
+        $assigned_lessons = $this->get_course_lessons( $course_id );
+        
+        // Obtener todas las lecciones disponibles
+        $all_lessons = $this->get_all_lessons();
+        ?>
+
+        <div class="notice notice-info" style="padding: 15px; margin: 20px 0;">
+            <h3 style="margin-top: 0;">ℹ️ Información sobre Lecciones</h3>
+            <p><strong>Las lecciones son el contenido principal de MasterStudy LMS.</strong></p>
+            <p>Desde aquí puedes:</p>
+            <ul style="margin-left: 20px;">
+                <li>✅ Crear nuevas lecciones para este curso</li>
+                <li>✅ Asignar lecciones existentes al curso</li>
+                <li>✅ Ver y gestionar todas las lecciones del curso</li>
+                <li>✅ Eliminar lecciones del curso o completamente</li>
+            </ul>
+            <p><em>Las lecciones se integran automáticamente con el curriculum de MasterStudy.</em></p>
+        </div>
+
+        <!-- Lecciones Asignadas -->
+        <h3>📚 Lecciones asignadas a este curso (<?php echo count( $assigned_lessons ); ?>)</h3>
+        <?php if ( ! empty( $assigned_lessons ) ) : ?>
+            <table class="widefat striped">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">Orden</th>
+                        <th>Título de la Lección</th>
+                        <th>ID</th>
+                        <th>Tipo</th>
+                        <th>Duración</th>
+                        <th>Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ( $assigned_lessons as $index => $lesson ) : ?>
+                        <?php
+                        $lesson_type = get_post_meta( $lesson->ID, 'type', true ) ?: 'text';
+                        $duration = get_post_meta( $lesson->ID, 'duration', true ) ?: '—';
+                        $edit_url = get_edit_post_link( $lesson->ID );
+                        ?>
+                        <tr>
+                            <td><?php echo esc_html( $index + 1 ); ?></td>
+                            <td>
+                                <strong><?php echo esc_html( get_the_title( $lesson ) ); ?></strong>
+                                <?php if ( $lesson->post_content ) : ?>
+                                    <br><span style="color: #666; font-size: 0.9em;">
+                                        <?php echo esc_html( wp_trim_words( $lesson->post_content, 15 ) ); ?>
+                                    </span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?php echo esc_html( $lesson->ID ); ?></td>
+                            <td>
+                                <?php
+                                $type_labels = [
+                                    'text'     => '📝 Texto',
+                                    'video'    => '🎥 Video',
+                                    'slide'    => '📊 Presentación',
+                                    'stream'   => '📡 Stream',
+                                    'zoom'     => '💻 Zoom',
+                                ];
+                                echo esc_html( $type_labels[ $lesson_type ] ?? '📄 ' . ucfirst( $lesson_type ) );
+                                ?>
+                            </td>
+                            <td><?php echo esc_html( $duration ); ?></td>
+                            <td>
+                                <a href="<?php echo esc_url( $edit_url ); ?>" class="button button-small" target="_blank">
+                                    ✏️ Editar
+                                </a>
+                                <form method="post" style="display: inline;" onsubmit="return confirm('¿Estás seguro de eliminar esta lección del curso?');">
+                                    <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                                    <input type="hidden" name="fplms_courses_action" value="unassign_lesson">
+                                    <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+                                    <input type="hidden" name="fplms_lesson_id" value="<?php echo esc_attr( $lesson->ID ); ?>">
+                                    <button type="submit" class="button button-small">
+                                        ❌ Desasignar
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        <?php else : ?>
+            <p style="padding: 20px; background: #f0f0f1; border-left: 4px solid #ddd;">
+                📭 <em>No hay lecciones asignadas todavía a este curso.</em>
+            </p>
+        <?php endif; ?>
+
+        <!-- Crear Nueva Lección -->
+        <h3 style="margin-top: 3em;">➕ Crear Nueva Lección</h3>
+        <form method="post" style="background: #fff; padding: 20px; border: 1px solid #ddd; border-radius: 4px;">
+            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+            <input type="hidden" name="fplms_courses_action" value="create_lesson">
+            <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+
+            <table class="form-table">
+                <tr>
+                    <th scope="row">
+                        <label for="fplms_lesson_title">Título de la Lección *</label>
+                    </th>
+                    <td>
+                        <input name="fplms_lesson_title" 
+                               id="fplms_lesson_title" 
+                               type="text" 
+                               class="regular-text" 
+                               required 
+                               placeholder="Ej: Introducción a HTML">
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">
+                        <label for="fplms_lesson_content">Contenido</label>
+                    </th>
+                    <td>
+                        <?php
+                        wp_editor( '', 'fplms_lesson_content', [
+                            'textarea_name' => 'fplms_lesson_content',
+                            'textarea_rows' => 10,
+                            'media_buttons' => true,
+                            'teeny'         => false,
+                        ]);
+                        ?>
+                        <p class="description">Contenido principal de la lección. Puedes usar el editor visual.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">
+                        <label for="fplms_lesson_type">Tipo de Lección</label>
+                    </th>
+                    <td>
+                        <select name="fplms_lesson_type" id="fplms_lesson_type">
+                            <option value="text">📝 Texto</option>
+                            <option value="video">🎥 Video</option>
+                            <option value="slide">📊 Presentación</option>
+                            <option value="stream">📡 Stream</option>
+                            <option value="zoom">💻 Zoom</option>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">
+                        <label for="fplms_lesson_duration">Duración</label>
+                    </th>
+                    <td>
+                        <input name="fplms_lesson_duration" 
+                               id="fplms_lesson_duration" 
+                               type="text" 
+                               class="small-text" 
+                               placeholder="30">
+                        <span class="description">minutos (opcional)</span>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">
+                        <label for="fplms_lesson_preview">¿Lección de Vista Previa?</label>
+                    </th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="fplms_lesson_preview" id="fplms_lesson_preview" value="1">
+                            Permitir que los usuarios vean esta lección sin estar inscritos
+                        </label>
+                    </td>
+                </tr>
+            </table>
+
+            <p class="submit">
+                <button type="submit" class="button button-primary button-large">
+                    ➕ Crear Lección y Asignar al Curso
+                </button>
+            </p>
+        </form>
+
+        <!-- Asignar Lecciones Existentes -->
+        <?php
+        $unassigned_lessons = array_filter( $all_lessons, function( $lesson ) use ( $assigned_lessons ) {
+            $assigned_ids = array_map( function( $l ) { return $l->ID; }, $assigned_lessons );
+            return ! in_array( $lesson->ID, $assigned_ids, true );
+        });
+        ?>
+
+        <?php if ( ! empty( $unassigned_lessons ) ) : ?>
+            <h3 style="margin-top: 3em;">🔗 Asignar Lecciones Existentes</h3>
+            <p>Selecciona las lecciones que quieres asignar a este curso:</p>
+            <form method="post" style="background: #fff; padding: 20px; border: 1px solid #ddd; border-radius: 4px;">
+                <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                <input type="hidden" name="fplms_courses_action" value="assign_lessons">
+                <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+
+                <div style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 15px; background: #fafafa;">
+                    <?php foreach ( $unassigned_lessons as $lesson ) : ?>
+                        <?php
+                        $lesson_type = get_post_meta( $lesson->ID, 'type', true ) ?: 'text';
+                        $type_labels = [
+                            'text'  => '📝',
+                            'video' => '🎥',
+                            'slide' => '📊',
+                            'stream' => '📡',
+                            'zoom' => '💻',
+                        ];
+                        ?>
+                        <label style="display: block; padding: 10px; margin: 5px 0; background: #fff; border: 1px solid #ddd; border-radius: 3px; cursor: pointer;">
+                            <input type="checkbox" name="fplms_lesson_ids[]" value="<?php echo esc_attr( $lesson->ID ); ?>">
+                            <strong><?php echo esc_html( $type_labels[ $lesson_type ] ?? '📄' ); ?> <?php echo esc_html( get_the_title( $lesson ) ); ?></strong>
+                            <span style="color: #666; font-size: 0.9em;">(ID: <?php echo esc_html( $lesson->ID ); ?>)</span>
+                            <?php if ( $lesson->post_content ) : ?>
+                                <br><span style="color: #999; font-size: 0.85em;">
+                                    <?php echo esc_html( wp_trim_words( strip_tags( $lesson->post_content ), 20 ) ); ?>
+                                </span>
+                            <?php endif; ?>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+
+                <p class="submit">
+                    <button type="submit" class="button button-primary">
+                        🔗 Asignar Lecciones Seleccionadas
+                    </button>
+                </p>
+            </form>
+        <?php else : ?>
+            <p style="margin-top: 2em; padding: 15px; background: #f0f0f1; border-left: 4px solid #ddd;">
+                ℹ️ <em>Todas las lecciones disponibles ya están asignadas a este curso.</em>
+            </p>
+        <?php endif; ?>
+        <?php
+    }
+
+    /**
+     * Maneja la creación de una nueva lección MasterStudy.
+     */
+    private function handle_create_lesson( int $course_id ): void {
+        $title    = sanitize_text_field( wp_unslash( $_POST['fplms_lesson_title'] ?? '' ) );
+        $content  = wp_kses_post( wp_unslash( $_POST['fplms_lesson_content'] ?? '' ) );
+        $type     = sanitize_text_field( wp_unslash( $_POST['fplms_lesson_type'] ?? 'text' ) );
+        $duration = sanitize_text_field( wp_unslash( $_POST['fplms_lesson_duration'] ?? '' ) );
+        $preview  = ! empty( $_POST['fplms_lesson_preview'] ) ? '1' : '';
+
+        if ( ! $title ) {
+            wp_safe_redirect(
+                add_query_arg(
+                    [
+                        'page'      => 'fplms-courses',
+                        'view'      => 'lessons',
+                        'course_id' => $course_id,
+                        'error'     => 'title_required',
+                    ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
+        // Crear la lección como post de MasterStudy
+        $lesson_id = wp_insert_post( [
+            'post_type'    => FairPlay_LMS_Config::MS_PT_LESSON,
+            'post_title'   => $title,
+            'post_content' => $content,
+            'post_status'  => 'publish',
+            'post_author'  => get_current_user_id(),
+        ] );
+
+        if ( $lesson_id && ! is_wp_error( $lesson_id ) ) {
+            // Guardar metadatos de la lección
+            if ( $type ) {
+                update_post_meta( $lesson_id, 'type', $type );
+            }
+            if ( $duration ) {
+                update_post_meta( $lesson_id, 'duration', $duration );
+            }
+            if ( $preview ) {
+                update_post_meta( $lesson_id, 'preview', $preview );
+            }
+
+            // Asignar la lección al curso
+            $this->assign_lesson_to_course( $course_id, $lesson_id );
+        }
+
+        wp_safe_redirect(
+            add_query_arg(
+                [
+                    'page'      => 'fplms-courses',
+                    'view'      => 'lessons',
+                    'course_id' => $course_id,
+                    'created'   => $lesson_id,
+                ],
+                admin_url( 'admin.php' )
+            )
+        );
+        exit;
+    }
+
+    /**
+     * Maneja la asignación de lecciones existentes a un curso.
+     */
+    private function handle_assign_lessons( int $course_id ): void {
+        $lesson_ids = isset( $_POST['fplms_lesson_ids'] ) ? array_map( 'absint', (array) $_POST['fplms_lesson_ids'] ) : [];
+
+        if ( empty( $lesson_ids ) ) {
+            wp_safe_redirect(
+                add_query_arg(
+                    [
+                        'page'      => 'fplms-courses',
+                        'view'      => 'lessons',
+                        'course_id' => $course_id,
+                        'error'     => 'no_lessons_selected',
+                    ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
+        foreach ( $lesson_ids as $lesson_id ) {
+            $this->assign_lesson_to_course( $course_id, $lesson_id );
+        }
+
+        wp_safe_redirect(
+            add_query_arg(
+                [
+                    'page'      => 'fplms-courses',
+                    'view'      => 'lessons',
+                    'course_id' => $course_id,
+                    'assigned'  => count( $lesson_ids ),
+                ],
+                admin_url( 'admin.php' )
+            )
+        );
+        exit;
+    }
+
+    /**
+     * Asigna una lección a un curso actualizando el curriculum de MasterStudy.
+     */
+    private function assign_lesson_to_course( int $course_id, int $lesson_id ): void {
+        // Obtener curriculum actual del curso
+        $curriculum = get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, true );
+        
+        if ( ! is_array( $curriculum ) ) {
+            $curriculum = [];
+        }
+
+        // Crear entrada para la lección en el curriculum
+        $lesson_entry = [
+            'title' => get_the_title( $lesson_id ),
+            'id'    => $lesson_id,
+            'type'  => FairPlay_LMS_Config::MS_PT_LESSON,
+        ];
+
+        // Agregar al curriculum si no existe
+        $lesson_exists = false;
+        foreach ( $curriculum as $item ) {
+            if ( isset( $item['id'] ) && (int) $item['id'] === $lesson_id ) {
+                $lesson_exists = true;
+                break;
+            }
+        }
+
+        if ( ! $lesson_exists ) {
+            $curriculum[] = $lesson_entry;
+            update_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, $curriculum );
+        }
+
+        // También guardar en nuestro meta personalizado para tracking
+        $course_lessons = (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_LESSONS, true );
+        if ( ! in_array( $lesson_id, $course_lessons, true ) ) {
+            $course_lessons[] = $lesson_id;
+            update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_LESSONS, $course_lessons );
+        }
+    }
+
+    /**
+     * Obtiene las lecciones asignadas a un curso.
+     */
+    private function get_course_lessons( int $course_id ): array {
+        // Obtener desde el curriculum de MasterStudy
+        $curriculum = get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, true );
+        
+        if ( ! is_array( $curriculum ) || empty( $curriculum ) ) {
+            return [];
+        }
+
+        $lessons = [];
+        foreach ( $curriculum as $item ) {
+            if ( isset( $item['id'] ) && isset( $item['type'] ) && FairPlay_LMS_Config::MS_PT_LESSON === $item['type'] ) {
+                $lesson = get_post( (int) $item['id'] );
+                if ( $lesson && FairPlay_LMS_Config::MS_PT_LESSON === $lesson->post_type ) {
+                    $lessons[] = $lesson;
+                }
+            }
+        }
+
+        return $lessons;
+    }
+
+    /**
+     * Obtiene todas las lecciones MasterStudy disponibles.
+     */
+    private function get_all_lessons(): array {
+        $lessons = get_posts( [
+            'post_type'      => FairPlay_LMS_Config::MS_PT_LESSON,
+            'posts_per_page' => -1,
+            'post_status'    => 'publish',
+            'orderby'        => 'title',
+            'order'          => 'ASC',
+        ] );
+
+        return is_array( $lessons ) ? $lessons : [];
+    }
+
+    /**
+     * Desasigna una lección de un curso.
+     */
+    private function unassign_lesson_from_course( int $course_id, int $lesson_id ): void {
+        // Remover del curriculum de MasterStudy
+        $curriculum = get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, true );
+        
+        if ( is_array( $curriculum ) ) {
+            $curriculum = array_filter( $curriculum, function( $item ) use ( $lesson_id ) {
+                return ! ( isset( $item['id'] ) && (int) $item['id'] === $lesson_id );
+            });
+            
+            // Re-indexar el array
+            $curriculum = array_values( $curriculum );
+            update_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, $curriculum );
+        }
+
+        // Remover de nuestro meta personalizado
+        $course_lessons = (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_LESSONS, true );
+        $course_lessons = array_filter( $course_lessons, function( $id ) use ( $lesson_id ) {
+            return (int) $id !== $lesson_id;
+        });
+        $course_lessons = array_values( $course_lessons );
+        update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_LESSONS, $course_lessons );
     }
 }
 

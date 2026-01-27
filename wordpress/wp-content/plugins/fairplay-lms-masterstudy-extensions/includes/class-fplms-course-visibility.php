@@ -123,7 +123,7 @@ class FairPlay_LMS_Course_Visibility_Service {
 
         $has_restriction = false;
 
-        foreach ( [ 'cities', 'channels', 'branches', 'roles' ] as $key ) {
+        foreach ( [ 'cities', 'companies', 'channels', 'branches', 'roles' ] as $key ) {
             if ( ! empty( $course_structures[ $key ] ) ) {
                 $has_restriction = true;
                 break;
