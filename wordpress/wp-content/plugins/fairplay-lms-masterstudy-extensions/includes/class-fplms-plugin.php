@@ -130,6 +130,13 @@ class FairPlay_LMS_Plugin {
         // AJAX: Cargar términos filtrados por padre (sistema jerárquico completo)
         add_action( 'wp_ajax_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
         add_action( 'wp_ajax_nopriv_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
+
+        // FEATURE 1: Meta Box de Estructuras en Creación de Cursos
+        add_action( 'add_meta_boxes', [ $this->courses, 'register_structures_meta_box' ] );
+        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'save_course_structures_on_publish' ], 10, 3 );
+        
+        // Forzar editor clásico para cursos (evitar Course Builder automático)
+        add_filter( 'use_block_editor_for_post_type', [ $this, 'force_classic_editor_for_courses' ], 10, 2 );
     }
 
     /**
@@ -189,6 +196,25 @@ class FairPlay_LMS_Plugin {
         }
 
         return $query_args;
+    }
+
+    /**
+     * Fuerza el editor clásico para cursos de MasterStudy.
+     * Esto evita que el Course Builder se abra automáticamente
+     * y permite usar la meta box de estructuras.
+     * 
+     * @param bool   $use_block_editor Si se debe usar el editor de bloques
+     * @param string $post_type        Tipo de post
+     * @return bool
+     */
+    public function force_classic_editor_for_courses( $use_block_editor, $post_type ): bool {
+        
+        // Forzar editor clásico para cursos de MasterStudy
+        if ( FairPlay_LMS_Config::MS_PT_COURSE === $post_type ) {
+            return false;
+        }
+        
+        return $use_block_editor;
     }
 }
 

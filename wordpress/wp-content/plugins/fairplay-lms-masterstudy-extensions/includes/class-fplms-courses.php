@@ -410,7 +410,15 @@ class FairPlay_LMS_Courses_Controller {
             ]
         );
 
-        return (array) $user_query->get_results();
+        $results = (array) $user_query->get_results();
+        
+        // DEBUG: Descomentar estas líneas si necesitas diagnosticar problemas con instructores
+        // error_log( 'FairPlay LMS: Instructores encontrados: ' . count( $results ) );
+        // foreach ( $results as $user ) {
+        //     error_log( '  - ' . $user->display_name . ' (ID: ' . $user->ID . ', Login: ' . $user->user_login . ')' );
+        // }
+        
+        return $results;
     }
 
     /**
@@ -723,7 +731,20 @@ class FairPlay_LMS_Courses_Controller {
                         admin_url( 'admin.php' )
                     );
 
-                    $teacher_id   = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
+                    // Obtener instructor del curso con fallbacks
+                    $teacher_id = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
+                    
+                    // Fallback: Intentar otros meta keys que MasterStudy podría usar
+                    if ( ! $teacher_id ) {
+                        // Algunas versiones de MasterStudy usan 'instructor_id'
+                        $teacher_id = (int) get_post_meta( $course->ID, 'instructor_id', true );
+                    }
+                    
+                    if ( ! $teacher_id ) {
+                        // Intentar con el autor del post
+                        $teacher_id = (int) $course->post_author;
+                    }
+                    
                     $teacher_name = $teacher_id ? get_the_author_meta( 'display_name', $teacher_id ) : '';
                     if ( ! $teacher_name ) {
                         $teacher_name = '— Sin asignar —';
@@ -2383,6 +2404,535 @@ class FairPlay_LMS_Courses_Controller {
         });
         $course_lessons = array_values( $course_lessons );
         update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_LESSONS, $course_lessons );
+    }
+
+    // ==========================================
+    // FEATURE 1: META BOX DE ESTRUCTURAS
+    // ==========================================
+
+    /**
+     * Registra la meta box de estructuras para cursos MasterStudy.
+     */
+    public function register_structures_meta_box(): void {
+        add_meta_box(
+            'fplms_course_structures_metabox',
+            '🏢 Asignar Estructuras FairPlay',
+            [ $this, 'render_structures_meta_box' ],
+            FairPlay_LMS_Config::MS_PT_COURSE,
+            'side',
+            'default'
+        );
+    }
+
+    /**
+     * Renderiza el contenido de la meta box de estructuras.
+     * Adapta el contenido según el rol del usuario.
+     * 
+     * @param WP_Post $post El post actual (curso)
+     */
+    public function render_structures_meta_box( $post ): void {
+        // Nonce para seguridad
+        wp_nonce_field( 'fplms_save_course_structures', 'fplms_structures_nonce' );
+        
+        // Obtener estructuras actuales si el curso ya existe
+        $current_structures = [];
+        if ( $post->ID ) {
+            $current_structures = $this->get_course_structures( $post->ID );
+        }
+        
+        // Obtener estructuras disponibles según rol del usuario
+        $available_structures = $this->get_available_structures_for_user();
+        
+        // Verificar si el usuario es instructor
+        $current_user = wp_get_current_user();
+        $is_instructor = in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, $current_user->roles ?? [], true );
+        $is_admin = current_user_can( 'manage_options' );
+        
+        ?>
+        <div class="fplms-metabox-structures">
+            <style>
+                .fplms-metabox-structures {
+                    font-size: 13px;
+                }
+                .fplms-structure-section {
+                    margin-bottom: 15px;
+                    padding-bottom: 15px;
+                    border-bottom: 1px solid #ddd;
+                }
+                .fplms-structure-section:last-child {
+                    border-bottom: none;
+                }
+                .fplms-structure-title {
+                    font-weight: 600;
+                    margin-bottom: 8px;
+                    color: #1d2327;
+                }
+                .fplms-structure-checkbox {
+                    display: block;
+                    margin: 5px 0;
+                    padding: 3px 0;
+                }
+                .fplms-structure-checkbox input {
+                    margin-right: 5px;
+                }
+                .fplms-cascade-info {
+                    background: #f0f6fc;
+                    border-left: 3px solid #0073aa;
+                    padding: 10px;
+                    margin-bottom: 15px;
+                    font-size: 12px;
+                    line-height: 1.5;
+                }
+                .fplms-cascade-info strong {
+                    display: block;
+                    margin-bottom: 5px;
+                }
+                .fplms-notification-info {
+                    background: #fff3cd;
+                    border-left: 3px solid #ffc107;
+                    padding: 10px;
+                    margin-top: 15px;
+                    font-size: 12px;
+                }
+                .fplms-instructor-info {
+                    background: #fff3cd;
+                    border-left: 3px solid #ffc107;
+                    padding: 10px;
+                    margin-bottom: 15px;
+                    font-size: 12px;
+                    line-height: 1.5;
+                }
+                .fplms-admin-info {
+                    background: #d1ecf1;
+                    border-left: 3px solid #0c5460;
+                    padding: 10px;
+                    margin-bottom: 15px;
+                    font-size: 12px;
+                }
+            </style>
+            
+            <?php if ( $is_instructor && ! $is_admin ) : ?>
+                <div class="fplms-instructor-info">
+                    <strong>👨‍🏫 Modo Instructor</strong><br>
+                    Solo puedes asignar a tus estructuras.
+                </div>
+            <?php else : ?>
+                <div class="fplms-admin-info">
+                    <strong>👑 Administrador</strong><br>
+                    Puedes asignar a cualquier estructura.
+                </div>
+            <?php endif; ?>
+            
+            <div class="fplms-cascade-info">
+                <strong>ℹ️ Asignación en cascada</strong>
+                Al seleccionar una estructura, se asignan automáticamente todas las estructuras descendientes.
+            </div>
+            
+            <!-- Ciudades -->
+            <?php if ( ! empty( $available_structures['cities'] ) ) : ?>
+            <div class="fplms-structure-section">
+                <div class="fplms-structure-title">📍 Ciudades</div>
+                <?php foreach ( $available_structures['cities'] as $term_id => $term_name ) : ?>
+                    <label class="fplms-structure-checkbox">
+                        <input type="checkbox" 
+                               name="fplms_course_cities[]" 
+                               value="<?php echo esc_attr( $term_id ); ?>"
+                               <?php checked( in_array( $term_id, $current_structures['cities'] ?? [], true ) ); ?>>
+                        <?php echo esc_html( $term_name ); ?>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+            
+            <!-- Empresas -->
+            <?php if ( ! empty( $available_structures['companies'] ) ) : ?>
+            <div class="fplms-structure-section">
+                <div class="fplms-structure-title">🏢 Empresas</div>
+                <?php foreach ( $available_structures['companies'] as $term_id => $term_name ) : ?>
+                    <label class="fplms-structure-checkbox">
+                        <input type="checkbox" 
+                               name="fplms_course_companies[]" 
+                               value="<?php echo esc_attr( $term_id ); ?>"
+                               <?php checked( in_array( $term_id, $current_structures['companies'] ?? [], true ) ); ?>>
+                        <?php echo esc_html( $term_name ); ?>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+            
+            <!-- Canales -->
+            <?php if ( ! empty( $available_structures['channels'] ) ) : ?>
+            <div class="fplms-structure-section">
+                <div class="fplms-structure-title">🏪 Canales</div>
+                <?php foreach ( $available_structures['channels'] as $term_id => $term_name ) : ?>
+                    <label class="fplms-structure-checkbox">
+                        <input type="checkbox" 
+                               name="fplms_course_channels[]" 
+                               value="<?php echo esc_attr( $term_id ); ?>"
+                               <?php checked( in_array( $term_id, $current_structures['channels'] ?? [], true ) ); ?>>
+                        <?php echo esc_html( $term_name ); ?>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+            
+            <!-- Sucursales -->
+            <?php if ( ! empty( $available_structures['branches'] ) ) : ?>
+            <div class="fplms-structure-section">
+                <div class="fplms-structure-title">🏢 Sucursales</div>
+                <?php foreach ( $available_structures['branches'] as $term_id => $term_name ) : ?>
+                    <label class="fplms-structure-checkbox">
+                        <input type="checkbox" 
+                               name="fplms_course_branches[]" 
+                               value="<?php echo esc_attr( $term_id ); ?>"
+                               <?php checked( in_array( $term_id, $current_structures['branches'] ?? [], true ) ); ?>>
+                        <?php echo esc_html( $term_name ); ?>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+            
+            <!-- Cargos -->
+            <?php if ( ! empty( $available_structures['roles'] ) ) : ?>
+            <div class="fplms-structure-section">
+                <div class="fplms-structure-title">👔 Cargos</div>
+                <?php foreach ( $available_structures['roles'] as $term_id => $term_name ) : ?>
+                    <label class="fplms-structure-checkbox">
+                        <input type="checkbox" 
+                               name="fplms_course_roles[]" 
+                               value="<?php echo esc_attr( $term_id ); ?>"
+                               <?php checked( in_array( $term_id, $current_structures['roles'] ?? [], true ) ); ?>>
+                        <?php echo esc_html( $term_name ); ?>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+            
+            <?php if ( empty( $available_structures['cities'] ) && empty( $available_structures['channels'] ) ) : ?>
+                <p style="color: #d63638; font-size: 12px;">
+                    ⚠️ No tienes estructuras asignadas. Contacta al administrador para poder asignar cursos a estructuras.
+                </p>
+            <?php endif; ?>
+            
+            <div class="fplms-notification-info">
+                📧 Los usuarios de las estructuras seleccionadas recibirán un correo cuando se publique el curso.
+            </div>
+        </div>
+        <?php
+    }
+
+    /**
+     * Guarda las estructuras cuando se guarda/publica un curso de MasterStudy.
+     * Incluye validación de permisos para instructores.
+     * 
+     * @param int     $post_id ID del post
+     * @param WP_Post $post    Objeto del post
+     * @param bool    $update  Si es actualización o nuevo
+     */
+    public function save_course_structures_on_publish( int $post_id, WP_Post $post, bool $update ): void {
+        
+        // 1. Verificar nonce
+        if ( ! isset( $_POST['fplms_structures_nonce'] ) || 
+             ! wp_verify_nonce( $_POST['fplms_structures_nonce'], 'fplms_save_course_structures' ) ) {
+            return;
+        }
+        
+        // 2. Verificar que no sea autosave
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+            return;
+        }
+        
+        // 3. Verificar permisos
+        if ( ! current_user_can( 'edit_post', $post_id ) ) {
+            return;
+        }
+        
+        // 4. Verificar que es el post type correcto
+        if ( FairPlay_LMS_Config::MS_PT_COURSE !== $post->post_type ) {
+            return;
+        }
+        
+        // Obtener estructuras del POST
+        $cities    = isset( $_POST['fplms_course_cities'] ) ? array_map( 'absint', (array) $_POST['fplms_course_cities'] ) : [];
+        $companies = isset( $_POST['fplms_course_companies'] ) ? array_map( 'absint', (array) $_POST['fplms_course_companies'] ) : [];
+        $channels  = isset( $_POST['fplms_course_channels'] ) ? array_map( 'absint', (array) $_POST['fplms_course_channels'] ) : [];
+        $branches  = isset( $_POST['fplms_course_branches'] ) ? array_map( 'absint', (array) $_POST['fplms_course_branches'] ) : [];
+        $roles     = isset( $_POST['fplms_course_roles'] ) ? array_map( 'absint', (array) $_POST['fplms_course_roles'] ) : [];
+        
+        // VALIDACIÓN: Verificar que el instructor solo asigna a sus estructuras
+        if ( ! $this->validate_instructor_structures( $channels, $cities, $companies, $branches, $roles ) ) {
+            // El instructor intentó asignar a estructuras no autorizadas
+            add_action( 'admin_notices', function() {
+                echo '<div class="error notice"><p>⚠️ Error: No puedes asignar el curso a estructuras donde no estás asignado.</p></div>';
+            });
+            return;
+        }
+        
+        // Aplicar cascada jerárquica
+        $cascaded_structures = $this->apply_cascade_logic( $cities, $companies, $channels, $branches, $roles );
+        
+        // Guardar en post_meta
+        update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CITIES, $cascaded_structures['cities'] );
+        update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, $cascaded_structures['companies'] );
+        update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, $cascaded_structures['channels'] );
+        update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, $cascaded_structures['branches'] );
+        update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_ROLES, $cascaded_structures['roles'] );
+        
+        // Enviar notificaciones SOLO si el curso se está publicando
+        if ( 'publish' === $post->post_status ) {
+            if ( ! $update ) {
+                // Nuevo curso publicado - enviar notificaciones a todos
+                $this->send_course_assignment_notifications( $post_id, $cascaded_structures );
+            } else {
+                // Curso actualizado - verificar si las estructuras cambiaron
+                // Para evitar duplicar correos, solo notificar a nuevos usuarios
+                $old_structures = [
+                    'cities'    => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
+                    'companies' => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ),
+                    'channels'  => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
+                    'branches'  => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
+                    'roles'     => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
+                ];
+                
+                $structures_changed = $this->structures_have_changed( $old_structures, $cascaded_structures );
+                
+                if ( $structures_changed ) {
+                    // Las estructuras cambiaron - enviar notificaciones solo a nuevos usuarios
+                    $this->send_course_update_notifications( $post_id, $cascaded_structures, $old_structures );
+                }
+            }
+        }
+    }
+
+    /**
+     * Obtiene las estructuras asignadas al usuario actual.
+     * 
+     * @param int $user_id ID del usuario (0 = actual)
+     * @return array Array con estructura: ['city' => ID, 'company' => ID, 'channel' => ID, ...]
+     */
+    private function get_user_structures( int $user_id = 0 ): array {
+        if ( 0 === $user_id ) {
+            $user_id = get_current_user_id();
+        }
+        
+        return [
+            'city'    => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CITY, true ),
+            'company' => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_COMPANY, true ),
+            'channel' => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CHANNEL, true ),
+            'branch'  => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_BRANCH, true ),
+            'role'    => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ROLE, true ),
+        ];
+    }
+
+    /**
+     * Obtiene las estructuras disponibles para asignar según el rol del usuario.
+     * 
+     * - Admin: Todas las estructuras
+     * - Instructor: Solo sus propias estructuras
+     * 
+     * @return array Array con estructura: ['cities' => [...], 'channels' => [...], ...]
+     */
+    private function get_available_structures_for_user(): array {
+        // Si es administrador, devuelve todas las estructuras
+        if ( current_user_can( 'manage_options' ) || current_user_can( FairPlay_LMS_Config::CAP_MANAGE_STRUCTURES ) ) {
+            return [
+                'cities'    => $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY ),
+                'companies' => $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_COMPANY ),
+                'channels'  => $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL ),
+                'branches'  => $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH ),
+                'roles'     => $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE ),
+            ];
+        }
+        
+        // Si es instructor, solo sus estructuras
+        $user_id = get_current_user_id();
+        $user_structures = $this->get_user_structures( $user_id );
+        
+        $available = [
+            'cities'    => [],
+            'companies' => [],
+            'channels'  => [],
+            'branches'  => [],
+            'roles'     => [],
+        ];
+        
+        // Ciudad del instructor
+        if ( $user_structures['city'] > 0 ) {
+            $city_term = get_term( $user_structures['city'] );
+            if ( $city_term && ! is_wp_error( $city_term ) ) {
+                $available['cities'][ $city_term->term_id ] = $city_term->name;
+            }
+        }
+        
+        // Empresa del instructor
+        if ( $user_structures['company'] > 0 ) {
+            $company_term = get_term( $user_structures['company'] );
+            if ( $company_term && ! is_wp_error( $company_term ) ) {
+                $available['companies'][ $company_term->term_id ] = $company_term->name;
+            }
+        }
+        
+        // Canal del instructor (MUY IMPORTANTE)
+        if ( $user_structures['channel'] > 0 ) {
+            $channel_term = get_term( $user_structures['channel'] );
+            if ( $channel_term && ! is_wp_error( $channel_term ) ) {
+                $available['channels'][ $channel_term->term_id ] = $channel_term->name;
+            }
+        }
+        
+        // Sucursal del instructor
+        if ( $user_structures['branch'] > 0 ) {
+            $branch_term = get_term( $user_structures['branch'] );
+            if ( $branch_term && ! is_wp_error( $branch_term ) ) {
+                $available['branches'][ $branch_term->term_id ] = $branch_term->name;
+            }
+        }
+        
+        // Cargo del instructor
+        if ( $user_structures['role'] > 0 ) {
+            $role_term = get_term( $user_structures['role'] );
+            if ( $role_term && ! is_wp_error( $role_term ) ) {
+                $available['roles'][ $role_term->term_id ] = $role_term->name;
+            }
+        }
+        
+        return $available;
+    }
+
+    /**
+     * Valida que el instructor solo asigne a estructuras donde está asignado.
+     * Los administradores siempre pasan la validación.
+     * 
+     * @param array $channels  Canales a asignar
+     * @param array $cities    Ciudades a asignar
+     * @param array $companies Empresas a asignar
+     * @param array $branches  Sucursales a asignar
+     * @param array $roles     Cargos a asignar
+     * @return bool True si es válido, False si no
+     */
+    private function validate_instructor_structures( array $channels, array $cities = [], array $companies = [], array $branches = [], array $roles = [] ): bool {
+        // Admin siempre puede asignar a cualquier estructura
+        if ( current_user_can( 'manage_options' ) || current_user_can( FairPlay_LMS_Config::CAP_MANAGE_STRUCTURES ) ) {
+            return true;
+        }
+        
+        $user_id = get_current_user_id();
+        $user_structures = $this->get_user_structures( $user_id );
+        
+        // Validar ciudades
+        foreach ( $cities as $city_id ) {
+            if ( $city_id > 0 && $city_id !== $user_structures['city'] ) {
+                return false; // Intenta asignar a una ciudad diferente
+            }
+        }
+        
+        // Validar empresas
+        foreach ( $companies as $company_id ) {
+            if ( $company_id > 0 && $company_id !== $user_structures['company'] ) {
+                return false;
+            }
+        }
+        
+        // Validar canales (CRÍTICO)
+        foreach ( $channels as $channel_id ) {
+            if ( $channel_id > 0 && $channel_id !== $user_structures['channel'] ) {
+                return false; // Intenta asignar a un canal donde NO está
+            }
+        }
+        
+        // Validar sucursales
+        foreach ( $branches as $branch_id ) {
+            if ( $branch_id > 0 && $branch_id !== $user_structures['branch'] ) {
+                return false;
+            }
+        }
+        
+        // Validar cargos
+        foreach ( $roles as $role_id ) {
+            if ( $role_id > 0 && $role_id !== $user_structures['role'] ) {
+                return false;
+            }
+        }
+        
+        return true; // Todas las validaciones pasaron
+    }
+
+    /**
+     * Verifica si las estructuras han cambiado.
+     * 
+     * @param array $old_structures Estructuras anteriores
+     * @param array $new_structures Estructuras nuevas
+     * @return bool True si cambiaron
+     */
+    private function structures_have_changed( array $old_structures, array $new_structures ): bool {
+        $keys = [ 'cities', 'companies', 'channels', 'branches', 'roles' ];
+        
+        foreach ( $keys as $key ) {
+            $old = $old_structures[ $key ] ?? [];
+            $new = $new_structures[ $key ] ?? [];
+            
+            sort( $old );
+            sort( $new );
+            
+            if ( $old !== $new ) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Envía notificaciones solo a los usuarios nuevos que se agregaron.
+     * 
+     * @param int   $course_id ID del curso
+     * @param array $new_structures Nuevas estructuras
+     * @param array $old_structures Estructuras antiguas
+     */
+    private function send_course_update_notifications( int $course_id, array $new_structures, array $old_structures ): void {
+        // Obtener usuarios nuevos (que no estaban antes)
+        $old_users = $this->get_users_by_structures( $old_structures );
+        $new_users = $this->get_users_by_structures( $new_structures );
+        
+        // Calcular diferencia (solo nuevos usuarios)
+        $users_to_notify = array_diff( $new_users, $old_users );
+        
+        if ( empty( $users_to_notify ) ) {
+            return;
+        }
+        
+        // Obtener información del curso
+        $course = get_post( $course_id );
+        if ( ! $course ) {
+            return;
+        }
+        
+        $course_title = get_the_title( $course );
+        $course_url   = get_permalink( $course_id );
+        
+        // Enviar correo solo a usuarios nuevos
+        foreach ( $users_to_notify as $user_id ) {
+            $user = get_user_by( 'id', $user_id );
+            if ( ! $user ) {
+                continue;
+            }
+            
+            $subject = sprintf( 'Nuevo curso asignado: %s', $course_title );
+            $message = sprintf(
+                "Hola %s,\n\n" .
+                "Se te ha asignado un nuevo curso:\n\n" .
+                "📚 Curso: %s\n" .
+                "🔗 Acceder al curso: %s\n\n" .
+                "¡Esperamos que disfrutes este contenido educativo!\n\n" .
+                "Saludos,\n" .
+                "Equipo de FairPlay LMS",
+                $user->display_name,
+                $course_title,
+                $course_url
+            );
+            
+            wp_mail( $user->user_email, $subject, $message );
+        }
     }
 }
 

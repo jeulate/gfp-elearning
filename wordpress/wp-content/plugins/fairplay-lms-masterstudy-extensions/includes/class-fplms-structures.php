@@ -353,10 +353,20 @@ class FairPlay_LMS_Structures_Controller {
                                         $parent_names = [];
                                         $parent_label = '';
                                         
-                                        if ( 'channel' === $tab_key ) {
-                                            // Los canales se relacionan con ciudades
+                                        if ( 'company' === $tab_key ) {
+                                            // Las empresas se relacionan con ciudades
                                             $parent_ids = $this->get_term_cities( $term->term_id );
                                             $parent_label = '📍';
+                                            foreach ( $parent_ids as $parent_id ) {
+                                                $parent_name = $this->get_term_name_by_id( $parent_id );
+                                                if ( $parent_name ) {
+                                                    $parent_names[] = $parent_name;
+                                                }
+                                            }
+                                        } elseif ( 'channel' === $tab_key ) {
+                                            // Los canales se relacionan con empresas
+                                            $parent_ids = $this->get_term_companies( $term->term_id );
+                                            $parent_label = '🏢';
                                             foreach ( $parent_ids as $parent_id ) {
                                                 $parent_name = $this->get_term_name_by_id( $parent_id );
                                                 if ( $parent_name ) {
@@ -468,8 +478,11 @@ class FairPlay_LMS_Structures_Controller {
                                                                     $all_parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_COMPANY );
                                                                     $selected_parents = $this->get_term_companies( $term->term_id );
                                                                     foreach ( $all_parents as $parent_id => $parent_name ) :
+                                                                        // Obtener ciudades de esta empresa
+                                                                        $company_cities = $this->get_term_cities( $parent_id );
+                                                                        $cities_json = ! empty( $company_cities ) ? implode( ',', $company_cities ) : '';
                                                                     ?>
-                                                                        <label class="fplms-parent-option">
+                                                                        <label class="fplms-parent-option" data-parent-cities="<?php echo esc_attr( $cities_json ); ?>">
                                                                             <input type="checkbox" name="fplms_companies[]" value="<?php echo esc_attr( $parent_id ); ?>" <?php checked( in_array( $parent_id, $selected_parents, true ) ); ?>>
                                                                             <span><?php echo esc_html( $parent_name ); ?></span>
                                                                         </label>
@@ -487,8 +500,11 @@ class FairPlay_LMS_Structures_Controller {
                                                                     $all_parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
                                                                     $selected_parents = $this->get_term_channels( $term->term_id );
                                                                     foreach ( $all_parents as $parent_id => $parent_name ) :
+                                                                        // Obtener empresas de este canal
+                                                                        $channel_companies = $this->get_term_companies( $parent_id );
+                                                                        $companies_json = ! empty( $channel_companies ) ? implode( ',', $channel_companies ) : '';
                                                                     ?>
-                                                                        <label class="fplms-parent-option">
+                                                                        <label class="fplms-parent-option" data-parent-companies="<?php echo esc_attr( $companies_json ); ?>">
                                                                             <input type="checkbox" name="fplms_channels[]" value="<?php echo esc_attr( $parent_id ); ?>" <?php checked( in_array( $parent_id, $selected_parents, true ) ); ?>>
                                                                             <span><?php echo esc_html( $parent_name ); ?></span>
                                                                         </label>
@@ -543,7 +559,17 @@ class FairPlay_LMS_Structures_Controller {
                                     <input type="hidden" name="fplms_tab" value="<?php echo esc_attr( $tab_key ); ?>">
                                     
                                     <div class="fplms-form-row">
-                                        <input name="fplms_name" type="text" class="regular-text" placeholder="Nombre del elemento..." required>
+                                        <?php
+                                        $placeholders = [
+                                            'city'    => 'Nombre de la ciudad...',
+                                            'company' => 'Nombre de la empresa...',
+                                            'channel' => 'Nombre del canal...',
+                                            'branch'  => 'Nombre de la sucursal...',
+                                            'role'    => 'Nombre del cargo...',
+                                        ];
+                                        $placeholder = $placeholders[ $tab_key ] ?? 'Nombre del elemento...';
+                                        ?>
+                                        <input name="fplms_name" type="text" class="regular-text" placeholder="<?php echo esc_attr( $placeholder ); ?>" required>
                                         
                                         <?php if ( 'city' !== $tab_key ) : ?>
                                             <?php if ( 'company' === $tab_key ) : ?>
@@ -581,8 +607,11 @@ class FairPlay_LMS_Structures_Controller {
                                                         <?php 
                                                         $parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_COMPANY );
                                                         foreach ( $parents as $parent_id => $parent_name ) : 
+                                                            // Obtener ciudades asociadas a esta empresa
+                                                            $company_cities = $this->get_term_cities( $parent_id );
+                                                            $cities_json = ! empty( $company_cities ) ? implode( ',', $company_cities ) : '';
                                                         ?>
-                                                        <label class="fplms-parent-option">
+                                                        <label class="fplms-parent-option" data-parent-cities="<?php echo esc_attr( $cities_json ); ?>">
                                                             <input type="checkbox" 
                                                                    name="fplms_companies[]" 
                                                                    value="<?php echo esc_attr( $parent_id ); ?>">
@@ -604,8 +633,11 @@ class FairPlay_LMS_Structures_Controller {
                                                         <?php 
                                                         $parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
                                                         foreach ( $parents as $parent_id => $parent_name ) : 
+                                                            // Obtener empresas asociadas a este canal
+                                                            $channel_companies = $this->get_term_companies( $parent_id );
+                                                            $companies_json = ! empty( $channel_companies ) ? implode( ',', $channel_companies ) : '';
                                                         ?>
-                                                        <label class="fplms-parent-option">
+                                                        <label class="fplms-parent-option" data-parent-companies="<?php echo esc_attr( $companies_json ); ?>">
                                                             <input type="checkbox" 
                                                                    name="fplms_channels[]" 
                                                                    value="<?php echo esc_attr( $parent_id ); ?>">
