@@ -25,6 +25,8 @@ require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-courses.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-course-visibility.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-course-display.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-reports.php';
+require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-audit-logger.php';
+require_once FPLMS_PLUGIN_DIR . 'admin/class-fplms-audit-admin.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-pages.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-menu.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-plugin.php';
@@ -85,6 +87,11 @@ function fplms_create_user_logins_table() {
         ) $charset_collate;";
         dbDelta($sql);
     }
+    
+    // Tabla de auditoría
+    require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-audit-logger.php';
+    $audit_logger = new FairPlay_LMS_Audit_Logger();
+    $audit_logger->create_table();
 }
 
 // Bootstrap del plugin

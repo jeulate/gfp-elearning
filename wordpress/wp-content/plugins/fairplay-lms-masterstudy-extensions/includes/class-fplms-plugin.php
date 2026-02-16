@@ -50,6 +50,16 @@ class FairPlay_LMS_Plugin {
      */
     private $course_display;
 
+    /**
+     * @var FairPlay_LMS_Audit_Logger
+     */
+    private $audit_logger;
+
+    /**
+     * @var FairPlay_LMS_Audit_Admin
+     */
+    private $audit_admin;
+
     public function __construct() {
 
         $this->structures     = new FairPlay_LMS_Structures_Controller();
@@ -60,6 +70,8 @@ class FairPlay_LMS_Plugin {
         $this->reports        = new FairPlay_LMS_Reports_Controller( $this->users, $this->structures, $this->progress );
         $this->pages          = new FairPlay_LMS_Admin_Pages();
         $this->course_display = new FairPlay_LMS_Course_Display();
+        $this->audit_logger   = new FairPlay_LMS_Audit_Logger();
+        $this->audit_admin    = new FairPlay_LMS_Audit_Admin();
         $this->menu           = new FairPlay_LMS_Admin_Menu(
             $this->pages,
             $this->structures,
@@ -137,6 +149,17 @@ class FairPlay_LMS_Plugin {
         
         // Forzar editor clásico para cursos (evitar Course Builder automático)
         add_filter( 'use_block_editor_for_post_type', [ $this, 'force_classic_editor_for_courses' ], 10, 2 );
+        
+        // FEATURE 2: Sincronización Canales ↔ Categorías
+        add_action( 'created_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'sync_channel_to_category' ], 10, 3 );
+        add_action( 'edited_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'sync_channel_to_category' ], 10, 3 );
+        add_action( 'delete_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'unsync_channel_on_delete' ], 10, 4 );
+        
+        // FEATURE 3: Detectar categorías asignadas en Course Builder y aplicar cascada
+        add_action( 'set_object_terms', [ $this->courses, 'sync_categories_to_structures' ], 10, 6 );
+        
+        // Auditoría: Menú admin
+        add_action( 'admin_menu', [ $this->audit_admin, 'register_admin_menu' ], 20 );
     }
 
     /**

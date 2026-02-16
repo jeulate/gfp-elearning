@@ -207,7 +207,14 @@ class FairPlay_LMS_Structures_Controller {
                 delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_COMPANIES );
                 delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_CHANNELS );
                 delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_BRANCHES );
-                delete_term_meta( $term_id, FairPlay_LMS_Config::META_CITY_RELATIONS );
+                
+                // Eliminar metadatos deprecated si existen
+                delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_PARENT_CITY );
+                delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_PARENT_CHANNEL );
+                delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_PARENT_BRANCH );
+                
+                // Eliminar vinculación con categoría si existe (para canales)
+                delete_term_meta( $term_id, 'fplms_linked_category_id' );
                 
                 // Eliminar el término completamente
                 wp_delete_term( $term_id, $taxonomy );
@@ -2857,4 +2864,155 @@ class FairPlay_LMS_Structures_Controller {
 
         wp_send_json_success( $options );
     }
+
+	/**
+	 * Sincronizar canal con categoría de MasterStudy
+	 * Crea o actualiza una categoría cuando se crea/actualiza un canal
+	 *
+	 * @param int   $term_id ID del canal
+	 * @param int   $tt_id   Term taxonomy ID
+	 * @param array $args    Argumentos pasados a wp_insert_term()
+	 * @return void
+	 */
+	public function sync_channel_to_category( int $term_id, int $tt_id, array $args ): void {
+		// Obtener el canal (el hook ya es específico para fplms_channel)
+		$channel = get_term( $term_id, FairPlay_LMS_Config::TAX_CHANNEL );
+		if ( is_wp_error( $channel ) || ! $channel ) {
+			return;
+		}
+
+		// Verificar si ya existe una categoría vinculada
+		$linked_category_id = get_term_meta( $term_id, 'fplms_linked_category_id', true );
+
+		$category_args = [
+			'taxonomy' => FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY,
+			'slug'     => 'fplms-' . $channel->slug,
+		];
+
+		if ( $linked_category_id ) {
+			// Actualizar categoría existente
+			$category = get_term( $linked_category_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+			
+			if ( ! is_wp_error( $category ) && $category ) {
+				wp_update_term(
+					$linked_category_id,
+					FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY,
+					[
+						'name'        => $channel->name,
+						'description' => '🔗 Sincronizado con Canal: ' . $channel->name,
+					]
+				);
+			} else {
+				// Si la categoría fue eliminada, crear una nueva
+				$linked_category_id = 0;
+			}
+		}
+
+		if ( ! $linked_category_id ) {
+			// Crear nueva categoría
+			$result = wp_insert_term(
+				$channel->name,
+				FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY,
+				array_merge(
+					$category_args,
+					[
+						'description' => '🔗 Sincronizado con Canal: ' . $channel->name,
+					]
+				)
+			);
+
+			if ( ! is_wp_error( $result ) ) {
+				$category_id = $result['term_id'];
+
+				// Guardar relación bidireccional
+				update_term_meta( $term_id, 'fplms_linked_category_id', $category_id );
+				update_term_meta( $category_id, 'fplms_linked_channel_id', $term_id );
+
+				// Registrar en auditoría si está disponible
+				if ( class_exists( 'FairPlay_LMS_Audit_Logger' ) ) {
+					$audit = new FairPlay_LMS_Audit_Logger();
+					$audit->log_action(
+						'channel_category_sync',
+						'channel',
+						$term_id,
+						$channel->name,
+						null,
+						"Categoría creada: {$category_id}"
+					);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Obtener ID de categoría vinculada a un canal
+	 *
+	 * @param int $channel_id ID del canal
+	 * @return int|false ID de categoría o false si no existe
+	 */
+	public function get_linked_category( int $channel_id ) {
+		$category_id = get_term_meta( $channel_id, 'fplms_linked_category_id', true );
+		
+		if ( ! $category_id ) {
+			return false;
+		}
+
+		// Verificar que la categoría aún existe
+		$category = get_term( $category_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+		
+		return ( ! is_wp_error( $category ) && $category ) ? (int) $category_id : false;
+	}
+
+	/**
+	 * Obtener ID de canal vinculado a una categoría
+	 *
+	 * @param int $category_id ID de categoría
+	 * @return int|false ID de canal o false si no existe
+	 */
+	public function get_linked_channel( int $category_id ) {
+		$channel_id = get_term_meta( $category_id, 'fplms_linked_channel_id', true );
+		
+		if ( ! $channel_id ) {
+			return false;
+		}
+
+		// Verificar que el canal aún existe
+		$channel = get_term( $channel_id, FairPlay_LMS_Config::TAX_CHANNEL );
+		
+		return ( ! is_wp_error( $channel ) && $channel ) ? (int) $channel_id : false;
+	}
+
+	/**
+	 * Eliminar sincronización cuando se elimina un canal
+	 *
+	 * @param int     $term_id      ID del término
+	 * @param int     $tt_id        Term taxonomy ID
+	 * @param WP_Term $deleted_term Término eliminado
+	 * @param array   $object_ids   IDs de objetos asociados
+	 * @return void
+	 */
+	public function unsync_channel_on_delete( int $term_id, int $tt_id, $deleted_term, array $object_ids ): void {
+		// El hook de delete ya es específico para fplms_channel, no necesitamos verificar
+
+		$linked_category_id = get_term_meta( $term_id, 'fplms_linked_category_id', true );
+
+		if ( $linked_category_id ) {
+			// Opcional: Eliminar la categoría o solo remover la vinculación
+			// Por ahora solo removemos la vinculación
+			delete_term_meta( $linked_category_id, 'fplms_linked_channel_id' );
+
+			// Registrar en auditoría
+			if ( class_exists( 'FairPlay_LMS_Audit_Logger' ) ) {
+				$audit = new FairPlay_LMS_Audit_Logger();
+				$audit->log_action(
+					'channel_unsynced',
+					'channel',
+					$term_id,
+					$deleted_term->name ?? "Canal #{$term_id}",
+					"Categoría: {$linked_category_id}",
+					null
+				);
+			}
+		}
+	}
 }

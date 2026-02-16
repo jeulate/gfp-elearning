@@ -2671,12 +2671,32 @@ class FairPlay_LMS_Courses_Controller {
         // Aplicar cascada jerárquica
         $cascaded_structures = $this->apply_cascade_logic( $cities, $companies, $channels, $branches, $roles );
         
+        // LOGGING: Verificar guardado
+        error_log( '=== FPLMS: Guardando estructuras ===' );
+        error_log( 'Curso ID: ' . $post_id );
+        error_log( 'Título: ' . $post->post_title );
+        error_log( 'Status: ' . $post->post_status );
+        error_log( 'Usuario: ' . get_current_user_id() . ' (' . wp_get_current_user()->user_login . ')' );
+        error_log( 'Estructuras INPUT:' );
+        error_log( '  - Ciudades: ' . wp_json_encode( $cities ) );
+        error_log( '  - Empresas: ' . wp_json_encode( $companies ) );
+        error_log( '  - Canales: ' . wp_json_encode( $channels ) );
+        error_log( 'Estructuras DESPUÉS DE CASCADA:' );
+        error_log( '  - Ciudades: ' . wp_json_encode( $cascaded_structures['cities'] ) );
+        error_log( '  - Empresas: ' . wp_json_encode( $cascaded_structures['companies'] ) );
+        error_log( '  - Canales: ' . wp_json_encode( $cascaded_structures['channels'] ) );
+        error_log( '  - Sucursales: ' . wp_json_encode( $cascaded_structures['branches'] ) );
+        error_log( '  - Cargos: ' . wp_json_encode( $cascaded_structures['roles'] ) );
+        
         // Guardar en post_meta
         update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CITIES, $cascaded_structures['cities'] );
         update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, $cascaded_structures['companies'] );
         update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, $cascaded_structures['channels'] );
         update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, $cascaded_structures['branches'] );
         update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_ROLES, $cascaded_structures['roles'] );
+        
+        error_log( 'Post meta actualizado correctamente' );
+        error_log( '=== Fin guardado ===' );
         
         // Enviar notificaciones SOLO si el curso se está publicando
         if ( 'publish' === $post->post_status ) {
@@ -2934,5 +2954,184 @@ class FairPlay_LMS_Courses_Controller {
             wp_mail( $user->user_email, $subject, $message );
         }
     }
+
+	/**
+	 * Sincronizar categorías de Course Builder con estructuras FairPlay
+	 * Se ejecuta cuando se asignan categorías a un curso en Course Builder
+	 *
+	 * @param int    $object_id  ID del curso
+	 * @param array  $terms      Array de term IDs asignados
+	 * @param array  $tt_ids     Array de term taxonomy IDs
+	 * @param string $taxonomy   Taxonomía
+	 * @param bool   $append     Si se agregaron o reemplazaron
+	 * @param array  $old_terms  Términos anteriores
+	 * @return void
+	 */
+	public function sync_categories_to_structures(
+		int $object_id,
+		array $terms,
+		array $tt_ids,
+		string $taxonomy,
+		bool $append,
+		array $old_terms
+	): void {
+		// Solo procesar si es la taxonomía de categorías de MasterStudy
+		if ( $taxonomy !== FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY ) {
+			return;
+		}
+
+		// Verificar que sea un curso
+		$post = get_post( $object_id );
+		if ( ! $post || $post->post_type !== FairPlay_LMS_Config::MS_PT_COURSE ) {
+			return;
+		}
+
+		// Evitar loops recursivos
+		if ( defined( 'FPLMS_SYNCING_CATEGORIES' ) && FPLMS_SYNCING_CATEGORIES ) {
+			return;
+		}
+
+		define( 'FPLMS_SYNCING_CATEGORIES', true );
+
+		$structures_controller = new FairPlay_LMS_Structures_Controller();
+		$channels_to_assign    = [];
+
+		// Detectar qué categorías están vinculadas a canales
+		foreach ( $terms as $term_id ) {
+			$channel_id = $structures_controller->get_linked_channel( $term_id );
+			if ( $channel_id ) {
+				$channels_to_assign[] = $channel_id;
+			}
+		}
+
+		if ( empty( $channels_to_assign ) ) {
+			return;
+		}
+
+		// Aplicar cascada de estructuras
+		$cascaded = $this->apply_structure_cascade(
+			[],              // cities
+			[],              // companies
+			$channels_to_assign,
+			[],              // branches
+			[]               // roles
+		);
+
+		// Guardar en post_meta
+		update_post_meta( $object_id, 'fplms_course_cities', $cascaded['cities'] );
+		update_post_meta( $object_id, 'fplms_course_companies', $cascaded['companies'] );
+		update_post_meta( $object_id, 'fplms_course_channels', $cascaded['channels'] );
+		update_post_meta( $object_id, 'fplms_course_branches', $cascaded['branches'] );
+		update_post_meta( $object_id, 'fplms_course_roles', $cascaded['roles'] );
+
+		// Registrar en auditoría
+		if ( class_exists( 'FairPlay_LMS_Audit_Logger' ) ) {
+			$audit = new FairPlay_LMS_Audit_Logger();
+			$audit->log_action(
+				'course_structures_synced_from_categories',
+				'course',
+				$object_id,
+				get_the_title( $object_id ),
+				$old_terms,
+				[
+					'categories' => $terms,
+					'channels'   => $channels_to_assign,
+					'cascaded'   => $cascaded,
+				]
+			);
+		}
+
+		// Enviar notificaciones
+		$this->send_course_update_notifications( $object_id, [], $cascaded );
+	}
+
+	/**
+	 * Aplicar cascada de estructuras jerárquicas
+	 *
+	 * @param array $cities    IDs de ciudades
+	 * @param array $companies IDs de empresas
+	 * @param array $channels  IDs de canales
+	 * @param array $branches  IDs de sucursales
+	 * @param array $roles     IDs de cargos
+	 * @return array Array con todas las estructuras después de aplicar cascada
+	 */
+	private function apply_structure_cascade(
+		array $cities,
+		array $companies,
+		array $channels,
+		array $branches,
+		array $roles
+	): array {
+		$structures_controller = new FairPlay_LMS_Structures_Controller();
+
+		$result = [
+			'cities'    => $cities,
+			'companies' => $companies,
+			'channels'  => $channels,
+			'branches'  => $branches,
+			'roles'     => $roles,
+		];
+
+		// Si hay canales, obtener sus empresas y ciudades padres
+		if ( ! empty( $channels ) ) {
+			foreach ( $channels as $channel_id ) {
+				// Obtener empresas del canal (retorna array de IDs)
+				$channel_companies = $structures_controller->get_term_companies( $channel_id );
+				if ( ! empty( $channel_companies ) ) {
+					foreach ( $channel_companies as $company_id ) {
+						if ( ! in_array( $company_id, $result['companies'], true ) ) {
+							$result['companies'][] = $company_id;
+						}
+
+						// Obtener ciudades de la empresa (retorna array de IDs)
+						$company_cities = $structures_controller->get_term_cities( $company_id );
+						if ( ! empty( $company_cities ) ) {
+							foreach ( $company_cities as $city_id ) {
+								if ( ! in_array( $city_id, $result['cities'], true ) ) {
+									$result['cities'][] = $city_id;
+								}
+							}
+						}
+					}
+				}
+
+				// Obtener sucursales del canal (retorna array de IDs)
+				$channel_branches = $structures_controller->get_term_branches( $channel_id );
+				if ( ! empty( $channel_branches ) ) {
+					foreach ( $channel_branches as $branch_id ) {
+						if ( ! in_array( $branch_id, $result['branches'], true ) ) {
+							$result['branches'][] = $branch_id;
+						}
+
+						// Obtener cargos de la sucursal (retorna array de IDs)
+						$branch_roles = $structures_controller->get_term_roles( $branch_id );
+						if ( ! empty( $branch_roles ) ) {
+							foreach ( $branch_roles as $role_id ) {
+								if ( ! in_array( $role_id, $result['roles'], true ) ) {
+									$result['roles'][] = $role_id;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Si hay empresas (sin canales), obtener sus ciudades
+		if ( ! empty( $companies ) && empty( $channels ) ) {
+			foreach ( $companies as $company_id ) {
+				$company_cities = $structures_controller->get_term_cities( $company_id );
+				if ( ! empty( $company_cities ) ) {
+					foreach ( $company_cities as $city ) {
+						if ( ! in_array( $city->term_id, $result['cities'], true ) ) {
+							$result['cities'][] = $city->term_id;
+						}
+					}
+				}
+			}
+		}
+
+		return $result;
+	}
 }
 

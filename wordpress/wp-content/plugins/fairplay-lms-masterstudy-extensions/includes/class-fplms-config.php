@@ -65,6 +65,7 @@ class FairPlay_LMS_Config {
     public const MS_PT_COURSE           = 'stm-courses';
     public const MS_PT_LESSON           = 'stm-lessons';
     public const MS_PT_QUIZ             = 'stm-quizzes';
+    public const MS_TAX_COURSE_CATEGORY = 'stm_lms_course_taxonomy';
     public const MS_META_COURSE_TEACHER = 'stm_lms_course_teacher';
     public const MS_META_CURRICULUM     = 'curriculum'; // Meta key para el curriculum de MasterStudy
 
