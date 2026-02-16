@@ -2997,19 +2997,22 @@ class FairPlay_LMS_Structures_Controller {
 		$linked_category_id = get_term_meta( $term_id, 'fplms_linked_category_id', true );
 
 		if ( $linked_category_id ) {
-			// Opcional: Eliminar la categoría o solo remover la vinculación
-			// Por ahora solo removemos la vinculación
-			delete_term_meta( $linked_category_id, 'fplms_linked_channel_id' );
+			// Eliminar la categoría asociada
+			$category_term = get_term( $linked_category_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+			$category_name = $category_term && ! is_wp_error( $category_term ) ? $category_term->name : "Categoría #{$linked_category_id}";
+
+			// Eliminar el término de la taxonomía de categorías
+			wp_delete_term( $linked_category_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
 
 			// Registrar en auditoría
 			if ( class_exists( 'FairPlay_LMS_Audit_Logger' ) ) {
 				$audit = new FairPlay_LMS_Audit_Logger();
 				$audit->log_action(
-					'channel_unsynced',
+					'channel_category_deleted',
 					'channel',
 					$term_id,
 					$deleted_term->name ?? "Canal #{$term_id}",
-					"Categoría: {$linked_category_id}",
+					"Categoría eliminada: {$category_name} (ID: {$linked_category_id})",
 					null
 				);
 			}
