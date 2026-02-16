@@ -158,6 +158,9 @@ class FairPlay_LMS_Plugin {
         // FEATURE 3: Detectar categorías asignadas en Course Builder y aplicar cascada
         add_action( 'set_object_terms', [ $this->courses, 'sync_categories_to_structures' ], 10, 6 );
         
+        // También sincronizar cuando se guarda un curso (para editor clásico y actualizaciones)
+        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'sync_course_categories_on_save' ], 20, 3 );
+        
         // Auditoría: Menú admin
         add_action( 'admin_menu', [ $this->audit_admin, 'register_admin_menu' ], 20 );
     }

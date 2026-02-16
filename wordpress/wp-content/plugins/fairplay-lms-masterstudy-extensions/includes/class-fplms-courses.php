@@ -2956,6 +2956,87 @@ class FairPlay_LMS_Courses_Controller {
     }
 
 	/**
+	 * Sincronizar categorías cuando se guarda el curso (editor clásico o actualizaciones)
+	 *
+	 * @param int     $post_id Post ID
+	 * @param WP_Post $post    Post object
+	 * @param bool    $update  Whether this is an existing post being updated
+	 * @return void
+	 */
+	public function sync_course_categories_on_save( int $post_id, $post, bool $update ): void {
+		// Evitar autosaves y revisiones
+		if ( wp_is_post_autosave( $post_id ) || wp_is_post_revision( $post_id ) ) {
+			return;
+		}
+
+		// Evitar loops recursivos
+		if ( defined( 'FPLMS_SYNCING_COURSE_SAVE' ) && FPLMS_SYNCING_COURSE_SAVE ) {
+			return;
+		}
+
+		define( 'FPLMS_SYNCING_COURSE_SAVE', true );
+
+		// Obtener categorías asignadas al curso
+		$category_ids = wp_get_object_terms(
+			$post_id,
+			FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY,
+			[ 'fields' => 'ids' ]
+		);
+
+		if ( is_wp_error( $category_ids ) || empty( $category_ids ) ) {
+			return;
+		}
+
+		$structures_controller = new FairPlay_LMS_Structures_Controller();
+		$channels_to_assign    = [];
+
+		// Detectar qué categorías están vinculadas a canales
+		foreach ( $category_ids as $category_id ) {
+			$channel_id = $structures_controller->get_linked_channel( $category_id );
+			if ( $channel_id ) {
+				$channels_to_assign[] = $channel_id;
+			}
+		}
+
+		if ( empty( $channels_to_assign ) ) {
+			return;
+		}
+
+		// Aplicar cascada de estructuras
+		$cascaded = $this->apply_structure_cascade(
+			[],              // cities
+			[],              // companies
+			$channels_to_assign,
+			[],              // branches
+			[]               // roles
+		);
+
+		// Guardar en post_meta
+		update_post_meta( $post_id, 'fplms_course_cities', $cascaded['cities'] );
+		update_post_meta( $post_id, 'fplms_course_companies', $cascaded['companies'] );
+		update_post_meta( $post_id, 'fplms_course_channels', $cascaded['channels'] );
+		update_post_meta( $post_id, 'fplms_course_branches', $cascaded['branches'] );
+		update_post_meta( $post_id, 'fplms_course_roles', $cascaded['roles'] );
+
+		// Registrar en auditoría
+		if ( class_exists( 'FairPlay_LMS_Audit_Logger' ) ) {
+			$audit = new FairPlay_LMS_Audit_Logger();
+			$audit->log_action(
+				'course_structures_synced_on_save',
+				'course',
+				$post_id,
+				get_the_title( $post_id ),
+				'Categorías: ' . implode( ', ', $category_ids ),
+				[
+					'categories' => $category_ids,
+					'channels'   => $channels_to_assign,
+					'cascaded'   => $cascaded,
+				]
+			);
+		}
+	}
+
+	/**
 	 * Sincronizar categorías de Course Builder con estructuras FairPlay
 	 * Se ejecuta cuando se asignan categorías a un curso en Course Builder
 	 *
@@ -3055,7 +3136,7 @@ class FairPlay_LMS_Courses_Controller {
 	 * @param array $roles     IDs de cargos
 	 * @return array Array con todas las estructuras después de aplicar cascada
 	 */
-	private function apply_structure_cascade(
+	public function apply_structure_cascade(
 		array $cities,
 		array $companies,
 		array $channels,

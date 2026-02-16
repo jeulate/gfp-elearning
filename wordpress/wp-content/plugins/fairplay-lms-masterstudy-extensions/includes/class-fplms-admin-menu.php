@@ -130,6 +130,15 @@ class FairPlay_LMS_Admin_Menu {
             'cleanup-orphan-categories',
             [ $this, 'render_cleanup_page' ]
         );
+
+        add_submenu_page(
+            'fplms-dashboard',
+            'Resincronizar Cursos',
+            '🔄 Resincronizar',
+            'manage_options',
+            'resync-all-courses',
+            [ $this, 'render_resync_page' ]
+        );
     }
 
     /**
@@ -137,5 +146,12 @@ class FairPlay_LMS_Admin_Menu {
      */
     public function render_cleanup_page(): void {
         require_once FPLMS_PLUGIN_DIR . '/cleanup-orphan-categories.php';
+    }
+
+    /**
+     * Renderizar página de resincronización de cursos
+     */
+    public function render_resync_page(): void {
+        require_once FPLMS_PLUGIN_DIR . '/resync-all-courses.php';
     }
 }
