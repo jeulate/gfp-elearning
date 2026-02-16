@@ -121,5 +121,21 @@ class FairPlay_LMS_Admin_Menu {
             'fplms-reports',
             [ $this->reports, 'render_reports_page' ]
         );
+
+        add_submenu_page(
+            'fplms-dashboard',
+            'Limpieza de Categorías',
+            '🧹 Limpieza',
+            'manage_options',
+            'cleanup-orphan-categories',
+            [ $this, 'render_cleanup_page' ]
+        );
+    }
+
+    /**
+     * Renderizar página de limpieza de categorías huérfanas
+     */
+    public function render_cleanup_page(): void {
+        require_once FPLMS_PLUGIN_DIR . '/cleanup-orphan-categories.php';
     }
 }
