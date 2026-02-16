@@ -30,17 +30,33 @@ if ( isset( $_POST['cleanup_orphans'] ) && check_admin_referer( 'fplms_cleanup_o
 	$results['orphans_deleted'] = 0;
 	$results['relinked'] = 0;
 	$results['already_linked'] = 0;
+	$results['broken_links_fixed'] = 0;
 	
 	foreach ( $categories as $category ) {
 		$channel_id = get_term_meta( $category->term_id, 'fplms_linked_channel_id', true );
 		
-		// Si no tiene canal vinculado
+		// Si tiene canal vinculado, validar que el canal existe
+		if ( ! empty( $channel_id ) ) {
+			$channel = get_term( $channel_id, FairPlay_LMS_Config::TAX_CHANNEL );
+			
+			// Si el canal no existe, tratar como huérfano
+			if ( ! $channel || is_wp_error( $channel ) ) {
+				delete_term_meta( $category->term_id, 'fplms_linked_channel_id' );
+				$channel_id = null; // Resetear para que se procese como huérfano
+				$results['broken_links_fixed']++;
+			} else {
+				$results['already_linked']++;
+				continue;
+			}
+		}
+		
+		// Si no tiene canal vinculado o el canal no existe
 		if ( empty( $channel_id ) ) {
 			// Intentar buscar canal con slug similar
 			$slug = str_replace( 'fplms-', '', $category->slug );
 			$channel = get_term_by( 'slug', $slug, FairPlay_LMS_Config::TAX_CHANNEL );
 			
-			if ( $channel ) {
+			if ( $channel && ! is_wp_error( $channel ) ) {
 				// Revincular
 				update_term_meta( $category->term_id, 'fplms_linked_channel_id', $channel->term_id );
 				update_term_meta( $channel->term_id, 'fplms_linked_category_id', $category->term_id );
@@ -52,8 +68,6 @@ if ( isset( $_POST['cleanup_orphans'] ) && check_admin_referer( 'fplms_cleanup_o
 				$results['orphans_deleted']++;
 				$results['deleted_details'][] = "Categoría '{$category->name}' eliminada (sin canal asociado)";
 			}
-		} else {
-			$results['already_linked']++;
 		}
 	}
 }
@@ -77,6 +91,9 @@ if ( isset( $_POST['cleanup_orphans'] ) && check_admin_referer( 'fplms_cleanup_o
 			<ul style="list-style: disc; margin-left: 20px; font-size: 14px;">
 				<li><strong>Total de categorías:</strong> <?php echo esc_html( $results['total_categories'] ); ?></li>
 				<li><strong>Categorías ya vinculadas:</strong> <?php echo esc_html( $results['already_linked'] ); ?></li>
+				<?php if ( $results['broken_links_fixed'] > 0 ) : ?>
+					<li style="color: #d63638;"><strong>Vínculos rotos corregidos:</strong> <?php echo esc_html( $results['broken_links_fixed'] ); ?></li>
+				<?php endif; ?>
 				<li><strong>Categorías revinculadas:</strong> <?php echo esc_html( $results['relinked'] ); ?></li>
 				<li><strong>Categorías huérfanas eliminadas:</strong> <?php echo esc_html( $results['orphans_deleted'] ); ?></li>
 			</ul>

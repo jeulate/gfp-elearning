@@ -49,34 +49,69 @@ if ( isset( $_POST['resync_courses'] ) && check_admin_referer( 'fplms_resync_cou
 			continue;
 		}
 		
+		// Filtrar categorías que ya no existen
+		$valid_category_ids = [];
+		foreach ( $category_ids as $cat_id ) {
+			$term = get_term( $cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+			if ( $term && ! is_wp_error( $term ) ) {
+				$valid_category_ids[] = $cat_id;
+			}
+		}
+		
+		// Si había categorías pero todas fueron eliminadas, limpiar la relación
+		if ( empty( $valid_category_ids ) && ! empty( $category_ids ) ) {
+			wp_set_object_terms( $course->ID, [], FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+			$results['without_categories']++;
+			continue;
+		}
+		
+		if ( empty( $valid_category_ids ) ) {
+			$results['without_categories']++;
+			continue;
+		}
+		
 		$channels_found = [];
+		$invalid_categories = [];
 		
 		// Buscar canales vinculados
-		foreach ( $category_ids as $category_id ) {
+		foreach ( $valid_category_ids as $category_id ) {
 			$channel_id = $structures_controller->get_linked_channel( $category_id );
+			
 			if ( $channel_id ) {
-				$channels_found[] = $channel_id;
+				// Validar que el canal existe
+				$channel = get_term( $channel_id, FairPlay_LMS_Config::TAX_CHANNEL );
+				if ( $channel && ! is_wp_error( $channel ) ) {
+					$channels_found[] = $channel_id;
+				} else {
+					// Canal vinculado no existe, limpiar vinculación
+					delete_term_meta( $category_id, 'fplms_linked_channel_id' );
+					$invalid_categories[] = $category_id;
+				}
+			} else {
+				$invalid_categories[] = $category_id;
 			}
 		}
 		
 		if ( empty( $channels_found ) ) {
 			$results['without_channels']++;
 			
-			// Obtener nombres de categorías sin canal
+			// Obtener nombres de categorías sin canal válido
 			$category_names = [];
-			foreach ( $category_ids as $cat_id ) {
+			foreach ( $invalid_categories as $cat_id ) {
 				$cat = get_term( $cat_id );
 				if ( $cat && ! is_wp_error( $cat ) ) {
 					$category_names[] = $cat->name;
 				}
 			}
 			
-			$results['without_channels_details'][] = sprintf(
-				'Curso "%s" (ID: %d) tiene categorías [%s] sin canal vinculado',
-				get_the_title( $course->ID ),
-				$course->ID,
-				implode( ', ', $category_names )
-			);
+			if ( ! empty( $category_names ) ) {
+				$results['without_channels_details'][] = sprintf(
+					'Curso "%s" (ID: %d) tiene categorías [%s] sin canal vinculado',
+					get_the_title( $course->ID ),
+					$course->ID,
+					implode( ', ', $category_names )
+				);
+			}
 			continue;
 		}
 		

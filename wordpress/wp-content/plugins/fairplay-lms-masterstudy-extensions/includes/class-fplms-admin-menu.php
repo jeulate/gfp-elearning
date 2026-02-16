@@ -77,6 +77,25 @@ class FairPlay_LMS_Admin_Menu {
             [ $this->structures, 'render_page' ]
         );
 
+        // Herramientas de sincronización como submenús de Estructuras
+        add_submenu_page(
+            'fplms-structures',
+            'Limpieza de Categorías',
+            '🧹 Limpieza',
+            'manage_options',
+            'fplms-cleanup-orphan-categories',
+            [ $this, 'render_cleanup_page' ]
+        );
+
+        add_submenu_page(
+            'fplms-structures',
+            'Resincronizar Cursos',
+            '🔄 Resincronizar',
+            'manage_options',
+            'fplms-resync-all-courses',
+            [ $this, 'render_resync_page' ]
+        );
+
         add_submenu_page(
             'fplms-dashboard',
             'Usuarios',
@@ -120,24 +139,6 @@ class FairPlay_LMS_Admin_Menu {
             FairPlay_LMS_Config::CAP_VIEW_REPORTS,
             'fplms-reports',
             [ $this->reports, 'render_reports_page' ]
-        );
-
-        add_submenu_page(
-            'fplms-dashboard',
-            'Limpieza de Categorías',
-            '🧹 Limpieza',
-            'manage_options',
-            'cleanup-orphan-categories',
-            [ $this, 'render_cleanup_page' ]
-        );
-
-        add_submenu_page(
-            'fplms-dashboard',
-            'Resincronizar Cursos',
-            '🔄 Resincronizar',
-            'manage_options',
-            'resync-all-courses',
-            [ $this, 'render_resync_page' ]
         );
     }
 
