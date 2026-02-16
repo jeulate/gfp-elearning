@@ -221,16 +221,58 @@ if ( isset( $_POST['resync_courses'] ) && check_admin_referer( 'fplms_resync_cou
 			<?php endif; ?>
 			
 			<?php if ( ! empty( $results['without_channels_details'] ) ) : ?>
-				<h3 style="margin-top: 20px; color: #856404;">⚠️ Cursos con categorías sin canal vinculado:</h3>
-				<div style="background: #fff3cd; padding: 15px; border-left: 4px solid #ffc107; font-family: monospace; font-size: 12px; max-height: 300px; overflow-y: auto;">
-					<?php foreach ( $results['without_channels_details'] as $detail ) : ?>
-						<div style="margin-bottom: 5px; color: #856404;"><?php echo esc_html( $detail ); ?></div>
-					<?php endforeach; ?>
+				<div style="background: #fff3cd; padding: 20px; border-left: 4px solid #ffc107; margin-top: 20px;">
+					<h3 style="margin-top: 0; color: #856404;">⚠️ Problema detectado: Categorías sin vinculación a Canales</h3>
+					<p style="font-size: 14px; line-height: 1.6; color: #856404;">
+						Los siguientes cursos tienen <strong>categorías asignadas</strong> en Course Builder, pero esas categorías 
+						<strong>NO están vinculadas</strong> a ningún canal de FairPlay LMS. Esto impide que se sincronicen las estructuras.
+					</p>
+					
+					<details style="margin: 15px 0;">
+						<summary style="cursor: pointer; font-weight: bold; color: #856404; padding: 10px; background: #fffbf0; border-radius: 4px;">
+							Ver cursos afectados (<?php echo count( $results['without_channels_details'] ); ?>)
+						</summary>
+						<div style="background: #fffbf0; padding: 15px; margin-top: 10px; font-family: monospace; font-size: 12px; max-height: 300px; overflow-y: auto; border-radius: 4px;">
+							<?php foreach ( $results['without_channels_details'] as $detail ) : ?>
+								<div style="margin-bottom: 5px; color: #856404;">• <?php echo esc_html( $detail ); ?></div>
+							<?php endforeach; ?>
+						</div>
+					</details>
+					
+					<div style="background: #fff; padding: 15px; border-radius: 4px; margin-top: 15px;">
+						<h4 style="margin-top: 0; color: #d63638;">🔧 Solución paso a paso:</h4>
+						<ol style="line-height: 1.8; margin-left: 20px; color: #333;">
+							<li>
+								<strong>Ejecuta la Limpieza:</strong><br>
+								Ve a <a href="<?php echo admin_url( 'admin.php?page=fplms-cleanup-orphan-categories' ); ?>" class="button button-secondary" style="margin-top: 5px;">↳ Limpieza Categorías</a><br>
+								<span style="color: #666; font-size: 13px;">→ Esto intentará vincular automáticamente las categorías con canales que tengan nombres similares.</span>
+							</li>
+							<li style="margin-top: 10px;">
+								<strong>Si la limpieza no las vincula automáticamente:</strong><br>
+								<span style="color: #666;">Deberás crear manualmente los canales faltantes o eliminar las categorías huérfanas:</span>
+								<ul style="margin-top: 5px; list-style: circle; margin-left: 20px; color: #666; font-size: 13px;">
+									<li>Ve a <strong>FairPlay LMS → Estructuras → Canales</strong></li>
+									<li>Crea los canales que faltan con el <strong>mismo nombre</strong> que las categorías</li>
+									<li>Luego vuelve a ejecutar <strong>↳ Limpieza Categorías</strong></li>
+								</ul>
+							</li>
+							<li style="margin-top: 10px;">
+								<strong>Finalmente:</strong><br>
+								<span style="color: #666;">Ejecuta nuevamente <strong>↳ Resincronizar Cursos</strong> para aplicar las estructuras.</span>
+							</li>
+						</ol>
+					</div>
+					
+					<div style="background: #e7f3ff; padding: 12px; border-radius: 4px; margin-top: 15px; border-left: 3px solid #2271b1;">
+						<strong style="color: #135e96;">💡 ¿Por qué ocurre esto?</strong><br>
+						<span style="color: #666; font-size: 13px;">
+							Las categorías de MasterStudy y los Canales de FairPlay son taxonomías separadas. 
+							Para que funcione la sincronización, cada categoría debe estar <strong>vinculada</strong> a un canal específico.
+							Esta vinculación se crea automáticamente cuando creas/editas un canal, pero si las categorías 
+							existían antes, necesitas ejecutar la limpieza para establecer la vinculación.
+						</span>
+					</div>
 				</div>
-				<p style="margin-top: 10px;">
-					<strong>Sugerencia:</strong> Ve a <a href="<?php echo admin_url( 'admin.php?page=cleanup-orphan-categories' ); ?>">🧹 Limpieza</a> 
-					para vincular o eliminar estas categorías huérfanas.
-				</p>
 			<?php endif; ?>
 			
 			<a href="<?php echo admin_url( 'admin.php?page=fplms-courses' ); ?>" class="button button-primary" style="margin-top: 20px;">

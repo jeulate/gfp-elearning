@@ -74,15 +74,20 @@ if ( isset( $_POST['cleanup_orphans'] ) && check_admin_referer( 'fplms_cleanup_o
 
 ?>
 <div class="wrap">
-	<h1>🧹 Limpieza de Categorías Huérfanas</h1>
+	<h1>🧹 Limpieza y Vinculación de Categorías</h1>
 	
 	<div class="notice notice-info">
-		<p><strong>¿Qué hace este script?</strong></p>
-		<ul style="list-style: disc; margin-left: 20px;">
-			<li>Busca categorías de cursos sin canal vinculado</li>
-			<li>Intenta revincularlas automáticamente si existe un canal con slug similar</li>
-			<li>Elimina las categorías que no tienen canal asociado</li>
-		</ul>
+		<p><strong>¿Qué hace esta herramienta?</strong></p>
+		<ol style="list-style: decimal; margin-left: 20px; line-height: 1.6;">
+			<li><strong>Busca categorías sin vinculación:</strong> Identifica categorías de MasterStudy que no están vinculadas a ningún canal de FairPlay.</li>
+			<li><strong>Vincula automáticamente:</strong> Si encuentra un canal con el mismo nombre (o slug similar), crea la vinculación automáticamente.</li>
+			<li><strong>Detecta vínculos rotos:</strong> Encuentra categorías vinculadas a canales que ya no existen y corrige el problema.</li>
+			<li><strong>Limpia huérfanos:</strong> Elimina categorías que no tienen canal asociado y no pueden ser vinculadas.</li>
+		</ol>
+		<p style="margin-top: 10px; padding: 10px; background: #fffbf0; border-left: 3px solid #f0b849;">
+			<strong>💡 Importante:</strong> Si después de ejecutar esta limpieza siguen apareciendo categorías sin canal, 
+			necesitas crear los canales faltantes en <strong>FairPlay LMS → Estructuras → Canales</strong> con el mismo nombre que las categorías.
+		</p>
 	</div>
 	
 	<?php if ( $action_performed ) : ?>
