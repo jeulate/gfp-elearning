@@ -2992,9 +2992,22 @@ class FairPlay_LMS_Courses_Controller {
 
 		// Detectar qué categorías están vinculadas a canales
 		foreach ( $category_ids as $category_id ) {
+			// Validar que la categoría existe
+			$category = get_term( $category_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+			if ( ! $category || is_wp_error( $category ) ) {
+				continue;
+			}
+
 			$channel_id = $structures_controller->get_linked_channel( $category_id );
 			if ( $channel_id ) {
-				$channels_to_assign[] = $channel_id;
+				// Validar que el canal existe
+				$channel = get_term( $channel_id, FairPlay_LMS_Config::TAX_CHANNEL );
+				if ( $channel && ! is_wp_error( $channel ) ) {
+					$channels_to_assign[] = $channel_id;
+				} else {
+					// Canal vinculado no existe, limpiar vinculación
+					delete_term_meta( $category_id, 'fplms_linked_channel_id' );
+				}
 			}
 		}
 
@@ -3079,9 +3092,22 @@ class FairPlay_LMS_Courses_Controller {
 
 		// Detectar qué categorías están vinculadas a canales
 		foreach ( $terms as $term_id ) {
+			// Validar que el término existe
+			$term = get_term( $term_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+			if ( ! $term || is_wp_error( $term ) ) {
+				continue;
+			}
+
 			$channel_id = $structures_controller->get_linked_channel( $term_id );
 			if ( $channel_id ) {
-				$channels_to_assign[] = $channel_id;
+				// Validar que el canal existe
+				$channel = get_term( $channel_id, FairPlay_LMS_Config::TAX_CHANNEL );
+				if ( $channel && ! is_wp_error( $channel ) ) {
+					$channels_to_assign[] = $channel_id;
+				} else {
+					// Canal vinculado no existe, limpiar vinculación
+					delete_term_meta( $term_id, 'fplms_linked_channel_id' );
+				}
 			}
 		}
 
