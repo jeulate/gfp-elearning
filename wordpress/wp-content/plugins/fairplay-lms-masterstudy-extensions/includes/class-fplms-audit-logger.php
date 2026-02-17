@@ -58,14 +58,17 @@ class FairPlay_LMS_Audit_Logger {
 			new_value TEXT DEFAULT NULL,
 			ip_address VARCHAR(45) DEFAULT NULL,
 			user_agent VARCHAR(255) DEFAULT NULL,
+			status VARCHAR(20) DEFAULT 'active',
+			meta_data TEXT DEFAULT NULL,
 			PRIMARY KEY  (id),
 			KEY timestamp_idx (timestamp),
 			KEY user_id_idx (user_id),
 			KEY action_idx (action),
 			KEY entity_type_idx (entity_type),
 			KEY entity_id_idx (entity_id),
+			KEY status_idx (status),
 			KEY composite_idx (entity_type, entity_id, action)
-		) $charset_collate;";
+		) $charset_collate ENGINE=InnoDB;";
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		dbDelta( $sql );
@@ -181,11 +184,15 @@ class FairPlay_LMS_Audit_Logger {
 		}
 
 		if ( ! empty( $args['date_from'] ) ) {
-			$where_clauses[] = $wpdb->prepare( 'timestamp >= %s', $args['date_from'] );
+			// Si date_from solo tiene fecha (no hora), agregar 00:00:00
+			$date_from = strlen( $args['date_from'] ) === 10 ? $args['date_from'] . ' 00:00:00' : $args['date_from'];
+			$where_clauses[] = $wpdb->prepare( 'timestamp >= %s', $date_from );
 		}
 
 		if ( ! empty( $args['date_to'] ) ) {
-			$where_clauses[] = $wpdb->prepare( 'timestamp <= %s', $args['date_to'] );
+			// Si date_to solo tiene fecha (no hora), agregar 23:59:59 para incluir todo el día
+			$date_to = strlen( $args['date_to'] ) === 10 ? $args['date_to'] . ' 23:59:59' : $args['date_to'];
+			$where_clauses[] = $wpdb->prepare( 'timestamp <= %s', $date_to );
 		}
 
 		$where_sql = implode( ' AND ', $where_clauses );
@@ -236,11 +243,15 @@ class FairPlay_LMS_Audit_Logger {
 		}
 
 		if ( ! empty( $args['date_from'] ) ) {
-			$where_clauses[] = $wpdb->prepare( 'timestamp >= %s', $args['date_from'] );
+			// Si date_from solo tiene fecha (no hora), agregar 00:00:00
+			$date_from = strlen( $args['date_from'] ) === 10 ? $args['date_from'] . ' 00:00:00' : $args['date_from'];
+			$where_clauses[] = $wpdb->prepare( 'timestamp >= %s', $date_from );
 		}
 
 		if ( ! empty( $args['date_to'] ) ) {
-			$where_clauses[] = $wpdb->prepare( 'timestamp <= %s', $args['date_to'] );
+			// Si date_to solo tiene fecha (no hora), agregar 23:59:59 para incluir todo el día
+			$date_to = strlen( $args['date_to'] ) === 10 ? $args['date_to'] . ' 23:59:59' : $args['date_to'];
+			$where_clauses[] = $wpdb->prepare( 'timestamp <= %s', $date_to );
 		}
 
 		$where_sql = implode( ' AND ', $where_clauses );
@@ -351,11 +362,15 @@ class FairPlay_LMS_Audit_Logger {
 		$where_clauses = [ '1=1' ];
 
 		if ( ! empty( $args['date_from'] ) ) {
-			$where_clauses[] = $wpdb->prepare( 'timestamp >= %s', $args['date_from'] );
+			// Si date_from solo tiene fecha (no hora), agregar 00:00:00
+			$date_from = strlen( $args['date_from'] ) === 10 ? $args['date_from'] . ' 00:00:00' : $args['date_from'];
+			$where_clauses[] = $wpdb->prepare( 'timestamp >= %s', $date_from );
 		}
 
 		if ( ! empty( $args['date_to'] ) ) {
-			$where_clauses[] = $wpdb->prepare( 'timestamp <= %s', $args['date_to'] );
+			// Si date_to solo tiene fecha (no hora), agregar 23:59:59 para incluir todo el día
+			$date_to = strlen( $args['date_to'] ) === 10 ? $args['date_to'] . ' 23:59:59' : $args['date_to'];
+			$where_clauses[] = $wpdb->prepare( 'timestamp <= %s', $date_to );
 		}
 
 		$where_sql = implode( ' AND ', $where_clauses );
@@ -413,5 +428,227 @@ class FairPlay_LMS_Audit_Logger {
 		}
 
 		return $stats;
+	}
+
+	/**
+	 * Registrar creación de curso
+	 *
+	 * @param int    $course_id ID del curso
+	 * @param string $course_title Título del curso
+	 * @param array  $meta_data Datos adicionales
+	 * @return int|false
+	 */
+	public function log_course_created( int $course_id, string $course_title, array $meta_data = [] ) {
+		return $this->log_action(
+			'course_created',
+			'course',
+			$course_id,
+			$course_title,
+			null,
+			wp_json_encode( $meta_data )
+		);
+	}
+
+	/**
+	 * Registrar edición de curso
+	 *
+	 * @param int    $course_id ID del curso
+	 * @param string $course_title Título del curso
+	 * @param array  $old_data Datos anteriores
+	 * @param array  $new_data Datos nuevos
+	 * @return int|false
+	 */
+	public function log_course_updated( int $course_id, string $course_title, array $old_data = [], array $new_data = [] ) {
+		return $this->log_action(
+			'course_updated',
+			'course',
+			$course_id,
+			$course_title,
+			wp_json_encode( $old_data ),
+			wp_json_encode( $new_data )
+		);
+	}
+
+	/**
+	 * Registrar eliminación de curso
+	 *
+	 * @param int    $course_id ID del curso
+	 * @param string $course_title Título del curso
+	 * @return int|false
+	 */
+	public function log_course_deleted( int $course_id, string $course_title ) {
+		return $this->log_action(
+			'course_deleted',
+			'course',
+			$course_id,
+			$course_title
+		);
+	}
+
+	/**
+	 * Registrar adición de lección
+	 *
+	 * @param int    $lesson_id ID de la lección
+	 * @param string $lesson_title Título de la lección
+	 * @param int    $course_id ID del curso asociado
+	 * @return int|false
+	 */
+	public function log_lesson_added( int $lesson_id, string $lesson_title, int $course_id ) {
+		return $this->log_action(
+			'lesson_added',
+			'lesson',
+			$lesson_id,
+			$lesson_title,
+			null,
+			wp_json_encode( [ 'course_id' => $course_id ] )
+		);
+	}
+
+	/**
+	 * Registrar edición de lección
+	 *
+	 * @param int    $lesson_id ID de la lección
+	 * @param string $lesson_title Título de la lección
+	 * @param array  $old_data Datos anteriores
+	 * @param array  $new_data Datos nuevos
+	 * @return int|false
+	 */
+	public function log_lesson_updated( int $lesson_id, string $lesson_title, array $old_data = [], array $new_data = [] ) {
+		return $this->log_action(
+			'lesson_updated',
+			'lesson',
+			$lesson_id,
+			$lesson_title,
+			wp_json_encode( $old_data ),
+			wp_json_encode( $new_data )
+		);
+	}
+
+	/**
+	 * Registrar eliminación de lección
+	 *
+	 * @param int    $lesson_id ID de la lección
+	 * @param string $lesson_title Título de la lección
+	 * @return int|false
+	 */
+	public function log_lesson_deleted( int $lesson_id, string $lesson_title ) {
+		return $this->log_action(
+			'lesson_deleted',
+			'lesson',
+			$lesson_id,
+			$lesson_title
+		);
+	}
+
+	/**
+	 * Registrar adición de examen/quiz
+	 *
+	 * @param int    $quiz_id ID del quiz
+	 * @param string $quiz_title Título del quiz
+	 * @param int    $course_id ID del curso asociado
+	 * @return int|false
+	 */
+	public function log_quiz_added( int $quiz_id, string $quiz_title, int $course_id ) {
+		return $this->log_action(
+			'quiz_added',
+			'quiz',
+			$quiz_id,
+			$quiz_title,
+			null,
+			wp_json_encode( [ 'course_id' => $course_id ] )
+		);
+	}
+
+	/**
+	 * Registrar edición de examen/quiz
+	 *
+	 * @param int    $quiz_id ID del quiz
+	 * @param string $quiz_title Título del quiz
+	 * @param array  $old_data Datos anteriores
+	 * @param array  $new_data Datos nuevos
+	 * @return int|false
+	 */
+	public function log_quiz_updated( int $quiz_id, string $quiz_title, array $old_data = [], array $new_data = [] ) {
+		return $this->log_action(
+			'quiz_updated',
+			'quiz',
+			$quiz_id,
+			$quiz_title,
+			wp_json_encode( $old_data ),
+			wp_json_encode( $new_data )
+		);
+	}
+
+	/**
+	 * Registrar eliminación de examen/quiz
+	 *
+	 * @param int    $quiz_id ID del quiz
+	 * @param string $quiz_title Título del quiz
+	 * @return int|false
+	 */
+	public function log_quiz_deleted( int $quiz_id, string $quiz_title ) {
+		return $this->log_action(
+			'quiz_deleted',
+			'quiz',
+			$quiz_id,
+			$quiz_title
+		);
+	}
+
+	/**
+	 * Registrar desactivación de usuario (soft delete)
+	 *
+	 * @param int    $user_id ID del usuario
+	 * @param string $user_name Nombre del usuario
+	 * @param string $user_email Email del usuario
+	 * @return int|false
+	 */
+	public function log_user_deactivated( int $user_id, string $user_name, string $user_email ) {
+		return $this->log_action(
+			'user_deactivated',
+			'user',
+			$user_id,
+			$user_name,
+			null,
+			wp_json_encode( [ 'email' => $user_email, 'status' => 'inactive' ] )
+		);
+	}
+
+	/**
+	 * Registrar reactivación de usuario
+	 *
+	 * @param int    $user_id ID del usuario
+	 * @param string $user_name Nombre del usuario
+	 * @param string $user_email Email del usuario
+	 * @return int|false
+	 */
+	public function log_user_reactivated( int $user_id, string $user_name, string $user_email ) {
+		return $this->log_action(
+			'user_reactivated',
+			'user',
+			$user_id,
+			$user_name,
+			wp_json_encode( [ 'status' => 'inactive' ] ),
+			wp_json_encode( [ 'email' => $user_email, 'status' => 'active' ] )
+		);
+	}
+
+	/**
+	 * Registrar eliminación permanente de usuario
+	 *
+	 * @param int    $user_id ID del usuario
+	 * @param string $user_name Nombre del usuario
+	 * @param string $user_email Email del usuario
+	 * @return int|false
+	 */
+	public function log_user_permanently_deleted( int $user_id, string $user_name, string $user_email ) {
+		return $this->log_action(
+			'user_permanently_deleted',
+			'user',
+			$user_id,
+			$user_name,
+			wp_json_encode( [ 'email' => $user_email ] ),
+			null
+		);
 	}
 }

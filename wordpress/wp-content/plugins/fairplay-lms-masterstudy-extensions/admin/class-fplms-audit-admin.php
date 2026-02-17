@@ -162,11 +162,32 @@ class FairPlay_LMS_Audit_Admin {
 						<label for="filter_action" style="display: block; font-weight: 600; margin-bottom: 5px;">Acción</label>
 						<select name="filter_action" id="filter_action" style="width: 100%;">
 							<option value="">Todas las acciones</option>
-							<option value="course_created" <?php selected( $filters['action'], 'course_created' ); ?>>Curso Creado</option>
-							<option value="structures_assigned" <?php selected( $filters['action'], 'structures_assigned' ); ?>>Estructuras Asignadas</option>
-							<option value="structures_updated" <?php selected( $filters['action'], 'structures_updated' ); ?>>Estructuras Actualizadas</option>
-							<option value="course_structures_synced_from_categories" <?php selected( $filters['action'], 'course_structures_synced_from_categories' ); ?>>Sincronización desde Categorías</option>
-							<option value="channel_category_sync" <?php selected( $filters['action'], 'channel_category_sync' ); ?>>Canal→Categoría Sync</option>
+							<optgroup label="📘 Cursos">
+								<option value="course_created" <?php selected( $filters['action'], 'course_created' ); ?>>Curso Creado</option>
+								<option value="course_updated" <?php selected( $filters['action'], 'course_updated' ); ?>>Curso Actualizado</option>
+								<option value="course_deleted" <?php selected( $filters['action'], 'course_deleted' ); ?>>Curso Eliminado</option>
+							</optgroup>
+							<optgroup label="📝 Lecciones">
+								<option value="lesson_added" <?php selected( $filters['action'], 'lesson_added' ); ?>>Lección Agregada</option>
+								<option value="lesson_updated" <?php selected( $filters['action'], 'lesson_updated' ); ?>>Lección Actualizada</option>
+								<option value="lesson_deleted" <?php selected( $filters['action'], 'lesson_deleted' ); ?>>Lección Eliminada</option>
+							</optgroup>
+							<optgroup label="❓ Quizzes">
+								<option value="quiz_added" <?php selected( $filters['action'], 'quiz_added' ); ?>>Quiz Agregado</option>
+								<option value="quiz_updated" <?php selected( $filters['action'], 'quiz_updated' ); ?>>Quiz Actualizado</option>
+								<option value="quiz_deleted" <?php selected( $filters['action'], 'quiz_deleted' ); ?>>Quiz Eliminado</option>
+							</optgroup>
+							<optgroup label="👥 Usuarios">
+								<option value="user_deactivated" <?php selected( $filters['action'], 'user_deactivated' ); ?>>Usuario Desactivado</option>
+								<option value="user_reactivated" <?php selected( $filters['action'], 'user_reactivated' ); ?>>Usuario Reactivado</option>
+								<option value="user_permanently_deleted" <?php selected( $filters['action'], 'user_permanently_deleted' ); ?>>Usuario Eliminado</option>
+							</optgroup>
+							<optgroup label="🏢 Estructuras">
+								<option value="structures_assigned" <?php selected( $filters['action'], 'structures_assigned' ); ?>>Estructuras Asignadas</option>
+								<option value="structures_updated" <?php selected( $filters['action'], 'structures_updated' ); ?>>Estructuras Actualizadas</option>
+								<option value="course_structures_synced_from_categories" <?php selected( $filters['action'], 'course_structures_synced_from_categories' ); ?>>Sincronización desde Categorías</option>
+								<option value="channel_category_sync" <?php selected( $filters['action'], 'channel_category_sync' ); ?>>Canal→Categoría Sync</option>
+							</optgroup>
 						</select>
 					</div>
 
@@ -174,9 +195,12 @@ class FairPlay_LMS_Audit_Admin {
 						<label for="filter_entity" style="display: block; font-weight: 600; margin-bottom: 5px;">Tipo de Entidad</label>
 						<select name="filter_entity" id="filter_entity" style="width: 100%;">
 							<option value="">Todas las entidades</option>
-							<option value="course" <?php selected( $filters['entity_type'], 'course' ); ?>>Curso</option>
-							<option value="channel" <?php selected( $filters['entity_type'], 'channel' ); ?>>Canal</option>
-							<option value="category" <?php selected( $filters['entity_type'], 'category' ); ?>>Categoría</option>
+							<option value="course" <?php selected( $filters['entity_type'], 'course' ); ?>>📘 Curso</option>
+							<option value="lesson" <?php selected( $filters['entity_type'], 'lesson' ); ?>>📝 Lección</option>
+							<option value="quiz" <?php selected( $filters['entity_type'], 'quiz' ); ?>>❓ Quiz</option>
+							<option value="user" <?php selected( $filters['entity_type'], 'user' ); ?>>👤 Usuario</option>
+							<option value="channel" <?php selected( $filters['entity_type'], 'channel' ); ?>>📺 Canal</option>
+							<option value="category" <?php selected( $filters['entity_type'], 'category' ); ?>>🏷️ Categoría</option>
 						</select>
 					</div>
 
@@ -232,6 +256,7 @@ class FairPlay_LMS_Audit_Admin {
 								<th>Entidad</th>
 								<th style="width: 100px;">IP</th>
 								<th style="width: 80px;">Detalles</th>
+								<th style="width: 150px;">Acciones</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -261,9 +286,12 @@ class FairPlay_LMS_Audit_Admin {
 											👁️ Ver
 										</button>
 									</td>
+									<td>
+										<?php $this->render_action_buttons( $log ); ?>
+									</td>
 								</tr>
 								<tr id="fplms-details-<?php echo esc_attr( $log['id'] ); ?>" style="display: none;">
-									<td colspan="8" style="background: #f9f9f9; padding: 15px;">
+									<td colspan="9" style="background: #f9f9f9; padding: 15px;">
 										<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
 											<div>
 												<strong>Valor Anterior:</strong>
@@ -304,8 +332,66 @@ class FairPlay_LMS_Audit_Admin {
 					$(this).text('❌ Cerrar');
 				}
 			});
+
+			$('.fplms-delete-permanently').on('click', function(e) {
+				if (!confirm('⚠️ ADVERTENCIA: Esta acción eliminará PERMANENTEMENTE al usuario y NO SE PUEDE DESHACER.\n\n¿Estás COMPLETAMENTE SEGURO?')) {
+					e.preventDefault();
+					return false;
+				}
+			});
 		});
 		</script>
+		<?php
+	}
+
+	/**
+	 * Renderizar botones de acción para usuarios desactivados
+	 *
+	 * @param array $log Registro de auditoría
+	 * @return void
+	 */
+	private function render_action_buttons( array $log ): void {
+		// Solo mostrar botones para usuarios desactivados
+		if ( $log['entity_type'] !== 'user' || $log['action'] !== 'user_deactivated' ) {
+			echo '<span style="color: #999;">—</span>';
+			return;
+		}
+
+		$user_id = $log['entity_id'];
+		
+		// Verificar si el usuario aún existe y está inactivo
+		$user = get_userdata( $user_id );
+		if ( ! $user ) {
+			echo '<span style="color: #999; font-size: 11px;">Usuario ya eliminado</span>';
+			return;
+		}
+
+		$user_status = get_user_meta( $user_id, 'fplms_user_status', true );
+		if ( $user_status !== 'inactive' ) {
+			echo '<span style="color: #00a32a; font-size: 11px;">✅ Ya reactivado</span>';
+			return;
+		}
+
+		// URLs con nonces
+		$reactivate_url = wp_nonce_url(
+			admin_url( 'admin-post.php?action=fplms_reactivate_user&user_id=' . $user_id ),
+			'fplms_reactivate_user'
+		);
+
+		$delete_url = wp_nonce_url(
+			admin_url( 'admin-post.php?action=fplms_permanently_delete_user&user_id=' . $user_id ),
+			'fplms_delete_user_permanently'
+		);
+
+		?>
+		<div style="display: flex; gap: 5px; flex-direction: column;">
+			<a href="<?php echo esc_url( $reactivate_url ); ?>" class="button button-small button-primary" style="text-align: center;">
+				✅ Reactivar
+			</a>
+			<a href="<?php echo esc_url( $delete_url ); ?>" class="button button-small button-link-delete fplms-delete-permanently" style="color: #d63638; text-align: center;">
+				🗑️ Eliminar Definitivo
+			</a>
+		</div>
 		<?php
 	}
 
@@ -366,12 +452,34 @@ class FairPlay_LMS_Audit_Admin {
 	 */
 	private function format_action( string $action ): string {
 		$actions = [
-			'course_created'                           => '📚 Curso Creado',
+			// Cursos
+			'course_created'                           => '📘 Curso Creado',
+			'course_updated'                           => '✏️ Curso Actualizado',
+			'course_deleted'                           => '🗑️ Curso Eliminado',
+			
+			// Lecciones
+			'lesson_added'                             => '📝 Lección Agregada',
+			'lesson_updated'                           => '✏️ Lección Actualizada',
+			'lesson_deleted'                           => '🗑️ Lección Eliminada',
+			
+			// Quizzes
+			'quiz_added'                               => '❓ Quiz Agregado',
+			'quiz_updated'                             => '✏️ Quiz Actualizado',
+			'quiz_deleted'                             => '🗑️ Quiz Eliminado',
+			
+			// Usuarios
+			'user_deactivated'                         => '❌ Usuario Desactivado',
+			'user_reactivated'                         => '✅ Usuario Reactivado',
+			'user_permanently_deleted'                 => '🔥 Usuario Eliminado Permanentemente',
+			
+			// Estructuras
 			'structures_assigned'                      => '🏢 Estructuras Asignadas',
 			'structures_updated'                       => '✏️ Estructuras Actualizadas',
 			'course_structures_synced_from_categories' => '🔄 Sync desde Categorías',
 			'channel_category_sync'                    => '🔗 Canal→Categoría',
 			'channel_unsynced'                         => '🔓 Canal Desvinculado',
+			
+			// Sistema
 			'permission_denied'                        => '🚫 Permiso Denegado',
 			'notification_sent'                        => '📧 Notificación Enviada',
 		];
@@ -402,6 +510,132 @@ class FairPlay_LMS_Audit_Admin {
 
 		echo "\xEF\xBB\xBF"; // UTF-8 BOM
 		echo $csv;
+		exit;
+	}
+
+	/**
+	 * Maneja la reactivación de un usuario desde la bitácora
+	 *
+	 * @return void
+	 */
+	public function handle_user_reactivation(): void {
+		// Verificar permisos
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( '❌ No tienes permisos para realizar esta acción.' );
+		}
+
+		// Verificar nonce
+		if ( ! isset( $_GET['_wpnonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ), 'fplms_reactivate_user' ) ) {
+			wp_die( '❌ Nonce de seguridad inválido.' );
+		}
+
+		// Obtener ID del usuario
+		$user_id = isset( $_GET['user_id'] ) ? absint( $_GET['user_id'] ) : 0;
+		if ( ! $user_id ) {
+			wp_die( '❌ ID de usuario inválido.' );
+		}
+
+		// Obtener instancia del controlador de usuarios
+		global $fplms_plugin;
+		if ( ! isset( $fplms_plugin ) || ! method_exists( $fplms_plugin, 'get_users_controller' ) ) {
+			wp_die( '❌ Error: No se pudo cargar el controlador de usuarios.' );
+		}
+
+		$users_controller = $fplms_plugin->get_users_controller();
+		$success = $users_controller->reactivate_user( $user_id );
+
+		if ( $success ) {
+			wp_safe_redirect(
+				add_query_arg(
+					[
+						'page' => 'fairplay-lms-audit',
+						'message' => 'user_reactivated',
+					],
+					admin_url( 'admin.php' )
+				)
+			);
+		} else {
+			wp_die( '❌ Error al reactivar usuario. El usuario podría no existir o no estar inactivo.' );
+		}
+
+		exit;
+	}
+
+	/**
+	 * Maneja la eliminación permanente de un usuario desde la bitácora
+	 *
+	 * @return void
+	 */
+	public function handle_user_permanent_deletion(): void {
+		// Verificar permisos
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( '❌ No tienes permisos para realizar esta acción.' );
+		}
+
+		// Verificar nonce
+		if ( ! isset( $_GET['_wpnonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ), 'fplms_delete_user_permanently' ) ) {
+			wp_die( '❌ Nonce de seguridad inválido.' );
+		}
+
+		// Obtener ID del usuario
+		$user_id = isset( $_GET['user_id'] ) ? absint( $_GET['user_id'] ) : 0;
+		if ( ! $user_id ) {
+			wp_die( '❌ ID de usuario inválido.' );
+		}
+
+		// Confirmación de seguridad
+		if ( ! isset( $_GET['confirm'] ) || $_GET['confirm'] !== 'yes' ) {
+			// Mostrar pantalla de confirmación
+			?>
+			<div class="wrap">
+				<h1>⚠️ Confirmación de Eliminación Permanente</h1>
+				<div class="notice notice-error" style="padding: 20px; font-size: 16px; margin: 20px 0;">
+					<p><strong>Esta acción NO SE PUEDE DESHACER.</strong></p>
+					<p>Estás a punto de eliminar permanentemente el usuario con ID <strong><?php echo esc_html( $user_id ); ?></strong>.</p>
+					<p>Se eliminarán:</p>
+					<ul style="margin-left: 20px;">
+						<li>Todos los datos del usuario</li>
+						<li>Todas las estructuras asignadas</li>
+						<li>Todo el progreso en cursos</li>
+						<li>TODOS los registros asociados</li>
+					</ul>
+					<p style="margin-top: 20px;">
+						<a href="<?php echo esc_url( wp_nonce_url( add_query_arg( [ 'confirm' => 'yes' ], $_SERVER['REQUEST_URI'] ), 'fplms_delete_user_permanently' ) ); ?>" class="button button-primary button-large" style="background: #d63638; border-color: #d63638;">
+							🗑️ SÍ, ELIMINAR PERMANENTEMENTE
+						</a>
+						<a href="<?php echo esc_url( admin_url( 'admin.php?page=fairplay-lms-audit' ) ); ?>" class="button button-large">
+							← Cancelar y Volver
+						</a>
+					</p>
+				</div>
+			</div>
+			<?php
+			exit;
+		}
+
+		// Obtener instancia del controlador de usuarios
+		global $fplms_plugin;
+		if ( ! isset( $fplms_plugin ) || ! method_exists( $fplms_plugin, 'get_users_controller' ) ) {
+			wp_die( '❌ Error: No se pudo cargar el controlador de usuarios.' );
+		}
+
+		$users_controller = $fplms_plugin->get_users_controller();
+		$success = $users_controller->permanently_delete_user( $user_id );
+
+		if ( $success ) {
+			wp_safe_redirect(
+				add_query_arg(
+					[
+						'page' => 'fairplay-lms-audit',
+						'message' => 'user_permanently_deleted',
+					],
+					admin_url( 'admin.php' )
+				)
+			);
+		} else {
+			wp_die( '❌ Error al eliminar usuario permanentemente.' );
+		}
+
 		exit;
 	}
 }

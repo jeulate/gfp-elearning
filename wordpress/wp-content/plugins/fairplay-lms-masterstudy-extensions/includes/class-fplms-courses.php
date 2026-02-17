@@ -10,8 +10,14 @@ class FairPlay_LMS_Courses_Controller {
      */
     private $structures;
 
+    /**
+     * @var FairPlay_LMS_Audit_Logger
+     */
+    private $logger;
+
     public function __construct( FairPlay_LMS_Structures_Controller $structures = null ) {
         $this->structures = $structures;
+        $this->logger = new FairPlay_LMS_Audit_Logger();
     }
 
     /**
@@ -2972,6 +2978,15 @@ class FairPlay_LMS_Courses_Controller {
         // Aplicar cascada jerárquica
         $cascaded_structures = $this->apply_cascade_logic( $cities, $companies, $channels, $branches, $roles );
         
+        // Obtener estructuras anteriores para comparar (ANTES de guardar las nuevas)
+        $old_structures = [
+            'cities'    => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
+            'companies' => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ),
+            'channels'  => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
+            'branches'  => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
+            'roles'     => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
+        ];
+        
         // LOGGING: Verificar guardado
         error_log( '=== FPLMS: Guardando estructuras ===' );
         error_log( 'Curso ID: ' . $post_id );
@@ -2997,6 +3012,44 @@ class FairPlay_LMS_Courses_Controller {
         update_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_ROLES, $cascaded_structures['roles'] );
         
         error_log( 'Post meta actualizado correctamente' );
+        
+        // REGISTRAR EN AUDITORÍA
+        $structures_changed = $this->structures_have_changed( $old_structures, $cascaded_structures );
+        
+        if ( $structures_changed || empty( array_filter( $old_structures ) ) ) {
+            // Las estructuras cambiaron o es la primera vez que se asignan
+            $action = empty( array_filter( $old_structures ) ) ? 'structures_assigned' : 'structures_updated';
+            
+            // Preparar datos para old_value y new_value
+            $old_value_data = [
+                'cities'    => $old_structures['cities'],
+                'companies' => $old_structures['companies'],
+                'channels'  => $old_structures['channels'],
+                'branches'  => $old_structures['branches'],
+                'roles'     => $old_structures['roles'],
+            ];
+            
+            $new_value_data = [
+                'cities'    => $cascaded_structures['cities'],
+                'companies' => $cascaded_structures['companies'],
+                'channels'  => $cascaded_structures['channels'],
+                'branches'  => $cascaded_structures['branches'],
+                'roles'     => $cascaded_structures['roles'],
+            ];
+            
+            // Registrar en la bitácora de auditoría
+            $this->logger->log(
+                $action,
+                'course',
+                $post_id,
+                $post->post_title,
+                wp_json_encode( $old_value_data, JSON_UNESCAPED_UNICODE ),
+                wp_json_encode( $new_value_data, JSON_UNESCAPED_UNICODE )
+            );
+            
+            error_log( '✅ Estructuras registradas en auditoría: ' . $action );
+        }
+        
         error_log( '=== Fin guardado ===' );
         
         // Enviar notificaciones SOLO si el curso se está publicando
@@ -3540,6 +3593,182 @@ class FairPlay_LMS_Courses_Controller {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Registrar creación o edición de curso en bitácora
+	 *
+	 * @param int     $post_id ID del post
+	 * @param WP_Post $post    Objeto del post
+	 * @param bool    $update  Si es actualización
+	 * @return void
+	 */
+	public function log_course_save( int $post_id, $post, bool $update ): void {
+		// Ignorar revisiones y auto-guardados
+		if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+			return;
+		}
+
+		// Solo registrar si el post está publicado
+		if ( $post->post_status !== 'publish' ) {
+			return;
+		}
+
+		$course_title = get_the_title( $post_id );
+
+		if ( $update ) {
+			// Es una edición
+			$this->logger->log_course_updated(
+				$post_id,
+				$course_title,
+				[], // old_data - podría obtener versión anterior si se necesita
+				[
+					'status' => $post->post_status,
+					'modified' => current_time( 'mysql' ),
+				]
+			);
+		} else {
+			// Es una creación
+			$this->logger->log_course_created(
+				$post_id,
+				$course_title,
+				[
+					'status' => $post->post_status,
+					'author' => $post->post_author,
+					'created' => $post->post_date,
+				]
+			);
+		}
+	}
+
+	/**
+	 * Registrar eliminación de curso en bitácora
+	 *
+	 * @param int $post_id ID del post
+	 * @return void
+	 */
+	public function log_course_deletion( int $post_id ): void {
+		$post = get_post( $post_id );
+
+		if ( ! $post || $post->post_type !== FairPlay_LMS_Config::MS_PT_COURSE ) {
+			return;
+		}
+
+		$this->logger->log_course_deleted( $post_id, get_the_title( $post_id ) );
+	}
+
+	/**
+	 * Registrar creación o edición de lección en bitácora
+	 *
+	 * @param int     $post_id ID del post
+	 * @param WP_Post $post    Objeto del post
+	 * @param bool    $update  Si es actualización
+	 * @return void
+	 */
+	public function log_lesson_save( int $post_id, $post, bool $update ): void {
+		// Ignorar revisiones y auto-guardados
+		if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+			return;
+		}
+
+		// Solo registrar si el post está publicado
+		if ( $post->post_status !== 'publish' ) {
+			return;
+		}
+
+		$lesson_title = get_the_title( $post_id );
+		$course_id = get_post_meta( $post_id, 'course_id', true ); // MasterStudy almacena el curso así
+
+		if ( $update ) {
+			$this->logger->log_lesson_updated(
+				$post_id,
+				$lesson_title,
+				[],
+				[
+					'status' => $post->post_status,
+					'modified' => current_time( 'mysql' ),
+				]
+			);
+		} else {
+			$this->logger->log_lesson_added(
+				$post_id,
+				$lesson_title,
+				$course_id ? absint( $course_id ) : 0
+			);
+		}
+	}
+
+	/**
+	 * Registrar eliminación de lección en bitácora
+	 *
+	 * @param int $post_id ID del post
+	 * @return void
+	 */
+	public function log_lesson_deletion( int $post_id ): void {
+		$post = get_post( $post_id );
+
+		if ( ! $post || $post->post_type !== FairPlay_LMS_Config::MS_PT_LESSON ) {
+			return;
+		}
+
+		$this->logger->log_lesson_deleted( $post_id, get_the_title( $post_id ) );
+	}
+
+	/**
+	 * Registrar creación o edición de quiz en bitácora
+	 *
+	 * @param int     $post_id ID del post
+	 * @param WP_Post $post    Objeto del post
+	 * @param bool    $update  Si es actualización
+	 * @return void
+	 */
+	public function log_quiz_save( int $post_id, $post, bool $update ): void {
+		// Ignorar revisiones y auto-guardados
+		if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+			return;
+		}
+
+		// Solo registrar si el post está publicado
+		if ( $post->post_status !== 'publish' ) {
+			return;
+		}
+
+		$quiz_title = get_the_title( $post_id );
+		$course_id = get_post_meta( $post_id, 'course_id', true );
+
+		if ( $update ) {
+			$this->logger->log_quiz_updated(
+				$post_id,
+				$quiz_title,
+				[],
+				[
+					'status' => $post->post_status,
+					'modified' => current_time( 'mysql' ),
+				]
+			);
+		} else {
+			$this->logger->log_quiz_added(
+				$post_id,
+				$quiz_title,
+				$course_id ? absint( $course_id ) : 0
+			);
+		}
+	}
+
+	/**
+	 * Registrar eliminación de quiz en bitácora
+	 *
+	 * @param int $post_id ID del post
+	 * @return void
+	 */
+	public function log_quiz_deletion( int $post_id ): void {
+		$post = get_post( $post_id );
+
+		if ( ! $post || $post->post_type !== FairPlay_LMS_Config::MS_PT_QUIZ ) {
+			return;
+		}
+
+		$this->logger->log_quiz_deleted( $post_id, get_the_title( $post_id ) );
 	}
 }
 

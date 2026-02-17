@@ -15,12 +15,18 @@ class FairPlay_LMS_Users_Controller {
      */
     private $progress;
 
+    /**
+     * @var FairPlay_LMS_Audit_Logger
+     */
+    private $logger;
+
     public function __construct(
         FairPlay_LMS_Structures_Controller $structures,
         FairPlay_LMS_Progress_Service $progress
     ) {
         $this->structures = $structures;
         $this->progress   = $progress;
+        $this->logger     = new FairPlay_LMS_Audit_Logger();
     }
 
     // ==========================
@@ -1649,5 +1655,112 @@ class FairPlay_LMS_Users_Controller {
             // También guardar la URL para acceso rápido
             update_user_meta( $user_id, 'fplms_user_photo_url', $file_url );
         }
+    }
+
+    /**
+     * Maneja la "eliminación" de usuarios (soft delete)
+     * En lugar de eliminar definitivamente, marca el usuario como inactivo
+     *
+     * @param int      $user_id  ID del usuario a eliminar
+     * @param int|null $reassign ID del usuario al que reasignar contenido
+     * @param WP_User  $user     Objeto del usuario
+     * @return void
+     */
+    public function handle_user_soft_delete( int $user_id, $reassign, $user ): void {
+        // Verificar que no sea un super admin
+        if ( is_super_admin( $user_id ) ) {
+            return; // No permitir eliminar super admins
+        }
+
+        // Obtener datos del usuario antes de modificar
+        $user_data = get_userdata( $user_id );
+        if ( ! $user_data ) {
+            return;
+        }
+
+        // Marcar usuario como inactivo en lugar de eliminar
+        update_user_meta( $user_id, 'fplms_user_status', 'inactive' );
+        update_user_meta( $user_id, 'fplms_deactivated_date', current_time( 'mysql' ) );
+        update_user_meta( $user_id, 'fplms_deactivated_by', get_current_user_id() );
+
+        // Registrar en auditoría
+        $this->logger->log_user_deactivated(
+            $user_id,
+            $user_data->display_name,
+            $user_data->user_email
+        );
+
+        // Prevenir la eliminación real del usuario
+        // NOTA: Esto no funciona con el hook delete_user, necesitamos usar un filtro diferente
+        // Por ahora registramos la acción, la prevención se hará en la interfaz admin
+    }
+
+    /**
+     * Verifica si un usuario está inactivo (soft deleted)
+     *
+     * @param int $user_id ID del usuario
+     * @return bool True si está inactivo
+     */
+    public function is_user_inactive( int $user_id ): bool {
+        $status = get_user_meta( $user_id, 'fplms_user_status', true );
+        return $status === 'inactive';
+    }
+
+    /**
+     * Reactivar un usuario previamente desactivado
+     *
+     * @param int $user_id ID del usuario
+     * @return bool True si se reactivó exitosamente
+     */
+    public function reactivate_user( int $user_id ): bool {
+        $user_data = get_userdata( $user_id );
+        if ( ! $user_data ) {
+            return false;
+        }
+
+        // Verificar que el usuario esté inactivo
+        if ( ! $this->is_user_inactive( $user_id ) ) {
+            return false;
+        }
+
+        // Reactivar usuario
+        update_user_meta( $user_id, 'fplms_user_status', 'active' );
+        update_user_meta( $user_id, 'fplms_reactivated_date', current_time( 'mysql' ) );
+        update_user_meta( $user_id, 'fplms_reactivated_by', get_current_user_id() );
+
+        // Registrar en auditoría
+        $this->logger->log_user_reactivated(
+            $user_id,
+            $user_data->display_name,
+            $user_data->user_email
+        );
+
+        return true;
+    }
+
+    /**
+     * Eliminar permanentemente un usuario
+     *
+     * @param int $user_id ID del usuario
+     * @return bool True si se eliminó exitosamente
+     */
+    public function permanently_delete_user( int $user_id ): bool {
+        $user_data = get_userdata( $user_id );
+        if ( ! $user_data ) {
+            return false;
+        }
+
+        // Registrar en auditoría ANTES de eliminar
+        $this->logger->log_user_permanently_deleted(
+            $user_id,
+            $user_data->display_name,
+            $user_data->user_email
+        );
+
+        // Eliminar usuario definitivamente
+        require_once ABSPATH . 'wp-admin/includes/user.php';
+        $deleted = wp_delete_user( $user_id );
+
+        return $deleted !== false;
     }
 }

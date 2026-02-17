@@ -166,6 +166,23 @@ class FairPlay_LMS_Plugin {
         
         // Auditoría: Menú admin
         add_action( 'admin_menu', [ $this->audit_admin, 'register_admin_menu' ], 20 );
+        
+        // Auditoría: Registrar acciones en cursos
+        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'log_course_save' ], 30, 3 );
+        add_action( 'before_delete_post', [ $this->courses, 'log_course_deletion' ], 10, 1 );
+        
+        // Auditoría: Registrar acciones en lecciones
+        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_LESSON, [ $this->courses, 'log_lesson_save' ], 10, 3 );
+        add_action( 'before_delete_post', [ $this->courses, 'log_lesson_deletion' ], 10, 1 );
+        
+        // Auditoría: Registrar acciones en quizzes
+        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_QUIZ, [ $this->courses, 'log_quiz_save' ], 10, 3 );
+        add_action( 'before_delete_post', [ $this->courses, 'log_quiz_deletion' ], 10, 1 );
+        
+        // Auditoría: Registrar eliminación/reactivación de usuarios
+        add_action( 'delete_user', [ $this->users, 'handle_user_soft_delete' ], 5, 3 );
+        add_action( 'admin_post_fplms_reactivate_user', [ $this->audit_admin, 'handle_user_reactivation' ] );
+        add_action( 'admin_post_fplms_permanently_delete_user', [ $this->audit_admin, 'handle_user_permanent_deletion' ] );
     }
 
     /**

@@ -139,11 +139,20 @@ if ( isset( $_POST['cleanup_orphans'] ) && check_admin_referer( 'fplms_cleanup_o
 		
 		$linked_count = 0;
 		$orphan_count = 0;
+		$broken_links = 0;
 		
 		foreach ( $all_categories as $cat ) {
 			$channel_id = get_term_meta( $cat->term_id, 'fplms_linked_channel_id', true );
 			if ( $channel_id ) {
-				$linked_count++;
+				// Validar que el canal realmente existe
+				$channel = get_term( $channel_id, FairPlay_LMS_Config::TAX_CHANNEL );
+				if ( $channel && ! is_wp_error( $channel ) ) {
+					$linked_count++;
+				} else {
+					// Canal vinculado no existe (vínculo roto)
+					$broken_links++;
+					$orphan_count++; // Contar como huérfano para habilitar botón
+				}
 			} else {
 				$orphan_count++;
 			}
@@ -162,6 +171,17 @@ if ( isset( $_POST['cleanup_orphans'] ) && check_admin_referer( 'fplms_cleanup_o
 				<td><strong>Categorías vinculadas:</strong></td>
 				<td style="color: #0a7;"><?php echo esc_html( $linked_count ); ?></td>
 			</tr>
+			<?php if ( $broken_links > 0 ) : ?>
+			<tr style="background: #fff3cd;">
+				<td><strong>Vínculos rotos:</strong></td>
+				<td style="color: #d63638; font-weight: bold;">
+					<?php echo esc_html( $broken_links ); ?>
+					<span style="font-size: 12px; color: #856404; display: block; margin-top: 3px;">
+						(Categorías vinculadas a canales que ya no existen)
+					</span>
+				</td>
+			</tr>
+			<?php endif; ?>
 			<tr>
 				<td><strong>Categorías huérfanas:</strong></td>
 				<td style="color: <?php echo $orphan_count > 0 ? '#d63638' : '#0a7'; ?>">
