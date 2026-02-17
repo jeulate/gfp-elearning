@@ -2865,6 +2865,159 @@ class FairPlay_LMS_Structures_Controller {
         wp_send_json_success( $options );
     }
 
+    /**
+     * AJAX: Obtiene estructuras en cascada basadas en las selecciones realizadas
+     * Este método se usa en la interfaz de asignación de estructuras a cursos
+     * Retorna todas las estructuras descendientes de las entidades seleccionadas
+     * 
+     * @return void Envía JSON response con las estructuras organizadas por nivel
+     */
+    public function ajax_get_cascade_structures(): void {
+        
+        // Verificar nonce
+        check_ajax_referer( 'fplms_cascade', 'nonce' );
+        
+        // Obtener el nivel desde el que se inicia la cascada
+        $level = isset( $_POST['level'] ) ? sanitize_text_field( wp_unslash( $_POST['level'] ) ) : '';
+        
+        // Obtener los IDs seleccionados
+        $selected_ids = isset( $_POST['selected_ids'] ) ? json_decode( wp_unslash( $_POST['selected_ids'] ), true ) : [];
+        
+        if ( empty( $selected_ids ) || ! is_array( $selected_ids ) ) {
+            wp_send_json_success( [
+                'companies' => [],
+                'channels'  => [],
+                'branches'  => [],
+                'roles'     => [],
+            ] );
+            return;
+        }
+        
+        // Sanitizar IDs
+        $selected_ids = array_map( 'absint', $selected_ids );
+        
+        $result = [
+            'companies' => [],
+            'channels'  => [],
+            'branches'  => [],
+            'roles'     => [],
+        ];
+        
+        switch ( $level ) {
+            case 'cities':
+                // Desde ciudades: cargar empresas, canales, sucursales y cargos
+                $companies_data = $this->get_terms_by_cities( FairPlay_LMS_Config::TAX_COMPANY, $selected_ids );
+                
+                if ( ! empty( $companies_data ) ) {
+                    foreach ( $companies_data as $term ) {
+                        $result['companies'][ $term->term_id ] = $term->name;
+                    }
+                    
+                    // Obtener IDs de empresas para siguiente nivel
+                    $company_ids = wp_list_pluck( $companies_data, 'term_id' );
+                    
+                    // Cargar canales de esas empresas
+                    $channels_data = $this->get_channels_by_companies( FairPlay_LMS_Config::TAX_CHANNEL, $company_ids );
+                    
+                    if ( ! empty( $channels_data ) ) {
+                        foreach ( $channels_data as $term ) {
+                            $result['channels'][ $term->term_id ] = $term->name;
+                        }
+                        
+                        // Obtener IDs de canales para siguiente nivel
+                        $channel_ids = wp_list_pluck( $channels_data, 'term_id' );
+                        
+                        // Cargar sucursales de esos canales
+                        $branches_data = $this->get_branches_by_channels( FairPlay_LMS_Config::TAX_BRANCH, $channel_ids );
+                        
+                        if ( ! empty( $branches_data ) ) {
+                            foreach ( $branches_data as $term ) {
+                                $result['branches'][ $term->term_id ] = $term->name;
+                            }
+                            
+                            // Obtener IDs de sucursales para último nivel
+                            $branch_ids = wp_list_pluck( $branches_data, 'term_id' );
+                            
+                            // Cargar cargos de esas sucursales
+                            $roles_data = $this->get_roles_by_branches( FairPlay_LMS_Config::TAX_ROLE, $branch_ids );
+                            
+                            if ( ! empty( $roles_data ) ) {
+                                foreach ( $roles_data as $term ) {
+                                    $result['roles'][ $term->term_id ] = $term->name;
+                                }
+                            }
+                        }
+                    }
+                }
+                break;
+                
+            case 'companies':
+                // Desde empresas: cargar canales, sucursales y cargos
+                $channels_data = $this->get_channels_by_companies( FairPlay_LMS_Config::TAX_CHANNEL, $selected_ids );
+                
+                if ( ! empty( $channels_data ) ) {
+                    foreach ( $channels_data as $term ) {
+                        $result['channels'][ $term->term_id ] = $term->name;
+                    }
+                    
+                    $channel_ids = wp_list_pluck( $channels_data, 'term_id' );
+                    
+                    $branches_data = $this->get_branches_by_channels( FairPlay_LMS_Config::TAX_BRANCH, $channel_ids );
+                    
+                    if ( ! empty( $branches_data ) ) {
+                        foreach ( $branches_data as $term ) {
+                            $result['branches'][ $term->term_id ] = $term->name;
+                        }
+                        
+                        $branch_ids = wp_list_pluck( $branches_data, 'term_id' );
+                        
+                        $roles_data = $this->get_roles_by_branches( FairPlay_LMS_Config::TAX_ROLE, $branch_ids );
+                        
+                        if ( ! empty( $roles_data ) ) {
+                            foreach ( $roles_data as $term ) {
+                                $result['roles'][ $term->term_id ] = $term->name;
+                            }
+                        }
+                    }
+                }
+                break;
+                
+            case 'channels':
+                // Desde canales: cargar sucursales y cargos
+                $branches_data = $this->get_branches_by_channels( FairPlay_LMS_Config::TAX_BRANCH, $selected_ids );
+                
+                if ( ! empty( $branches_data ) ) {
+                    foreach ( $branches_data as $term ) {
+                        $result['branches'][ $term->term_id ] = $term->name;
+                    }
+                    
+                    $branch_ids = wp_list_pluck( $branches_data, 'term_id' );
+                    
+                    $roles_data = $this->get_roles_by_branches( FairPlay_LMS_Config::TAX_ROLE, $branch_ids );
+                    
+                    if ( ! empty( $roles_data ) ) {
+                        foreach ( $roles_data as $term ) {
+                            $result['roles'][ $term->term_id ] = $term->name;
+                        }
+                    }
+                }
+                break;
+                
+            case 'branches':
+                // Desde sucursales: cargar solo cargos
+                $roles_data = $this->get_roles_by_branches( FairPlay_LMS_Config::TAX_ROLE, $selected_ids );
+                
+                if ( ! empty( $roles_data ) ) {
+                    foreach ( $roles_data as $term ) {
+                        $result['roles'][ $term->term_id ] = $term->name;
+                    }
+                }
+                break;
+        }
+        
+        wp_send_json_success( $result );
+    }
+
 	/**
 	 * Sincronizar canal con categoría de MasterStudy
 	 * Crea o actualiza una categoría cuando se crea/actualiza un canal

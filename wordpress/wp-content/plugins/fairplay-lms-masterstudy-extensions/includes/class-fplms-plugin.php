@@ -142,6 +142,9 @@ class FairPlay_LMS_Plugin {
         // AJAX: Cargar términos filtrados por padre (sistema jerárquico completo)
         add_action( 'wp_ajax_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
         add_action( 'wp_ajax_nopriv_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
+        
+        // AJAX: Cargar estructuras en cascada para asignación a cursos
+        add_action( 'wp_ajax_fplms_get_cascade_structures', [ $this->structures, 'ajax_get_cascade_structures' ] );
 
         // FEATURE 1: Meta Box de Estructuras en Creación de Cursos
         add_action( 'add_meta_boxes', [ $this->courses, 'register_structures_meta_box' ] );

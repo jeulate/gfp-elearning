@@ -1337,27 +1337,107 @@ class FairPlay_LMS_Courses_Controller {
         // Obtener estructuras actuales del curso
         $current_structures = $this->get_course_structures( $course_id );
 
-        // Obtener términos activos
-        $cities    = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY ) : [];
-        $companies = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_COMPANY ) : [];
-        $channels  = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL ) : [];
-        $branches  = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH ) : [];
-        $roles     = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE ) : [];
+        // Obtener términos activos disponibles por nivel
+        $cities = $this->structures ? $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY ) : [];
+        
+        // Si el curso ya tiene estructuras, cargar también las actuales para mostrarlas
+        $companies = [];
+        $channels = [];
+        $branches = [];
+        $roles = [];
+        
+        // Cargar empresas actuales si hay ciudades seleccionadas
+        if ( ! empty( $current_structures['cities'] ) && $this->structures ) {
+            $companies_terms = $this->structures->get_terms_by_cities( FairPlay_LMS_Config::TAX_COMPANY, $current_structures['cities'] );
+            foreach ( $companies_terms as $term ) {
+                $companies[ $term->term_id ] = $term->name;
+            }
+        }
+        
+        // Cargar canales actuales si hay empresas seleccionadas
+        if ( ! empty( $current_structures['companies'] ) && $this->structures ) {
+            $channels_terms = $this->structures->get_channels_by_companies( FairPlay_LMS_Config::TAX_CHANNEL, $current_structures['companies'] );
+            foreach ( $channels_terms as $term ) {
+                $channels[ $term->term_id ] = $term->name;
+            }
+        }
+        
+        // Cargar sucursales actuales si hay canales seleccionados
+        if ( ! empty( $current_structures['channels'] ) && $this->structures ) {
+            $branches_terms = $this->structures->get_branches_by_channels( FairPlay_LMS_Config::TAX_BRANCH, $current_structures['channels'] );
+            foreach ( $branches_terms as $term ) {
+                $branches[ $term->term_id ] = $term->name;
+            }
+        }
+        
+        // Cargar cargos actuales si hay sucursales seleccionadas
+        if ( ! empty( $current_structures['branches'] ) && $this->structures ) {
+            $roles_terms = $this->structures->get_roles_by_branches( FairPlay_LMS_Config::TAX_ROLE, $current_structures['branches'] );
+            foreach ( $roles_terms as $term ) {
+                $roles[ $term->term_id ] = $term->name;
+            }
+        }
+        
         ?>
-        <div class="notice notice-info" style="padding: 15px; margin: 20px 0;">
-            <h3 style="margin-top: 0;">ℹ️ Lógica de asignación en cascada</h3>
-            <p><strong>Al asignar un curso a una estructura, automáticamente se asigna a todas las estructuras descendientes:</strong></p>
+        <style>
+            .fplms-cascade-info {
+                background: #e7f3ff;
+                border-left: 4px solid #2271b1;
+                padding: 15px;
+                margin: 20px 0;
+                border-radius: 4px;
+            }
+            .fplms-cascade-info strong {
+                color: #135e96;
+            }
+            .fplms-structure-container {
+                min-height: 60px;
+                padding: 10px;
+                background: #f9f9f9;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+            .fplms-structure-container label {
+                display: block;
+                padding: 6px 10px;
+                margin: 3px 0;
+                background: #fff;
+                border-radius: 3px;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+            .fplms-structure-container label:hover {
+                background: #e7f3ff;
+            }
+            .fplms-structure-container input[type="checkbox"] {
+                margin-right: 8px;
+                vertical-align: middle;
+            }
+            .fplms-loading {
+                color: #999;
+                font-style: italic;
+                padding: 10px;
+            }
+            .fplms-empty-state {
+                color: #666;
+                font-style: italic;
+                padding: 10px;
+            }
+        </style>
+        
+        <div class="fplms-cascade-info">
+            <h3 style="margin-top: 0;">ℹ️ Asignación Inteligente en Cascada</h3>
+            <p><strong>Cómo funciona:</strong></p>
             <ul style="margin-left: 20px;">
-                <li>📍 <strong>Ciudad</strong> → Se asigna a todas las empresas, canales, sucursales y cargos de esa ciudad</li>
-                <li>🏢 <strong>Empresa</strong> → Se asigna a todos los canales, sucursales y cargos de esa empresa</li>
-                <li>🏪 <strong>Canal</strong> → Se asigna a todas las sucursales y cargos de ese canal</li>
-                <li>🏢 <strong>Sucursal</strong> → Se asigna a todos los cargos de esa sucursal</li>
-                <li>👔 <strong>Cargo</strong> → Se asigna específicamente a ese cargo</li>
+                <li>📍 <strong>Selecciona Ciudad(es)</strong> → Se cargan automáticamente todas las empresas, canales, sucursales y cargos de esas ciudades</li>
+                <li>🏢 <strong>Selecciona Empresa(s)</strong> → Se cargan automáticamente todos los canales, sucursales y cargos de esas empresas</li>
+                <li>🏪 <strong>Selecciona Canal(es)</strong> → Se cargan automáticamente todas las sucursales y cargos de esos canales</li>
+                <li>🏬 <strong>Selecciona Sucursal(es)</strong> → Se cargan automáticamente todos los cargos de esas sucursales</li>
             </ul>
-            <p><em>Los usuarios asignados a estas estructuras recibirán una notificación por correo electrónico.</em></p>
+            <p><strong>✅ Puedes seleccionar una o más opciones en cada nivel.</strong> Las opciones cargadas se pre-seleccionan automáticamente, pero puedes desmarcas las que no necesites.</p>
         </div>
 
-        <form method="post">
+        <form method="post" id="fplms-structures-form">
             <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
             <input type="hidden" name="fplms_courses_action" value="assign_structures">
             <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
@@ -1366,105 +1446,115 @@ class FairPlay_LMS_Courses_Controller {
                 <tr>
                     <th scope="row"><label>📍 Ciudades</label></th>
                     <td>
-                        <?php if ( ! empty( $cities ) ) : ?>
-                            <fieldset>
+                        <div class="fplms-structure-container" id="fplms-cities-container">
+                            <?php if ( ! empty( $cities ) ) : ?>
                                 <?php foreach ( $cities as $term_id => $term_name ) : ?>
-                                    <label style="display: block; margin: 5px 0;">
+                                    <label>
                                         <input type="checkbox" 
                                                name="fplms_course_cities[]" 
+                                               class="fplms-cascade-checkbox"
+                                               data-level="cities"
                                                value="<?php echo esc_attr( $term_id ); ?>" 
                                                <?php checked( in_array( $term_id, $current_structures['cities'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
                                     </label>
                                 <?php endforeach; ?>
-                            </fieldset>
-                        <?php else : ?>
-                            <p><em>No hay ciudades disponibles.</em></p>
-                        <?php endif; ?>
+                            <?php else : ?>
+                                <p class="fplms-empty-state">No hay ciudades disponibles.</p>
+                            <?php endif; ?>
+                        </div>
                     </td>
                 </tr>
 
                 <tr>
                     <th scope="row"><label>🏢 Empresas</label></th>
                     <td>
-                        <?php if ( ! empty( $companies ) ) : ?>
-                            <fieldset>
+                        <div class="fplms-structure-container" id="fplms-companies-container">
+                            <?php if ( ! empty( $companies ) ) : ?>
                                 <?php foreach ( $companies as $term_id => $term_name ) : ?>
-                                    <label style="display: block; margin: 5px 0;">
+                                    <label>
                                         <input type="checkbox" 
                                                name="fplms_course_companies[]" 
+                                               class="fplms-cascade-checkbox"
+                                               data-level="companies"
                                                value="<?php echo esc_attr( $term_id ); ?>" 
                                                <?php checked( in_array( $term_id, $current_structures['companies'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
                                     </label>
                                 <?php endforeach; ?>
-                            </fieldset>
-                        <?php else : ?>
-                            <p><em>No hay empresas disponibles.</em></p>
-                        <?php endif; ?>
+                            <?php else : ?>
+                                <p class="fplms-empty-state">Selecciona una ciudad primero para cargar empresas.</p>
+                            <?php endif; ?>
+                        </div>
                     </td>
                 </tr>
 
                 <tr>
                     <th scope="row"><label>🏪 Canales / Franquicias</label></th>
                     <td>
-                        <?php if ( ! empty( $channels ) ) : ?>
-                            <fieldset>
+                        <div class="fplms-structure-container" id="fplms-channels-container">
+                            <?php if ( ! empty( $channels ) ) : ?>
                                 <?php foreach ( $channels as $term_id => $term_name ) : ?>
-                                    <label style="display: block; margin: 5px 0;">
+                                    <label>
                                         <input type="checkbox" 
                                                name="fplms_course_channels[]" 
+                                               class="fplms-cascade-checkbox"
+                                               data-level="channels"
                                                value="<?php echo esc_attr( $term_id ); ?>" 
                                                <?php checked( in_array( $term_id, $current_structures['channels'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
                                     </label>
                                 <?php endforeach; ?>
-                            </fieldset>
-                        <?php else : ?>
-                            <p><em>No hay canales disponibles.</em></p>
-                        <?php endif; ?>
+                            <?php else : ?>
+                                <p class="fplms-empty-state">Selecciona una empresa primero para cargar canales.</p>
+                            <?php endif; ?>
+                        </div>
                     </td>
                 </tr>
 
                 <tr>
-                    <th scope="row"><label>🏢 Sucursales</label></th>
+                    <th scope="row"><label>🏬 Sucursales</label></th>
                     <td>
-                        <?php if ( ! empty( $branches ) ) : ?>
-                            <fieldset>
+                        <div class="fplms-structure-container" id="fplms-branches-container">
+                            <?php if ( ! empty( $branches ) ) : ?>
                                 <?php foreach ( $branches as $term_id => $term_name ) : ?>
-                                    <label style="display: block; margin: 5px 0;">
+                                    <label>
                                         <input type="checkbox" 
                                                name="fplms_course_branches[]" 
+                                               class="fplms-cascade-checkbox"
+                                               data-level="branches"
                                                value="<?php echo esc_attr( $term_id ); ?>" 
                                                <?php checked( in_array( $term_id, $current_structures['branches'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
                                     </label>
                                 <?php endforeach; ?>
-                            </fieldset>
-                        <?php else : ?>
-                            <p><em>No hay sucursales disponibles.</em></p>
-                        <?php endif; ?>
+                            <?php else : ?>
+                                <p class="fplms-empty-state">Selecciona un canal primero para cargar sucursales.</p>
+                            <?php endif; ?>
+                        </div>
                     </td>
                 </tr>
 
                 <tr>
                     <th scope="row"><label>👔 Cargos</label></th>
                     <td>
-                        <?php if ( ! empty( $roles ) ) : ?>
-                            <fieldset>
+                        <div class="fplms-structure-container" id="fplms-roles-container">
+                            <?php if ( ! empty( $roles ) ) : ?>
                                 <?php foreach ( $roles as $term_id => $term_name ) : ?>
-                                    <label style="display: block; margin: 5px 0;">
+                                    <label>
                                         <input type="checkbox" 
                                                name="fplms_course_roles[]" 
+                                               class="fplms-cascade-checkbox"
+                                               data-level="roles"
                                                value="<?php echo esc_attr( $term_id ); ?>" 
                                                <?php checked( in_array( $term_id, $current_structures['roles'], true ) ); ?>>
                                         <?php echo esc_html( $term_name ); ?>
                                     </label>
                                 <?php endforeach; ?>
-                            </fieldset>
-                        <?php else : ?>
-                            <p><em>No hay cargos disponibles.</em></p>
-                        <?php endif; ?>
+                            <?php else : ?>
+                                <p class="fplms-empty-state">Selecciona una sucursal primero para cargar cargos.</p>
+                            <?php endif; ?>
+                        </div>
                     </td>
                 </tr>
             </table>
@@ -1473,6 +1563,217 @@ class FairPlay_LMS_Courses_Controller {
                 <button type="submit" class="button button-primary">💾 Guardar estructuras y notificar usuarios</button>
             </p>
         </form>
+        
+        <script>
+        jQuery(document).ready(function($) {
+            /**
+             * Sistema de Cascada Dinámica para Asignación de Estructuras
+             * Este script maneja la carga automática de estructuras relacionadas
+             * cuando el usuario selecciona elementos de nivel superior
+             */
+            
+            const ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
+            const cascadeNonce = '<?php echo esc_js( wp_create_nonce( 'fplms_cascade' ) ); ?>';
+            
+            // Contenedores de cada nivel
+            const containers = {
+                cities: $('#fplms-cities-container'),
+                companies: $('#fplms-companies-container'),
+                channels: $('#fplms-channels-container'),
+                branches: $('#fplms-branches-container'),
+                roles: $('#fplms-roles-container')
+            };
+            
+            // Mapeo de niveles y sus descendientes
+            const levelHierarchy = {
+                cities: ['companies', 'channels', 'branches', 'roles'],
+                companies: ['channels', 'branches', 'roles'],
+                channels: ['branches', 'roles'],
+                branches: ['roles']
+            };
+            
+            /**
+             * Maneja el cambio en checkboxes de un nivel específico
+             */
+            function handleLevelChange(level) {
+                const $checkboxes = containers[level].find('input[type="checkbox"]');
+                const selectedIds = [];
+                
+                $checkboxes.each(function() {
+                    if ($(this).is(':checked')) {
+                        selectedIds.push($(this).val());
+                    }
+                });
+                
+                if (selectedIds.length === 0) {
+                    // Si no hay selección, limpiar niveles descendientes
+                    clearDescendantLevels(level);
+                    return;
+                }
+                
+                // Cargar estructuras en cascada
+                loadCascadeStructures(level, selectedIds);
+            }
+            
+            /**
+             * Carga estructuras en cascada mediante AJAX
+             */
+            function loadCascadeStructures(level, selectedIds) {
+                // Mostrar indicador de carga en descendientes
+                const descendants = levelHierarchy[level] || [];
+                descendants.forEach(function(descendantLevel) {
+                    containers[descendantLevel].html('<p class="fplms-loading">⏳ Cargando...</p>');
+                });
+                
+                $.ajax({
+                    url: ajaxUrl,
+                    type: 'POST',
+                    data: {
+                        action: 'fplms_get_cascade_structures',
+                        nonce: cascadeNonce,
+                        level: level,
+                        selected_ids: JSON.stringify(selectedIds)
+                    },
+                    success: function(response) {
+                        if (response.success && response.data) {
+                            // Solo actualizar niveles DESCENDIENTES, no el nivel actual
+                            // Esto permite selección múltiple sin perder las opciones visibles
+                            
+                            if (level === 'cities') {
+                                // Desde ciudades: actualizar empresas, canales, sucursales, cargos
+                                updateCheckboxes('companies', response.data.companies);
+                                updateCheckboxes('channels', response.data.channels);
+                                updateCheckboxes('branches', response.data.branches);
+                                updateCheckboxes('roles', response.data.roles);
+                            } else if (level === 'companies') {
+                                // Desde empresas: actualizar solo canales, sucursales, cargos
+                                // NO actualizar empresas para permitir selección múltiple
+                                updateCheckboxes('channels', response.data.channels);
+                                updateCheckboxes('branches', response.data.branches);
+                                updateCheckboxes('roles', response.data.roles);
+                            } else if (level === 'channels') {
+                                // Desde canales: actualizar solo sucursales y cargos
+                                updateCheckboxes('branches', response.data.branches);
+                                updateCheckboxes('roles', response.data.roles);
+                            } else if (level === 'branches') {
+                                // Desde sucursales: actualizar solo cargos
+                                updateCheckboxes('roles', response.data.roles);
+                            }
+                        } else {
+                            console.error('Error en respuesta AJAX:', response);
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error AJAX:', error);
+                        descendants.forEach(function(descendantLevel) {
+                            containers[descendantLevel].html('<p style="color: red;">❌ Error al cargar estructuras.</p>');
+                        });
+                    }
+                });
+            }
+            
+            /**
+             * Actualiza los checkboxes de un nivel específico
+             */
+            function updateCheckboxes(level, items) {
+                const container = containers[level];
+                
+                if (!container || !items) {
+                    return;
+                }
+                
+                // Limpiar contenedor
+                container.html('');
+                
+                // Si no hay items, mostrar mensaje
+                if (Object.keys(items).length === 0) {
+                    let message = '';
+                    switch(level) {
+                        case 'companies':
+                            message = 'No hay empresas disponibles para las ciudades seleccionadas.';
+                            break;
+                        case 'channels':
+                            message = 'No hay canales disponibles para las empresas seleccionadas.';
+                            break;
+                        case 'branches':
+                            message = 'No hay sucursales disponibles para los canales seleccionados.';
+                            break;
+                        case 'roles':
+                            message = 'No hay cargos disponibles para las sucursales seleccionadas.';
+                            break;
+                    }
+                    container.html('<p class="fplms-empty-state">' + message + '</p>');
+                    return;
+                }
+                
+                // Crear checkboxes (pre-seleccionados por defecto)
+                Object.entries(items).forEach(function([id, name]) {
+                    const $label = $('<label></label>');
+                    const $checkbox = $('<input type="checkbox" class="fplms-cascade-checkbox">')
+                        .attr('name', 'fplms_course_' + level + '[]')
+                        .attr('data-level', level)
+                        .attr('value', id)
+                        .prop('checked', true); // Pre-seleccionar
+                    
+                    $label.append($checkbox);
+                    $label.append(' ' + name);
+                    container.append($label);
+                });
+                
+                // Agregar event listeners a los nuevos checkboxes
+                container.find('.fplms-cascade-checkbox').on('change', function() {
+                    const currentLevel = $(this).data('level');
+                    handleLevelChange(currentLevel);
+                });
+            }
+            
+            /**
+             * Limpia niveles descendientes cuando se deselecciona todo
+             */
+            function clearDescendantLevels(fromLevel) {
+                const descendants = levelHierarchy[fromLevel] || [];
+                
+                descendants.forEach(function(descendantLevel) {
+                    let message = '';
+                    switch(descendantLevel) {
+                        case 'companies':
+                            message = 'Selecciona una ciudad primero para cargar empresas.';
+                            break;
+                        case 'channels':
+                            message = 'Selecciona una empresa primero para cargar canales.';
+                            break;
+                        case 'branches':
+                            message = 'Selecciona un canal primero para cargar sucursales.';
+                            break;
+                        case 'roles':
+                            message = 'Selecciona una sucursal primero para cargar cargos.';
+                            break;
+                    }
+                    containers[descendantLevel].html('<p class="fplms-empty-state">' + message + '</p>');
+                });
+            }
+            
+            // Event listeners para TODOS los niveles (usando delegación de eventos)
+            // Esto permite que funcione con checkboxes cargados dinámicamente y los ya existentes
+            containers.cities.on('change', '.fplms-cascade-checkbox', function() {
+                handleLevelChange('cities');
+            });
+            
+            containers.companies.on('change', '.fplms-cascade-checkbox', function() {
+                handleLevelChange('companies');
+            });
+            
+            containers.channels.on('change', '.fplms-cascade-checkbox', function() {
+                handleLevelChange('channels');
+            });
+            
+            containers.branches.on('change', '.fplms-cascade-checkbox', function() {
+                handleLevelChange('branches');
+            });
+            
+            // NOTA: No agregamos listener para 'roles' porque es el último nivel (no tiene descendientes)
+        });
+        </script>
         <?php
     }
 
