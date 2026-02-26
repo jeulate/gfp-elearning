@@ -94,6 +94,7 @@ class FairPlay_LMS_Plugin {
         // Estructuras
         add_action( 'init',       [ $this->structures, 'register_taxonomies' ] );
         add_action( 'admin_init', [ $this->structures, 'handle_form' ] );
+        add_action( 'admin_init', [ $this->structures, 'handle_export_request' ] );
 
         // Post types internos (módulos y temas)
         add_action( 'init',       [ $this->courses, 'register_post_types' ] );

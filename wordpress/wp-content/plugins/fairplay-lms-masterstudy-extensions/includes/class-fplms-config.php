@@ -23,6 +23,7 @@ class FairPlay_LMS_Config {
     public const META_TERM_COMPANIES      = 'fplms_companies';       // Array JSON de empresas (para canales)
     public const META_TERM_CHANNELS       = 'fplms_channels';        // Array JSON de canales (para sucursales)
     public const META_TERM_BRANCHES       = 'fplms_branches';        // Array JSON de sucursales (para cargos)
+    public const META_TERM_DESCRIPTION    = 'fplms_description';     // Descripción de estructura (max 300 chars)
     
     // Aliases para relaciones jerárquicas (más explícitas)
     public const META_COMPANY_CITIES    = 'fplms_cities';      // Array de IDs de ciudades asociadas a una empresa

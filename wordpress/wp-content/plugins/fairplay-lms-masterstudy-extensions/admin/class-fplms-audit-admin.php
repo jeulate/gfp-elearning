@@ -473,6 +473,10 @@ class FairPlay_LMS_Audit_Admin {
 			'user_permanently_deleted'                 => '🔥 Usuario Eliminado Permanentemente',
 			
 			// Estructuras
+			'structure_created'                        => '➕ Estructura Creada',
+			'structure_updated'                        => '✏️ Estructura Actualizada',
+			'structure_deleted'                        => '🗑️ Estructura Eliminada',
+			'structure_status_changed'                 => '🔄 Estado Actualizado',
 			'structures_assigned'                      => '🏢 Estructuras Asignadas',
 			'structures_updated'                       => '✏️ Estructuras Actualizadas',
 			'course_structures_synced_from_categories' => '🔄 Sync desde Categorías',

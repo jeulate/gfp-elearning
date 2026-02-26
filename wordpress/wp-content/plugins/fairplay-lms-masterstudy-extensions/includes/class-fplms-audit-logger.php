@@ -651,4 +651,96 @@ class FairPlay_LMS_Audit_Logger {
 			null
 		);
 	}
+
+	/**
+	 * Registrar creación de estructura jerárquica
+	 *
+	 * @param string $structure_type Tipo de estructura (city, company, channel, branch, role)
+	 * @param int    $term_id ID del término
+	 * @param string $term_name Nombre del término
+	 * @param array  $meta_data Datos adicionales (descripción, relaciones, etc.)
+	 * @return int|false
+	 */
+	public function log_structure_created( string $structure_type, int $term_id, string $term_name, array $meta_data = [] ) {
+		return $this->log_action(
+			'structure_created',
+			$structure_type,
+			$term_id,
+			$term_name,
+			null,
+			wp_json_encode( $meta_data )
+		);
+	}
+
+	/**
+	 * Registrar edición de estructura jerárquica
+	 *
+	 * @param string $structure_type Tipo de estructura (city, company, channel, branch, role)
+	 * @param int    $term_id ID del término
+	 * @param string $term_name Nombre del término
+	 * @param array  $old_data Datos anteriores
+	 * @param array  $new_data Datos nuevos
+	 * @return int|false
+	 */
+	public function log_structure_updated( string $structure_type, int $term_id, string $term_name, array $old_data = [], array $new_data = [] ) {
+		return $this->log_action(
+			'structure_updated',
+			$structure_type,
+			$term_id,
+			$term_name,
+			wp_json_encode( $old_data ),
+			wp_json_encode( $new_data )
+		);
+	}
+
+	/**
+	 * Registrar eliminación de estructura jerárquica
+	 *
+	 * @param string $structure_type Tipo de estructura (city, company, channel, branch, role)
+	 * @param int    $term_id ID del término
+	 * @param string $term_name Nombre del término
+	 * @param array  $meta_data Datos adicionales (relaciones que tenía, etc.)
+	 * @return int|false
+	 */
+	public function log_structure_deleted( string $structure_type, int $term_id, string $term_name, array $meta_data = [] ) {
+		return $this->log_action(
+			'structure_deleted',
+			$structure_type,
+			$term_id,
+			$term_name,
+			wp_json_encode( $meta_data ),
+			null
+		);
+	}
+
+	/**
+	 * Registrar cambio de estado de estructura jerárquica (activar/desactivar)
+	 *
+	 * @param string $structure_type Tipo de estructura (city, company, channel, branch, role)
+	 * @param int    $term_id ID del término
+	 * @param string $term_name Nombre del término
+	 * @param string $old_status Estado anterior ('1' = activo, '0' = inactivo)
+	 * @param string $new_status Estado nuevo ('1' = activo, '0' = inactivo)
+	 * @return int|false
+	 */
+	public function log_structure_status_changed( string $structure_type, int $term_id, string $term_name, string $old_status, string $new_status ) {
+		$old_data = [
+			'active' => $old_status,
+			'status_text' => $old_status === '1' ? 'Activo' : 'Inactivo',
+		];
+
+		$new_data = [
+			'active' => $new_status,
+			'status_text' => $new_status === '1' ? 'Activo' : 'Inactivo',
+		];
+
+		return $this->log_action(
+			'structure_status_changed',
+			$structure_type,
+			$term_id,
+			$term_name,
+			wp_json_encode( $old_data ),
+			wp_json_encode( $new_data )
+		);
+	}
 }
