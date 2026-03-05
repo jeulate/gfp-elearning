@@ -77,7 +77,8 @@ class FairPlay_LMS_Admin_Menu {
             [ $this->structures, 'render_page' ]
         );
 
-        // Herramientas de sincronización
+        // Herramientas de sincronización (OCULTAS)
+        /*
         add_submenu_page(
             'fplms-dashboard',
             'Limpieza de Categorías',
@@ -95,6 +96,7 @@ class FairPlay_LMS_Admin_Menu {
             'fplms-resync-all-courses',
             [ $this, 'render_resync_page' ]
         );
+        */
 
         add_submenu_page(
             'fplms-dashboard',

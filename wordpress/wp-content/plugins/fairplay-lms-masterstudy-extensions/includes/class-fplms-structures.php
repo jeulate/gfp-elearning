@@ -4523,6 +4523,17 @@ class FairPlay_LMS_Structures_Controller {
                 if ( isset( $_POST['city_id'] ) ) {
                     $parent_value = absint( $_POST['city_id'] );
                     $terms_data = $this->get_terms_by_cities( $taxonomy, [ $parent_value ] );
+                    // Fallback: si ninguna empresa tiene asignada la ciudad
+                    // (datos aún no configurados), devolver todas las empresas
+                    if ( empty( $terms_data ) ) {
+                        $fallback = get_terms( [
+                            'taxonomy'   => $taxonomy,
+                            'hide_empty' => false,
+                            'orderby'    => 'name',
+                            'order'      => 'ASC',
+                        ] );
+                        $terms_data = is_wp_error( $fallback ) ? [] : $fallback;
+                    }
                 }
                 break;
 

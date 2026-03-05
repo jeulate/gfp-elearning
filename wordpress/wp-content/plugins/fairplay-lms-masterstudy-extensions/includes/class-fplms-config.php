@@ -37,6 +37,7 @@ class FairPlay_LMS_Config {
     public const USER_META_CHANNEL = 'fplms_channel';
     public const USER_META_BRANCH  = 'fplms_branch';
     public const USER_META_ROLE    = 'fplms_job_role';
+    public const USER_META_ID_USUARIO = 'fplms_id_usuario'; // ID único del usuario (alfanumérico, max 20 caracteres)
 
     // Post types internos
     public const CPT_MODULE = 'fplms_module';

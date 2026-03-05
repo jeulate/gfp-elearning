@@ -111,6 +111,12 @@ class FairPlay_LMS_Plugin {
         // Crear nuevo usuario desde panel FairPlay
         add_action( 'admin_init', [ $this->users, 'handle_new_user_form' ] );
 
+        // Editar usuario desde panel FairPlay
+        add_action( 'admin_init', [ $this->users, 'handle_edit_user_form' ] );
+
+        // Acciones masivas de usuarios
+        add_action( 'admin_init', [ $this->users, 'handle_bulk_user_actions' ] );
+
         // Matriz de privilegios
         add_action( 'admin_init', [ $this->users, 'handle_caps_matrix_form' ] );
 
@@ -142,6 +148,13 @@ class FairPlay_LMS_Plugin {
         
         // AJAX: Cargar términos filtrados por padre (sistema jerárquico completo)
         add_action( 'wp_ajax_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
+        
+        // Bitácora: Menú
+        add_action( 'admin_menu', [ $this->audit_admin, 'register_admin_menu' ] );
+        
+        // Bitácora: Acciones de usuario desde bitácora
+        add_action( 'admin_post_fplms_reactivate_user', [ $this->audit_admin, 'handle_user_reactivation' ] );
+        add_action( 'admin_post_fplms_delete_user_permanently', [ $this->audit_admin, 'handle_user_permanent_deletion' ] );
         add_action( 'wp_ajax_nopriv_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
         
         // AJAX: Cargar estructuras en cascada para asignación a cursos
@@ -164,9 +177,6 @@ class FairPlay_LMS_Plugin {
         
         // También sincronizar cuando se guarda un curso (para editor clásico y actualizaciones)
         add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'sync_course_categories_on_save' ], 20, 3 );
-        
-        // Auditoría: Menú admin
-        add_action( 'admin_menu', [ $this->audit_admin, 'register_admin_menu' ], 20 );
         
         // Auditoría: Registrar acciones en cursos
         add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'log_course_save' ], 30, 3 );
@@ -245,6 +255,15 @@ class FairPlay_LMS_Plugin {
         return $query_args;
     }
 
+    /**
+     * Obtener instancia del controlador de usuarios.
+     * 
+     * @return FairPlay_LMS_Users_Controller
+     */
+    public function get_users_controller(): FairPlay_LMS_Users_Controller {
+        return $this->users;
+    }
+    
     /**
      * Fuerza el editor clásico para cursos de MasterStudy.
      * Esto evita que el Course Builder se abra automáticamente

@@ -596,6 +596,25 @@ class FairPlay_LMS_Audit_Logger {
 	}
 
 	/**
+	 * Registrar creación de usuario
+	 *
+	 * @param int    $user_id   ID del usuario creado
+	 * @param string $user_name Nombre completo del usuario
+	 * @param array  $data      Datos del usuario (email, login, rol, estructuras, etc.)
+	 * @return int|false
+	 */
+	public function log_user_created( int $user_id, string $user_name, array $data = [] ) {
+		return $this->log_action(
+			'user_created',
+			'user',
+			$user_id,
+			$user_name,
+			null,
+			wp_json_encode( $data )
+		);
+	}
+
+	/**
 	 * Registrar desactivación de usuario (soft delete)
 	 *
 	 * @param int    $user_id ID del usuario
@@ -649,6 +668,26 @@ class FairPlay_LMS_Audit_Logger {
 			$user_name,
 			wp_json_encode( [ 'email' => $user_email ] ),
 			null
+		);
+	}
+
+	/**
+	 * Registrar actualización de usuario
+	 *
+	 * @param int    $user_id ID del usuario
+	 * @param string $user_name Nombre del usuario
+	 * @param array  $old_data Datos anteriores
+	 * @param array  $new_data Datos nuevos
+	 * @return int|false
+	 */
+	public function log_user_updated( int $user_id, string $user_name, array $old_data = [], array $new_data = [] ) {
+		return $this->log_action(
+			'user_updated',
+			'user',
+			$user_id,
+			$user_name,
+			wp_json_encode( $old_data ),
+			wp_json_encode( $new_data )
 		);
 	}
 
