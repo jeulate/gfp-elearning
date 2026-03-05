@@ -246,6 +246,12 @@ class FairPlay_LMS_Structures_Controller {
                     ),
                     admin_url( 'admin.php' )
                 );
+                
+                // Headers para evitar caché y forzar actualización
+                header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0' );
+                header( 'Cache-Control: post-check=0, pre-check=0', false );
+                header( 'Pragma: no-cache' );
+                
                 wp_redirect( $redirect_url );
                 exit;
             }
@@ -535,6 +541,184 @@ class FairPlay_LMS_Structures_Controller {
             }
         }
 
+        // Acciones masivas
+        if ( 'bulk_delete' === $action ) {
+            $term_ids = isset( $_POST['fplms_term_ids'] ) ? array_map( 'absint', (array) $_POST['fplms_term_ids'] ) : [];
+            $term_ids = array_filter( $term_ids );
+            
+            $deleted_count = 0;
+            $deleted_names = [];
+            
+            if ( ! empty( $term_ids ) ) {
+                foreach ( $term_ids as $term_id ) {
+                    $term = get_term( $term_id, $taxonomy );
+                    
+                    if ( $term && ! is_wp_error( $term ) ) {
+                        $term_name = $term->name;
+                        $deleted_names[] = $term_name;
+                        
+                        // Capturar metadatos antes de eliminar
+                        $term_description = get_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_DESCRIPTION, true );
+                        
+                        // Eliminar todas las relaciones
+                        delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_CITIES );
+                        delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_COMPANIES );
+                        delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_CHANNELS );
+                        delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_BRANCHES );
+                        delete_term_meta( $term_id, FairPlay_LMS_Config::META_TERM_DESCRIPTION );
+                        delete_term_meta( $term_id, 'fplms_linked_category_id' );
+                        
+                        // Registrar en bitácora
+                        if ( class_exists( 'FairPlay_LMS_Audit_Logger' ) ) {
+                            $audit = new FairPlay_LMS_Audit_Logger();
+                            $structure_type = $this->get_structure_type_name( $taxonomy );
+                            
+                            $audit->log_structure_deleted(
+                                $structure_type,
+                                $term_id,
+                                $term_name,
+                                [ 'taxonomy' => $taxonomy, 'bulk_action' => true ]
+                            );
+                        }
+                        
+                        // Eliminar término
+                        wp_delete_term( $term_id, $taxonomy );
+                        $deleted_count++;
+                    }
+                }
+            }
+            
+            // Redirigir con mensaje
+            $tab = sanitize_text_field( wp_unslash( $_POST['fplms_tab'] ?? '' ) );
+            $success_msg = urlencode( "✓ {$deleted_count} elemento" . ( $deleted_count > 1 ? 's eliminados' : ' eliminado' ) . " exitosamente" );
+            $redirect_url = add_query_arg(
+                array(
+                    'page' => 'fplms-structures',
+                    'fplms_success' => $success_msg,
+                    'tab' => $tab
+                ),
+                admin_url( 'admin.php' )
+            );
+            wp_redirect( $redirect_url );
+            exit;
+        }
+
+        if ( 'bulk_deactivate' === $action ) {
+            $term_ids = isset( $_POST['fplms_term_ids'] ) ? array_map( 'absint', (array) $_POST['fplms_term_ids'] ) : [];
+            $term_ids = array_filter( $term_ids );
+            
+            $updated_count = 0;
+            
+            if ( ! empty( $term_ids ) ) {
+                foreach ( $term_ids as $term_id ) {
+                    $term = get_term( $term_id, $taxonomy );
+                    
+                    if ( $term && ! is_wp_error( $term ) ) {
+                        $current = get_term_meta( $term_id, FairPlay_LMS_Config::META_ACTIVE, true );
+                        
+                        // Solo desactivar si está activo
+                        if ( '1' === $current ) {
+                            update_term_meta( $term_id, FairPlay_LMS_Config::META_ACTIVE, '0' );
+                            
+                            // Registrar en bitácora
+                            if ( class_exists( 'FairPlay_LMS_Audit_Logger' ) ) {
+                                $audit = new FairPlay_LMS_Audit_Logger();
+                                $structure_type = $this->get_structure_type_name( $taxonomy );
+                                
+                                $audit->log_structure_status_changed(
+                                    $structure_type,
+                                    $term_id,
+                                    $term->name,
+                                    '1',
+                                    '0'
+                                );
+                            }
+                            
+                            $updated_count++;
+                        }
+                    }
+                }
+            }
+            
+            // Redirigir con mensaje
+            $tab = sanitize_text_field( wp_unslash( $_POST['fplms_tab'] ?? '' ) );
+            $success_msg = urlencode( "✓ {$updated_count} elemento" . ( $updated_count > 1 ? 's desactivados' : ' desactivado' ) . " exitosamente" );
+            $redirect_url = add_query_arg(
+                array(
+                    'page' => 'fplms-structures',
+                    'fplms_success' => $success_msg,
+                    'tab' => $tab
+                ),
+                admin_url( 'admin.php' )
+            );
+            
+            // Headers para evitar caché
+            header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0' );
+            header( 'Cache-Control: post-check=0, pre-check=0', false );
+            header( 'Pragma: no-cache' );
+            
+            wp_redirect( $redirect_url );
+            exit;
+        }
+
+        if ( 'bulk_activate' === $action ) {
+            $term_ids = isset( $_POST['fplms_term_ids'] ) ? array_map( 'absint', (array) $_POST['fplms_term_ids'] ) : [];
+            $term_ids = array_filter( $term_ids );
+            
+            $updated_count = 0;
+            
+            if ( ! empty( $term_ids ) ) {
+                foreach ( $term_ids as $term_id ) {
+                    $term = get_term( $term_id, $taxonomy );
+                    
+                    if ( $term && ! is_wp_error( $term ) ) {
+                        $current = get_term_meta( $term_id, FairPlay_LMS_Config::META_ACTIVE, true );
+                        
+                        // Solo activar si está inactivo
+                        if ( '0' === $current || '' === $current ) {
+                            update_term_meta( $term_id, FairPlay_LMS_Config::META_ACTIVE, '1' );
+                            
+                            // Registrar en bitácora
+                            if ( class_exists( 'FairPlay_LMS_Audit_Logger' ) ) {
+                                $audit = new FairPlay_LMS_Audit_Logger();
+                                $structure_type = $this->get_structure_type_name( $taxonomy );
+                                
+                                $audit->log_structure_status_changed(
+                                    $structure_type,
+                                    $term_id,
+                                    $term->name,
+                                    $current ?: '0',
+                                    '1'
+                                );
+                            }
+                            
+                            $updated_count++;
+                        }
+                    }
+                }
+            }
+            
+            // Redirigir con mensaje
+            $tab = sanitize_text_field( wp_unslash( $_POST['fplms_tab'] ?? '' ) );
+            $success_msg = urlencode( "✓ {$updated_count} elemento" . ( $updated_count > 1 ? 's activados' : ' activado' ) . " exitosamente" );
+            $redirect_url = add_query_arg(
+                array(
+                    'page' => 'fplms-structures',
+                    'fplms_success' => $success_msg,
+                    'tab' => $tab
+                ),
+                admin_url( 'admin.php' )
+            );
+            
+            // Headers para evitar caché
+            header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0' );
+            header( 'Cache-Control: post-check=0, pre-check=0', false );
+            header( 'Pragma: no-cache' );
+            
+            wp_redirect( $redirect_url );
+            exit;
+        }
+
         // Este redirect se mantiene por si alguna acción no tiene su propio redirect
         $tab = isset( $_POST['fplms_tab'] ) ? sanitize_text_field( wp_unslash( $_POST['fplms_tab'] ) ) : 'city';
         wp_safe_redirect(
@@ -690,6 +874,51 @@ class FairPlay_LMS_Structures_Controller {
             
             .fplms-export-selected:hover {
                 background: #008000 !important;
+            }
+            
+            /* ACCIONES MASIVAS */
+            .fplms-bulk-actions-container {
+                display: none;
+                align-items: center;
+                gap: 10px;
+                padding: 10px;
+                background: #fff3cd;
+                border: 1px solid #ffc107;
+                border-radius: 5px;
+                margin-bottom: 10px;
+            }
+            
+            .fplms-bulk-actions-container.visible {
+                display: flex;
+            }
+            
+            .fplms-bulk-select {
+                padding: 6px 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                font-size: 13px;
+                color: #333;
+                background: white;
+            }
+            
+            .fplms-bulk-apply-btn {
+                background: #0073aa !important;
+                color: white !important;
+                border: none !important;
+                padding: 6px 15px !important;
+                border-radius: 4px !important;
+                cursor: pointer !important;
+                font-size: 13px !important;
+                transition: all 0.2s ease !important;
+            }
+            
+            .fplms-bulk-apply-btn:hover {
+                background: #005a87 !important;
+            }
+            
+            .fplms-bulk-apply-btn:disabled {
+                background: #ccc !important;
+                cursor: not-allowed !important;
             }
             
             /* TABLA DE DATOS */
@@ -893,6 +1122,23 @@ class FairPlay_LMS_Structures_Controller {
                                                onkeyup="fplmsFilterTable('<?php echo esc_attr( $tab_key ); ?>')">
                                     </div>
                                     
+                                    <!-- Acciones masivas -->
+                                    <div class="fplms-bulk-actions-container" id="fplms-bulk-actions-<?php echo esc_attr( $tab_key ); ?>">
+                                        <strong><?php echo esc_html( $tab_info['label'] ); ?>:</strong>
+                                        <span id="fplms-bulk-count-<?php echo esc_attr( $tab_key ); ?>">0 seleccionados</span>
+                                        <select id="fplms-bulk-action-<?php echo esc_attr( $tab_key ); ?>" class="fplms-bulk-select">
+                                            <option value="">-- Acciones masivas --</option>
+                                            <option value="deactivate">❌ Desactivar seleccionados</option>
+                                            <option value="activate">✅ Activar seleccionados</option>
+                                            <option value="delete">🗑️ Eliminar seleccionados</option>
+                                        </select>
+                                        <button type="button" 
+                                                class="button fplms-bulk-apply-btn" 
+                                                onclick="fplmsApplyBulkAction('<?php echo esc_attr( $tab_key ); ?>', '<?php echo esc_attr( $tab_info['taxonomy'] ); ?>')">
+                                            Aplicar
+                                        </button>
+                                    </div>
+
                                     <div class="fplms-table-export">
                                         <form method="post" style="display: inline-block;" target="_blank">
                                             <?php wp_nonce_field( 'fplms_export_structures', 'fplms_export_nonce' ); ?>
@@ -1009,16 +1255,11 @@ class FairPlay_LMS_Structures_Controller {
                                                     </span>
                                                 </td>
                                                 <td class="fplms-table-actions">
-                                                    <form method="post" style="display:inline;">
-                                                        <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
-                                                        <input type="hidden" name="fplms_structures_action" value="toggle_active">
-                                                        <input type="hidden" name="fplms_taxonomy" value="<?php echo esc_attr( $tab_info['taxonomy'] ); ?>">
-                                                        <input type="hidden" name="fplms_term_id" value="<?php echo esc_attr( $term->term_id ); ?>">
-                                                        <input type="hidden" name="fplms_tab" value="<?php echo esc_attr( $tab_key ); ?>">
-                                                        <button type="submit" class="fplms-btn fplms-btn-toggle" title="<?php echo $active ? 'Desactivar' : 'Activar'; ?>">
-                                                            <?php echo $active ? '⊙' : '○'; ?>
-                                                        </button>
-                                                    </form>
+                                                    <button type="button" class="fplms-btn fplms-btn-toggle" 
+                                                        onclick="fplmsToggleStatus(<?php echo esc_attr( $term->term_id ); ?>, '<?php echo esc_js( $term->name ); ?>', '<?php echo esc_attr( $tab_info['taxonomy'] ); ?>', '<?php echo esc_attr( $tab_key ); ?>', <?php echo $active ? '1' : '0'; ?>)"
+                                                        title="<?php echo $active ? 'Desactivar' : 'Activar'; ?>">
+                                                        <?php echo $active ? '⊙' : '○'; ?>
+                                                    </button>
                                                     
                                                     <button type="button" class="fplms-btn fplms-btn-edit" 
                                                         onclick="fplmsToggleTableEditRow(<?php echo esc_attr( $term->term_id ); ?>, '<?php echo esc_attr( $tab_key ); ?>')"
@@ -1424,6 +1665,54 @@ class FairPlay_LMS_Structures_Controller {
                     <div class="fplms-modal-footer">
                         <button type="button" class="button" onclick="fplmsCloseSaveModal()">Cancelar</button>
                         <button type="button" class="button button-primary" style="background-color: #0073aa; border-color: #0073aa;" onclick="fplmsConfirmSaveChanges()">✓ Guardar Cambios</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal de Confirmación de Cambio de Estado -->
+            <div id="fplms-toggle-modal" class="fplms-modal" style="display:none;">
+                <div class="fplms-modal-content" style="max-width: 450px;">
+                    <div class="fplms-modal-header">
+                        <h3 id="fplms-toggle-modal-title">⊙ Cambiar Estado</h3>
+                        <button class="fplms-modal-close" onclick="fplmsCloseToggleModal()">✕</button>
+                    </div>
+                    <div class="fplms-modal-body">
+                        <p id="fplms-toggle-modal-question">¿Estás seguro de que deseas cambiar el estado de este elemento?</p>
+                        <div style="background: #fff3cd; padding: 12px; border-radius: 4px; border-left: 3px solid #ffc107; margin: 12px 0;">
+                            <p style="margin: 0; color: #856404; font-weight: 600;" id="fplms_toggle_name"></p>
+                            <p style="margin: 4px 0 0 0; color: #856404; font-size: 13px;" id="fplms_toggle_status"></p>
+                        </div>
+                        <p style="color: #666; font-size: 12px; margin-bottom: 0;">Este cambio se registrará en la bitácora del sistema.</p>
+                    </div>
+                    <div class="fplms-modal-footer">
+                        <button type="button" class="button" onclick="fplmsCloseToggleModal()">Cancelar</button>
+                        <button type="button" class="button button-primary" id="fplms-toggle-confirm-btn" onclick="fplmsConfirmToggleStatus()">✓ Cambiar Estado</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal de Confirmación de Acciones Masivas -->
+            <div id="fplms-bulk-modal" class="fplms-modal" style="display:none;">
+                <div class="fplms-modal-content" style="max-width: 500px;">
+                    <div class="fplms-modal-header">
+                        <h3 id="fplms-bulk-modal-title">⚠️ Confirmar Acción Masiva</h3>
+                        <button class="fplms-modal-close" onclick="fplmsCloseBulkModal()">✕</button>
+                    </div>
+                    <div class="fplms-modal-body">
+                        <p id="fplms-bulk-modal-question">¿Estás seguro de que deseas realizar esta acción?</p>
+                        <div style="background: #fff3cd; padding: 12px; border-radius: 4px; border-left: 3px solid #ffc107; margin: 12px 0;">
+                            <p style="margin: 0; color: #856404; font-weight: 600;" id="fplms_bulk_action_text"></p>
+                            <p style="margin: 4px 0 0 0; color: #856404; font-size: 13px;" id="fplms_bulk_elements"></p>
+                        </div>
+                        <div id="fplms-bulk-delete-warning" style="display: none; background: #ffebee; padding: 12px; border-radius: 4px; border-left: 3px solid #d32f2f; margin: 12px 0;">
+                            <p style="margin: 0; color: #c62828; font-weight: 600;">⚠️ ADVERTENCIA: Esta acción es IRREVERSIBLE</p>
+                            <p style="margin: 4px 0 0 0; color: #c62828; font-size: 13px;">Los elementos y sus relaciones se eliminarán permanentemente.</p>
+                        </div>
+                        <p style="color: #666; font-size: 12px; margin-bottom: 0;">Esta acción se registrará en la bitácora del sistema.</p>
+                    </div>
+                    <div class="fplms-modal-footer">
+                        <button type="button" class="button" onclick="fplmsCloseBulkModal()">Cancelar</button>
+                        <button type="button" class="button button-primary" id="fplms-bulk-confirm-btn" onclick="fplmsConfirmBulkAction()">✓ Confirmar</button>
                     </div>
                 </div>
             </div>
@@ -2324,6 +2613,22 @@ class FairPlay_LMS_Structures_Controller {
                         }, 100);
                     }
                 }
+
+                // Cerrar modales al hacer clic fuera de ellos
+                const deleteModal = document.getElementById('fplms-delete-modal');
+                const saveModal = document.getElementById('fplms-save-modal');
+                const toggleModal = document.getElementById('fplms-toggle-modal');
+                const bulkModal = document.getElementById('fplms-bulk-modal');
+                
+                [deleteModal, saveModal, toggleModal, bulkModal].forEach(modal => {
+                    if (modal) {
+                        modal.addEventListener('click', function(event) {
+                            if (event.target === modal) {
+                                modal.style.display = 'none';
+                            }
+                        });
+                    }
+                });
             });
 
             function initializeMultiSelects() {
@@ -2436,6 +2741,184 @@ class FairPlay_LMS_Structures_Controller {
 
             function fplmsCloseSaveModal() {
                 document.getElementById('fplms-save-modal').style.display = 'none';
+            }
+
+            // Variables globales para el modal de toggle status
+            let toggleData = {};
+
+            function fplmsToggleStatus(termId, termName, taxonomy, tab, currentStatus) {
+                toggleData = { termId, termName, taxonomy, tab, currentStatus };
+                
+                // Configurar contenido del modal según el estado actual
+                const isActive = currentStatus === 1 || currentStatus === '1';
+                const newStatus = isActive ? 'Inactivo' : 'Activo';
+                const action = isActive ? 'desactivar' : 'activar';
+                const emoji = isActive ? '○' : '⊙';
+                
+                document.getElementById('fplms-toggle-modal-title').textContent = emoji + ' ' + (isActive ? 'Desactivar' : 'Activar') + ' Elemento';
+                document.getElementById('fplms-toggle-modal-question').textContent = `¿Estás seguro de que deseas ${action} este elemento?`;
+                document.getElementById('fplms_toggle_name').textContent = `"${termName}"`;
+                document.getElementById('fplms_toggle_status').textContent = `Estado actual: ${isActive ? 'Activo' : 'Inactivo'} → Cambiar a: ${newStatus}`;
+                
+                // Cambiar color del botón según la acción
+                const confirmBtn = document.getElementById('fplms-toggle-confirm-btn');
+                if (isActive) {
+                    // Desactivar = naranja/amarillo
+                    confirmBtn.style.backgroundColor = '#ff9800';
+                    confirmBtn.style.borderColor = '#ff9800';
+                } else {
+                    // Activar = verde
+                    confirmBtn.style.backgroundColor = '#4caf50';
+                    confirmBtn.style.borderColor = '#4caf50';
+                }
+                
+                document.getElementById('fplms-toggle-modal').style.display = 'flex';
+            }
+
+            function fplmsCloseToggleModal() {
+                document.getElementById('fplms-toggle-modal').style.display = 'none';
+            }
+
+            function fplmsConfirmToggleStatus() {
+                if (!toggleData.termId) return;
+
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.innerHTML = `
+                    <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
+                    <input type="hidden" name="fplms_structures_action" value="toggle_active">
+                    <input type="hidden" name="fplms_taxonomy" value="${toggleData.taxonomy}">
+                    <input type="hidden" name="fplms_term_id" value="${toggleData.termId}">
+                    <input type="hidden" name="fplms_tab" value="${toggleData.tab}">
+                `;
+                document.body.appendChild(form);
+                form.submit();
+            }
+
+            // Variables globales para acciones masivas
+            let bulkActionData = {};
+
+            function fplmsApplyBulkAction(tabKey, taxonomy) {
+                const select = document.getElementById('fplms-bulk-action-' + tabKey);
+                const action = select.value;
+                
+                if (!action) {
+                    alert('Por favor, selecciona una acción del menú.');
+                    return;
+                }
+                
+                // Obtener checkboxes marcados
+                const table = document.getElementById('fplms-table-' + tabKey);
+                const checkboxes = Array.from(table.querySelectorAll('.fplms-row-checkbox:checked'));
+                
+                if (checkboxes.length === 0) {
+                    alert('Por favor, selecciona al menos un elemento.');
+                    return;
+                }
+                
+                // Obtener IDs y nombres
+                const termIds = checkboxes.map(cb => cb.getAttribute('data-term-id'));
+                const termNames = checkboxes.map(cb => {
+                    const row = cb.closest('tr');
+                    const nameCell = row.querySelector('td:nth-child(2) strong');
+                    return nameCell ? nameCell.textContent : '';
+                });
+                
+                // Guardar datos para el modal
+                bulkActionData = {
+                    action: action,
+                    termIds: termIds,
+                    termNames: termNames,
+                    taxonomy: taxonomy,
+                    tab: tabKey
+                };
+                
+                // Configurar modal según la acción
+                const modalTitle = document.getElementById('fplms-bulk-modal-title');
+                const modalQuestion = document.getElementById('fplms-bulk-modal-question');
+                const actionText = document.getElementById('fplms_bulk_action_text');
+                const elementsText = document.getElementById('fplms_bulk_elements');
+                const confirmBtn = document.getElementById('fplms-bulk-confirm-btn');
+                const deleteWarning = document.getElementById('fplms-bulk-delete-warning');
+                
+                let actionLabel = '';
+                let questionText = '';
+                let btnColor = '';
+                
+                if (action === 'delete') {
+                    modalTitle.textContent = '🗑️ Eliminar Elementos';
+                    actionLabel = 'Eliminar ' + termIds.length + ' elemento' + (termIds.length > 1 ? 's' : '');
+                    questionText = '¿Estás seguro de que deseas ELIMINAR estos elementos?';
+                    btnColor = '#d32f2f';
+                    deleteWarning.style.display = 'block';
+                } else if (action === 'deactivate') {
+                    modalTitle.textContent = '❌ Desactivar Elementos';
+                    actionLabel = 'Desactivar ' + termIds.length + ' elemento' + (termIds.length > 1 ? 's' : '');
+                    questionText = '¿Estás seguro de que deseas DESACTIVAR estos elementos?';
+                    btnColor = '#ff9800';
+                    deleteWarning.style.display = 'none';
+                } else if (action === 'activate') {
+                    modalTitle.textContent = '✅ Activar Elementos';
+                    actionLabel = 'Activar ' + termIds.length + ' elemento' + (termIds.length > 1 ? 's' : '');
+                    questionText = '¿Estás seguro de que deseas ACTIVAR estos elementos?';
+                    btnColor = '#4caf50';
+                    deleteWarning.style.display = 'none';
+                }
+                
+                modalQuestion.textContent = questionText;
+                actionText.textContent = actionLabel;
+                
+                // Mostrar lista de elementos (máximo 10, luego "...")
+                const displayNames = termNames.slice(0, 10);
+                let namesHtml = displayNames.join(', ');
+                if (termNames.length > 10) {
+                    namesHtml += ', ... y ' + (termNames.length - 10) + ' más';
+                }
+                elementsText.textContent = namesHtml;
+                
+                // Cambiar color del botón
+                confirmBtn.style.backgroundColor = btnColor;
+                confirmBtn.style.borderColor = btnColor;
+                
+                // Mostrar modal
+                document.getElementById('fplms-bulk-modal').style.display = 'flex';
+            }
+
+            function fplmsCloseBulkModal() {
+                document.getElementById('fplms-bulk-modal').style.display = 'none';
+            }
+
+            function fplmsConfirmBulkAction() {
+                if (!bulkActionData.termIds || bulkActionData.termIds.length === 0) return;
+                
+                // Crear formulario para enviar
+                const form = document.createElement('form');
+                form.method = 'POST';
+                
+                let actionValue = '';
+                if (bulkActionData.action === 'delete') {
+                    actionValue = 'bulk_delete';
+                } else if (bulkActionData.action === 'deactivate') {
+                    actionValue = 'bulk_deactivate';
+                } else if (bulkActionData.action === 'activate') {
+                    actionValue = 'bulk_activate';
+                }
+                
+                let hiddenFields = `
+                    <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
+                    <input type="hidden" name="fplms_structures_action" value="${actionValue}">
+                    <input type="hidden" name="fplms_taxonomy" value="${bulkActionData.taxonomy}">
+                    <input type="hidden" name="fplms_tab" value="${bulkActionData.tab}">
+                `;
+                
+                // Agregar IDs
+                bulkActionData.termIds.forEach((id, index) => {
+                    hiddenFields += `<input type="hidden" name="fplms_term_ids[${index}]" value="${id}">`;
+                });
+                
+                form.innerHTML = hiddenFields;
+                document.body.appendChild(form);
+                form.submit();
             }
 
             function fplmsConfirmSaveChanges() {
@@ -3021,19 +3504,34 @@ class FairPlay_LMS_Structures_Controller {
             }
             
             /**
-             * Actualizar botón de exportación según selección
+             * Actualizar botón de exportación según selección y acciones masivas
              */
             function fplmsUpdateExportButton(tabKey) {
                 const table = document.getElementById('fplms-table-' + tabKey);
                 const checkboxes = table.querySelectorAll('.fplms-row-checkbox:checked');
                 const exportBtn = document.getElementById('fplms-export-selected-' + tabKey);
                 const checkAll = document.getElementById('fplms-check-all-' + tabKey);
+                const bulkContainer = document.getElementById('fplms-bulk-actions-' + tabKey);
+                const bulkCount = document.getElementById('fplms-bulk-count-' + tabKey);
                 
                 if (checkboxes.length > 0) {
                     exportBtn.style.display = 'inline-block';
                     exportBtn.textContent = '✓ Exportar Seleccionados (' + checkboxes.length + ')';
+                    
+                    // Mostrar acciones masivas
+                    if (bulkContainer) {
+                        bulkContainer.classList.add('visible');
+                    }
+                    if (bulkCount) {
+                        bulkCount.textContent = checkboxes.length + ' seleccionado' + (checkboxes.length > 1 ? 's' : '');
+                    }
                 } else {
                     exportBtn.style.display = 'none';
+                    
+                    // Ocultar acciones masivas
+                    if (bulkContainer) {
+                        bulkContainer.classList.remove('visible');
+                    }
                 }
                 
                 // Actualizar checkbox "Todos"

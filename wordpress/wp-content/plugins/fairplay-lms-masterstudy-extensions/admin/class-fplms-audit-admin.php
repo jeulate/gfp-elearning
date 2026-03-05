@@ -69,9 +69,16 @@ class FairPlay_LMS_Audit_Admin {
 
 		// Obtener filtros
 		$current_page = isset( $_GET['paged'] ) ? max( 1, intval( $_GET['paged'] ) ) : 1;
-		$per_page     = 50;
-		$offset       = ( $current_page - 1 ) * $per_page;
-
+        $per_page     = isset( $_GET['per_page'] ) ? intval( $_GET['per_page'] ) : 50;
+        
+        // Validar per_page (solo permitir valores específicos)
+        if ( ! in_array( $per_page, [ 10, 20, 50, 100 ], true ) ) {
+            $per_page = 50;
+        }
+        
+        // Calcular offset para la paginación
+        $offset = ( $current_page - 1 ) * $per_page;
+        
 		$filters = [
 			'action'      => isset( $_GET['filter_action'] ) ? sanitize_text_field( wp_unslash( $_GET['filter_action'] ) ) : '',
 			'entity_type' => isset( $_GET['filter_entity'] ) ? sanitize_text_field( wp_unslash( $_GET['filter_entity'] ) ) : '',
@@ -101,7 +108,7 @@ class FairPlay_LMS_Audit_Admin {
 
 			<?php $this->render_statistics( $stats ); ?>
 			<?php $this->render_filters( $filters ); ?>
-			<?php $this->render_logs_table( $logs, $current_page, $total_pages, $total_logs ); ?>
+            <?php $this->render_logs_table( $logs, $current_page, $total_pages, $total_logs, $per_page ); ?>
 		</div>
 		<?php
 	}
@@ -232,13 +239,36 @@ class FairPlay_LMS_Audit_Admin {
 	 * @param int   $current_page Página actual
 	 * @param int   $total_pages  Total de páginas
 	 * @param int   $total_logs   Total de registros
+	 * @param int   $per_page     Registros por página
 	 * @return void
 	 */
-	private function render_logs_table( array $logs, int $current_page, int $total_pages, int $total_logs ): void {
+	private function render_logs_table( array $logs, int $current_page, int $total_pages, int $total_logs, int $per_page ): void {
 		?>
 		<div class="fplms-audit-table">
 			<div style="background: #fff; padding: 15px; border: 1px solid #ccd0d4;">
-				<h3 style="margin-top: 0;">Registros de Auditoría (<?php echo esc_html( number_format( $total_logs ) ); ?> total)</h3>
+				<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+					<h3 style="margin: 0;">Registros de Auditoría (<?php echo esc_html( number_format( $total_logs ) ); ?> total)</h3>
+					
+					<form method="get" action="" style="margin: 0;">
+						<input type="hidden" name="page" value="fairplay-lms-audit">
+						<?php
+						// Mantener todos los filtros actuales
+						foreach ( $_GET as $key => $value ) {
+							if ( $key !== 'page' && $key !== 'per_page' && $key !== 'paged' ) {
+								echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( $value ) . '">';
+							}
+						}
+						?>
+						<label for="per_page" style="margin-right: 5px; font-weight: 600;">Mostrar:</label>
+						<select name="per_page" id="per_page" onchange="this.form.submit()" style="padding: 6px 30px 6px 10px; min-width: 70px; border: 1px solid #8c8f94; border-radius: 4px; background-color: #fff; font-size: 13px; cursor: pointer;">
+							<option value="10" <?php selected( $per_page, 10 ); ?>>10</option>
+							<option value="20" <?php selected( $per_page, 20 ); ?>>20</option>
+							<option value="50" <?php selected( $per_page, 50 ); ?>>50</option>
+							<option value="100" <?php selected( $per_page, 100 ); ?>>100</option>
+						</select>
+						<span style="margin-left: 5px;">registros por página</span>
+					</form>
+				</div>
 				
 				<?php if ( empty( $logs ) ) : ?>
 					<p style="text-align: center; padding: 40px 0; color: #666;">
@@ -311,7 +341,7 @@ class FairPlay_LMS_Audit_Admin {
 						</tbody>
 					</table>
 
-					<?php $this->render_pagination( $current_page, $total_pages ); ?>
+					<?php $this->render_pagination( $current_page, $total_pages, $per_page ); ?>
 				<?php endif; ?>
 			</div>
 		</div>
@@ -400,16 +430,17 @@ class FairPlay_LMS_Audit_Admin {
 	 *
 	 * @param int $current_page Página actual
 	 * @param int $total_pages  Total de páginas
+	 * @param int $per_page     Registros por página
 	 * @return void
 	 */
-	private function render_pagination( int $current_page, int $total_pages ): void {
+	private function render_pagination( int $current_page, int $total_pages, int $per_page = 50 ): void {
 		if ( $total_pages <= 1 ) {
 			return;
 		}
 
 		$base_url = admin_url( 'admin.php?page=fairplay-lms-audit' );
 		
-		// Mantener filtros en la paginación
+		// Mantener filtros y per_page en la paginación
 		$query_params = [];
 		if ( ! empty( $_GET['filter_action'] ) ) {
 			$query_params['filter_action'] = sanitize_text_field( wp_unslash( $_GET['filter_action'] ) );
@@ -422,6 +453,10 @@ class FairPlay_LMS_Audit_Admin {
 		}
 		if ( ! empty( $_GET['filter_date_to'] ) ) {
 			$query_params['filter_date_to'] = sanitize_text_field( wp_unslash( $_GET['filter_date_to'] ) );
+		}
+		// Mantener el per_page actual
+		if ( $per_page !== 50 ) {
+			$query_params['per_page'] = $per_page;
 		}
 
 		?>
