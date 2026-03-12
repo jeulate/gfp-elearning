@@ -5025,6 +5025,166 @@ class FairPlay_LMS_Structures_Controller {
 	}
 
 	/**
+	 * Sincronizar una sucursal como subcategoría bajo las categorías de sus canales.
+	 * Se llama al crear o editar una sucursal en la taxonomía fplms_branch.
+	 *
+	 * @param int   $term_id ID del término (sucursal)
+	 * @param int   $tt_id   Term taxonomy ID
+	 * @param array $args    Argumentos del término
+	 * @return void
+	 */
+	public function sync_branch_to_subcategory( int $term_id, int $tt_id, array $args ): void {
+		$branch = get_term( $term_id, FairPlay_LMS_Config::TAX_BRANCH );
+		if ( is_wp_error( $branch ) || ! $branch ) {
+			return;
+		}
+
+		// IDs de canales a los que pertenece esta sucursal
+		$channel_ids_raw = get_term_meta( $term_id, FairPlay_LMS_Config::META_BRANCH_CHANNELS, true );
+		$channel_ids     = array_filter( array_map( 'absint', (array) ( $channel_ids_raw ?: [] ) ) );
+
+		if ( empty( $channel_ids ) ) {
+			return;
+		}
+
+		// Mapa existente: [ canal_id => categoria_id, ... ]
+		$existing_map = (array) ( get_term_meta( $term_id, 'fplms_linked_branch_category_ids', true ) ?: [] );
+		$new_map      = [];
+
+		foreach ( $channel_ids as $channel_id ) {
+			$channel_cat_id = (int) get_term_meta( $channel_id, 'fplms_linked_category_id', true );
+			if ( ! $channel_cat_id ) {
+				continue; // Canal aún no sincronizado
+			}
+
+			$existing_cat_id = isset( $existing_map[ $channel_id ] ) ? (int) $existing_map[ $channel_id ] : 0;
+
+			if ( $existing_cat_id ) {
+				$cat = get_term( $existing_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+				if ( $cat && ! is_wp_error( $cat ) ) {
+					wp_update_term( $existing_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY, [
+						'name'   => $branch->name,
+						'parent' => $channel_cat_id,
+					] );
+					$new_map[ $channel_id ] = $existing_cat_id;
+					continue;
+				}
+			}
+
+			// Crear nueva subcategoría
+			$result = wp_insert_term( $branch->name, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY, [
+				'slug'        => 'fplms-br-' . $term_id . '-ch-' . $channel_id,
+				'parent'      => $channel_cat_id,
+				'description' => 'Sucursal: ' . $branch->name,
+			] );
+			if ( ! is_wp_error( $result ) ) {
+				$new_cat_id = (int) $result['term_id'];
+				update_term_meta( $new_cat_id, 'fplms_linked_branch_id', $term_id );
+				$new_map[ $channel_id ] = $new_cat_id;
+			}
+		}
+
+		update_term_meta( $term_id, 'fplms_linked_branch_category_ids', $new_map );
+	}
+
+	/**
+	 * Sincronizar un cargo como sub-subcategoría bajo las subcategorías de sus sucursales.
+	 * Se llama al crear o editar un cargo en la taxonomía fplms_job_role.
+	 *
+	 * @param int   $term_id ID del término (cargo)
+	 * @param int   $tt_id   Term taxonomy ID
+	 * @param array $args    Argumentos del término
+	 * @return void
+	 */
+	public function sync_role_to_subcategory( int $term_id, int $tt_id, array $args ): void {
+		$role = get_term( $term_id, FairPlay_LMS_Config::TAX_ROLE );
+		if ( is_wp_error( $role ) || ! $role ) {
+			return;
+		}
+
+		// IDs de sucursales a las que pertenece este cargo
+		$branch_ids_raw = get_term_meta( $term_id, FairPlay_LMS_Config::META_ROLE_BRANCHES, true );
+		$branch_ids     = array_filter( array_map( 'absint', (array) ( $branch_ids_raw ?: [] ) ) );
+
+		if ( empty( $branch_ids ) ) {
+			return;
+		}
+
+		// Mapa existente: [ "branch_id_channel_id" => categoria_id, ... ]
+		$existing_map = (array) ( get_term_meta( $term_id, 'fplms_linked_role_category_ids', true ) ?: [] );
+		$new_map      = [];
+
+		foreach ( $branch_ids as $branch_id ) {
+			$branch_cat_map = (array) ( get_term_meta( $branch_id, 'fplms_linked_branch_category_ids', true ) ?: [] );
+
+			foreach ( $branch_cat_map as $channel_id => $branch_cat_id ) {
+				$key             = $branch_id . '_' . $channel_id;
+				$existing_cat_id = isset( $existing_map[ $key ] ) ? (int) $existing_map[ $key ] : 0;
+
+				if ( $existing_cat_id ) {
+					$cat = get_term( $existing_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+					if ( $cat && ! is_wp_error( $cat ) ) {
+						wp_update_term( $existing_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY, [
+							'name'   => $role->name,
+							'parent' => (int) $branch_cat_id,
+						] );
+						$new_map[ $key ] = $existing_cat_id;
+						continue;
+					}
+				}
+
+				// Crear nueva sub-subcategoría
+				$result = wp_insert_term( $role->name, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY, [
+					'slug'        => 'fplms-role-' . $term_id . '-br-' . $branch_id . '-ch-' . $channel_id,
+					'parent'      => (int) $branch_cat_id,
+					'description' => 'Cargo: ' . $role->name,
+				] );
+				if ( ! is_wp_error( $result ) ) {
+					$new_cat_id = (int) $result['term_id'];
+					update_term_meta( $new_cat_id, 'fplms_linked_role_id', $term_id );
+					$new_map[ $key ] = $new_cat_id;
+				}
+			}
+		}
+
+		update_term_meta( $term_id, 'fplms_linked_role_category_ids', $new_map );
+	}
+
+	/**
+	 * Eliminar subcategorías cuando se elimina una sucursal.
+	 *
+	 * @param int     $term_id      ID del término
+	 * @param int     $tt_id        Term taxonomy ID
+	 * @param WP_Term $deleted_term Término eliminado
+	 * @param array   $object_ids   IDs de objetos asociados
+	 * @return void
+	 */
+	public function unsync_branch_on_delete( int $term_id, int $tt_id, $deleted_term, array $object_ids ): void {
+		$cat_map = (array) ( get_term_meta( $term_id, 'fplms_linked_branch_category_ids', true ) ?: [] );
+		foreach ( $cat_map as $channel_id => $cat_id ) {
+			wp_delete_term( (int) $cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+		}
+		delete_term_meta( $term_id, 'fplms_linked_branch_category_ids' );
+	}
+
+	/**
+	 * Eliminar sub-subcategorías cuando se elimina un cargo.
+	 *
+	 * @param int     $term_id      ID del término
+	 * @param int     $tt_id        Term taxonomy ID
+	 * @param WP_Term $deleted_term Término eliminado
+	 * @param array   $object_ids   IDs de objetos asociados
+	 * @return void
+	 */
+	public function unsync_role_on_delete( int $term_id, int $tt_id, $deleted_term, array $object_ids ): void {
+		$cat_map = (array) ( get_term_meta( $term_id, 'fplms_linked_role_category_ids', true ) ?: [] );
+		foreach ( $cat_map as $key => $cat_id ) {
+			wp_delete_term( (int) $cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+		}
+		delete_term_meta( $term_id, 'fplms_linked_role_category_ids' );
+	}
+
+	/**
 	 * Manejar solicitudes de exportación de estructuras
 	 *
 	 * @return void

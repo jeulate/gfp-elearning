@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
@@ -51,6 +51,27 @@ class FairPlay_LMS_Courses_Controller {
     }
 
     /**
+     * Oculta cursos con post_status = 'draft' a todos los roles excepto el administrador.
+     * Se aplica tanto en frontend como en backend (REST, shortcodes, etc.).
+     */
+    public function filter_inactive_courses( \WP_Query $query ): void {
+        // Los administradores ven todo.
+        if ( current_user_can( 'administrator' ) ) {
+            return;
+        }
+
+        // Si la query incluye el post type de cursos, forzar sólo publicados.
+        $post_type = $query->get( 'post_type' );
+        $types = (array) $post_type;
+        if ( in_array( FairPlay_LMS_Config::MS_PT_COURSE, $types, true )
+            || 'any' === $post_type
+            || ( is_singular() && get_query_var( 'post_type' ) === FairPlay_LMS_Config::MS_PT_COURSE )
+        ) {
+            $query->set( 'post_status', [ 'publish' ] );
+        }
+    }
+
+    /**
      * Manejo de formularios de cursos / módulos / temas / profesor.
      */
     public function handle_form(): void {
@@ -79,21 +100,45 @@ class FairPlay_LMS_Courses_Controller {
 
             $instructor_id = isset( $_POST['fplms_instructor_id'] ) ? absint( $_POST['fplms_instructor_id'] ) : 0;
 
+            // Capturar docente anterior ANTES de actualizar (para la bitácora)
+            $old_teacher_id   = (int) get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
+            $old_teacher_user = $old_teacher_id ? get_user_by( 'id', $old_teacher_id ) : null;
+            $old_teacher_name = $old_teacher_user ? $old_teacher_user->display_name : 'Sin docente';
+
             if ( $instructor_id > 0 ) {
 
+                // Actualizar meta de MasterStudy Y post_author (ambos campos son usados por el LMS)
                 update_post_meta( $course_id, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, $instructor_id );
+                wp_update_post( [
+                    'ID'          => $course_id,
+                    'post_author' => $instructor_id,
+                ] );
 
                 $user = get_user_by( 'id', $instructor_id );
                 if ( $user && ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $user->roles, true ) ) {
                     $user->add_role( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR );
                 }
+
+                $new_teacher_name = $user ? $user->display_name : 'Sin docente';
             } else {
                 delete_post_meta( $course_id, FairPlay_LMS_Config::MS_META_COURSE_TEACHER );
+                // Sin docente: dejar post_author como admin (ID 1) o sin cambios
+                $new_teacher_name = 'Sin docente';
             }
+
+            // Registrar en la bitácora de auditoría
+            $this->logger->log_action(
+                'instructor_changed',
+                'course',
+                $course_id,
+                get_the_title( $course_id ),
+                $old_teacher_name,
+                $new_teacher_name
+            );
 
             wp_safe_redirect(
                 add_query_arg(
-                    [ 'page' => 'fplms-courses' ],
+                    [ 'page' => 'fplms-courses', 'notice' => 'instructor_assigned' ],
                     admin_url( 'admin.php' )
                 )
             );
@@ -366,6 +411,93 @@ class FairPlay_LMS_Courses_Controller {
             );
             exit;
         }
+
+        // Eliminar cursos (acción masiva o individual) ──────────────────────
+        if ( 'bulk_delete' === $action ) {
+            $bulk_ids = isset( $_POST['fplms_bulk_course_ids'] )
+                ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_bulk_course_ids'] ) )
+                : [];
+            $deleted         = 0;
+            $had_structures  = 0;
+            foreach ( $bulk_ids as $bid ) {
+                if ( ! $bid || FairPlay_LMS_Config::MS_PT_COURSE !== get_post_type( $bid ) ) {
+                    continue;
+                }
+                // Detectar si el curso tenía estructuras asignadas
+                $structs = $this->get_course_structures( $bid );
+                $has_any = false;
+                foreach ( $structs as $list ) {
+                    if ( ! empty( array_filter( (array) $list ) ) ) {
+                        $has_any = true;
+                        break;
+                    }
+                }
+                if ( $has_any ) {
+                    ++$had_structures;
+                }
+                wp_delete_post( $bid, true );
+                ++$deleted;
+            }
+            wp_safe_redirect(
+                add_query_arg(
+                    array_filter( [
+                        'page'            => 'fplms-courses',
+                        'deleted'         => $deleted,
+                        'had_structures'  => $had_structures > 0 ? $had_structures : null,
+                    ] ),
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
+        // Activar / desactivar cursos (individual y masivo) ─────────────────
+        if ( in_array( $action, [ 'toggle_course_status', 'bulk_activate', 'bulk_deactivate' ], true ) ) {
+
+            // Los IDs siempre vienen en fplms_bulk_course_ids[] (tanto toggle individual como masivo)
+            $target_ids = isset( $_POST['fplms_bulk_course_ids'] )
+                ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_bulk_course_ids'] ) )
+                : [];
+
+            if ( 'toggle_course_status' === $action ) {
+                $new_status = sanitize_key( wp_unslash( $_POST['fplms_new_status'] ?? '' ) );
+                $new_status = in_array( $new_status, [ 'publish', 'draft' ], true ) ? $new_status : 'draft';
+                $notice_key = 'publish' === $new_status ? 'course_activated' : 'course_deactivated';
+            } else {
+                $new_status = 'bulk_activate' === $action ? 'publish' : 'draft';
+                $notice_key = 'bulk_activate' === $action ? 'courses_activated' : 'courses_deactivated';
+            }
+
+            $processed = 0;
+            foreach ( $target_ids as $tid ) {
+                if ( ! $tid || FairPlay_LMS_Config::MS_PT_COURSE !== get_post_type( $tid ) ) {
+                    continue;
+                }
+                $old_status = get_post_status( $tid );
+                if ( $old_status === $new_status ) {
+                    continue; // sin cambio real, evitar entrada duplicada en bitácora
+                }
+                wp_update_post( [ 'ID' => $tid, 'post_status' => $new_status ] );
+                $this->logger->log_action(
+                    'publish' === $new_status ? 'course_activated' : 'course_deactivated',
+                    'course',
+                    $tid,
+                    get_the_title( $tid ),
+                    'publish' === $old_status ? 'Activo' : 'Inactivo',
+                    'publish' === $new_status ? 'Activo' : 'Inactivo'
+                );
+                ++$processed;
+            }
+
+            wp_safe_redirect(
+                add_query_arg(
+                    [ 'page' => 'fplms-courses', 'notice' => $notice_key, 'count' => $processed ],
+                    admin_url( 'admin.php' )
+                )
+            );
+            exit;
+        }
+
     }
 
     /**
@@ -404,27 +536,67 @@ class FairPlay_LMS_Courses_Controller {
      */
     private function get_available_instructors(): array {
 
+        // 1. Usuarios con el rol de instructor o administrador
         $user_query = new WP_User_Query(
             [
                 'role__in' => [
                     FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR,
                     'administrator',
                 ],
-                'number'   => 300,
-                'orderby'  => 'display_name',
-                'order'    => 'ASC',
+                'number'  => -1,
+                'orderby' => 'display_name',
+                'order'   => 'ASC',
             ]
         );
 
-        $results = (array) $user_query->get_results();
-        
-        // DEBUG: Descomentar estas líneas si necesitas diagnosticar problemas con instructores
-        // error_log( 'FairPlay LMS: Instructores encontrados: ' . count( $results ) );
-        // foreach ( $results as $user ) {
-        //     error_log( '  - ' . $user->display_name . ' (ID: ' . $user->ID . ', Login: ' . $user->user_login . ')' );
-        // }
-        
-        return $results;
+        $users    = (array) $user_query->get_results();
+        $user_ids = array_map( function( $u ) { return (int) $u->ID; }, $users );
+
+        // 2. Incluir también los usuarios ya asignados como docentes en cursos existentes
+        //    (ya sea via stm_lms_course_teacher meta o como post_author del curso).
+        //    Esto garantiza que la lista coincida con lo que muestra MasterStudy en su
+        //    propia vista de edición de curso.
+        $courses = get_posts(
+            [
+                'post_type'      => FairPlay_LMS_Config::MS_PT_COURSE,
+                'posts_per_page' => -1,
+                'post_status'    => [ 'publish', 'draft' ],
+                'fields'         => 'all',
+            ]
+        );
+
+        $extra_ids = [];
+        foreach ( $courses as $course ) {
+            if ( ! empty( $course->post_author ) ) {
+                $extra_ids[] = (int) $course->post_author;
+            }
+            $meta_teacher = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
+            if ( $meta_teacher ) {
+                $extra_ids[] = $meta_teacher;
+            }
+        }
+
+        $extra_ids = array_unique( array_diff( array_filter( $extra_ids ), $user_ids ) );
+
+        if ( ! empty( $extra_ids ) ) {
+            $extra_query = new WP_User_Query(
+                [
+                    'include' => $extra_ids,
+                    'fields'  => 'all',
+                ]
+            );
+            $extra_users = (array) $extra_query->get_results();
+            $users       = array_merge( $users, $extra_users );
+
+            usort(
+                $users,
+                function( $a, $b ) {
+                    return strcmp( $a->display_name, $b->display_name );
+                }
+            );
+        }
+
+        return $users;
     }
 
     /**
@@ -437,27 +609,6 @@ class FairPlay_LMS_Courses_Controller {
             return;
         }
 
-        // ── Acción masiva: eliminar cursos ──────────────────────────────────
-        if (
-            isset( $_POST['fplms_courses_action'], $_POST['fplms_courses_nonce'] ) &&
-            'bulk_delete' === sanitize_text_field( wp_unslash( $_POST['fplms_courses_action'] ) ) &&
-            wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['fplms_courses_nonce'] ) ), 'fplms_courses_save' ) &&
-            current_user_can( FairPlay_LMS_Config::CAP_MANAGE_COURSES )
-        ) {
-            $bulk_ids = isset( $_POST['fplms_bulk_course_ids'] )
-                ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_bulk_course_ids'] ) )
-                : [];
-            $deleted = 0;
-            foreach ( $bulk_ids as $bid ) {
-                if ( $bid && FairPlay_LMS_Config::MS_PT_COURSE === get_post_type( $bid ) ) {
-                    wp_delete_post( $bid, true );
-                    ++$deleted;
-                }
-            }
-            wp_safe_redirect( add_query_arg( [ 'page' => 'fplms-courses', 'deleted' => $deleted ], admin_url( 'admin.php' ) ) );
-            exit;
-        }
-
         // ── Cargar cursos ────────────────────────────────────────────────────
         $courses    = get_posts( [
             'post_type'      => FairPlay_LMS_Config::MS_PT_COURSE,
@@ -468,7 +619,38 @@ class FairPlay_LMS_Courses_Controller {
         ] );
         $instructors = $this->get_available_instructors();
         $total       = count( $courses );
-        $deleted_n   = isset( $_GET['deleted'] ) ? max( 0, (int) $_GET['deleted'] ) : 0;
+        $deleted_n        = isset( $_GET['deleted'] )        ? max( 0, (int) $_GET['deleted'] )        : 0;
+        $had_structures_n = isset( $_GET['had_structures'] )  ? max( 0, (int) $_GET['had_structures'] ) : 0;
+        $notice           = isset( $_GET['notice'] )          ? sanitize_key( wp_unslash( $_GET['notice'] ) ) : '';
+        $notice_count     = isset( $_GET['count'] )           ? max( 1, (int) $_GET['count'] )            : 1;
+        $notice      = isset( $_GET['notice'] )   ? sanitize_text_field( wp_unslash( $_GET['notice'] ) ) : '';
+
+        // ── Recopilar opciones de filtro: canales y sucursales ───────────────
+        $filter_channels = [];
+        $filter_branches = [];
+        foreach ( $courses as $_fc ) {
+            $_st = $this->get_course_structures( $_fc->ID );
+            foreach ( $_st['channels'] as $_tid ) {
+                $_tid = (int) $_tid;
+                if ( $_tid && ! isset( $filter_channels[ $_tid ] ) ) {
+                    $_t = get_term( $_tid );
+                    if ( $_t && ! is_wp_error( $_t ) ) {
+                        $filter_channels[ $_tid ] = $_t->name;
+                    }
+                }
+            }
+            foreach ( $_st['branches'] as $_tid ) {
+                $_tid = (int) $_tid;
+                if ( $_tid && ! isset( $filter_branches[ $_tid ] ) ) {
+                    $_t = get_term( $_tid );
+                    if ( $_t && ! is_wp_error( $_t ) ) {
+                        $filter_branches[ $_tid ] = $_t->name;
+                    }
+                }
+            }
+        }
+        asort( $filter_channels );
+        asort( $filter_branches );
         ?>
 
         <style>
@@ -484,18 +666,34 @@ class FairPlay_LMS_Courses_Controller {
             .fplms-table-card-c { background:#fff; border-radius:14px; border:1px solid #e5e7eb; box-shadow:0 1px 8px rgba(0,0,0,.07); overflow:hidden; }
 
             /* ── Top bar ── */
-            .fplms-topbar-c { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid #f3f4f6; flex-wrap:wrap; gap:10px; }
+            .fplms-topbar-c { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid #f3f4f6; flex-wrap:wrap; gap:12px; }
             .fplms-topbar-left-c  { display:flex; align-items:center; gap:8px; font-size:14px; color:#6b7280; }
-            .fplms-topbar-right-c { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-            .fplms-entries-sel-c  { padding:5px 8px; border-radius:6px; border:1px solid #e5e7eb; font-size:14px; color:#374151; background:#fff; cursor:pointer; outline:none; }
-            .fplms-entries-sel-c:focus { border-color:#667eea; }
+            .fplms-topbar-right-c { display:flex; align-items:center; gap:10px; flex:1; justify-content:flex-end; flex-wrap:wrap; }
+            .fplms-entries-sel-c  { padding:5px 10px; border:1px solid #e5e7eb; border-radius:6px; font-size:14px; color:#374151; background:#fff; cursor:pointer; outline:none; }
+
+            /* ── Filter selects (canal, sucursal) ── */
+            .fplms-cl-filter-sel { padding:8px 10px; border:1px solid #e5e7eb; border-radius:8px; font-size:13.5px; color:#374151; background:#fff; cursor:pointer; outline:none; transition:border-color .2s, box-shadow .2s; white-space:nowrap; }
+            .fplms-cl-filter-sel:focus { border-color:#667eea; box-shadow:0 0 0 3px rgba(102,126,234,.1); }
 
             /* ── Search ── */
-            .fplms-cl-search-wrap  { position:relative; display:flex; align-items:center; }
-            .fplms-cl-search-input { padding:7px 32px 7px 12px; border-radius:8px; border:1px solid #e5e7eb; font-size:14px; color:#374151; background:#fff; outline:none; width:240px; transition:border-color .2s; }
+            .fplms-cl-search-wrap  { position:relative; flex:1; min-width:180px; max-width:340px; }
+            .fplms-cl-search-input { padding:8px 32px 8px 14px; border:1px solid #e5e7eb; border-radius:8px; font-size:14px; color:#374151; width:100%; outline:none; transition:border-color .2s, box-shadow .2s; box-sizing:border-box; }
             .fplms-cl-search-input:focus { border-color:#667eea; box-shadow:0 0 0 3px rgba(102,126,234,.1); }
-            .fplms-cl-search-clear { position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:#9ca3af; font-size:14px; padding:0; display:none; line-height:1; }
+            .fplms-cl-search-input::placeholder { color:#9ca3af; }
+            .fplms-cl-search-clear { position:absolute; right:9px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:#9ca3af; font-size:15px; line-height:1; padding:2px; display:none; }
+            .fplms-cl-search-clear:hover { color:#374151; }
             .fplms-cl-search-clear.visible { display:block; }
+
+            /* ── Active filters badge ── */
+            .fplms-cl-active-filters { display:flex; align-items:center; gap:7px; padding:5px 10px; background:#eff6ff; border-radius:7px; border:1px solid #bfdbfe; }
+            .fplms-cl-active-badge { font-size:12px; color:#1d4ed8; font-weight:500; }
+            .fplms-cl-filter-clear-all { font-size:12px; color:#6b7280; background:none; border:none; cursor:pointer; padding:0; white-space:nowrap; }
+            .fplms-cl-filter-clear-all:hover { color:#dc2626; }
+
+            /* ── Create course button ── */
+            .fplms-cl-create-btn { display:inline-flex; align-items:center; gap:6px; padding:8px 16px; background:#667eea; color:#fff !important; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; transition:background .2s; text-decoration:none !important; white-space:nowrap; }
+            .fplms-cl-create-btn:hover { background:#5a6fd6; color:#fff !important; }
+            .fplms-cl-create-btn svg { width:16px; height:16px; fill:#fff; }
 
             /* ── Download button ── */
             .fplms-cl-dl-btn { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; font-size:14px; font-weight:500; color:#374151; cursor:pointer; transition:all .2s; text-decoration:none; }
@@ -546,17 +744,21 @@ class FairPlay_LMS_Courses_Controller {
             .fplms-ct-btn { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:6px; border:none; background:transparent; cursor:pointer; transition:all .15s; text-decoration:none; padding:0; position:relative; }
             .fplms-ct-btn svg { width:17px; height:17px; fill:#9ca3af; transition:fill .15s; }
             .fplms-ct-btn:hover { background:#f3f4f6; }
-            .fplms-ct-btn.modules:hover svg    { fill:#7c3aed; }
-            .fplms-ct-btn.lessons:hover svg    { fill:#0284c7; }
+            .fplms-ct-btn.activate:hover  { background:#dcfce7; } .fplms-ct-btn.activate:hover svg  { fill:#16a34a; }
+            .fplms-ct-btn.deactivate:hover { background:#fef9c3; } .fplms-ct-btn.deactivate:hover svg { fill:#ca8a04; }
             .fplms-ct-btn.structures:hover svg { fill:#0891b2; }
             .fplms-ct-btn.edit:hover svg       { fill:#2563eb; }
             .fplms-ct-btn.delete:hover svg     { fill:#dc2626; }
             .fplms-ct-btn::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 6px); left:50%; transform:translateX(-50%); background:#1f2937; color:#fff; font-size:11px; white-space:nowrap; padding:4px 8px; border-radius:5px; pointer-events:none; opacity:0; transition:opacity .15s; z-index:99; }
             .fplms-ct-btn:hover::after { opacity:1; }
+            /* Inactive (draft) row — slight dim */
+            .fplms-cl-row.row-inactive { opacity:.6; }
+            .fplms-cl-row.row-inactive .fplms-ct-title a { color:#6b7280; }
 
             /* ── Assign instructor form ── */
             .fplms-ct-inst-form { display:flex; gap:5px; align-items:center; }
-            .fplms-ct-inst-form select { max-width:160px; font-size:12px; padding:4px 6px; border:1px solid #d1d5db; border-radius:6px; }
+            .fplms-ct-inst-form select { flex:1; min-width:0; max-width:200px; font-size:14px; padding:5px 8px; border:1px solid #e5e7eb; border-radius:6px; color:#374151; background:#fff; cursor:pointer; outline:none; transition:border-color .2s; }
+            .fplms-ct-inst-form select:focus { border-color:#667eea; box-shadow:0 0 0 3px rgba(102,126,234,.1); }
             .fplms-ct-save-btn { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; background:#667eea; border:none; border-radius:6px; cursor:pointer; flex-shrink:0; transition:background .2s; }
             .fplms-ct-save-btn:hover { background:#5a6fd6; }
             .fplms-ct-save-btn svg { width:16px; height:16px; fill:#fff; }
@@ -570,9 +772,15 @@ class FairPlay_LMS_Courses_Controller {
             .fplms-cl-pag-btn.active { background:#667eea; color:#fff; border-color:#667eea; font-weight:600; }
             .fplms-cl-pag-btn:disabled { color:#d1d5db; cursor:not-allowed; }
 
-            /* ── Notice ── */
-            .fplms-cl-notice { display:flex; align-items:center; gap:10px; padding:12px 18px; border-radius:10px; margin-bottom:16px; background:#ECFDF3; border:1px solid #6ee7b7; color:#065f46; font-size:14px; }
-            .fplms-cl-notice svg { width:18px; height:18px; fill:#027A48; flex-shrink:0; }
+            /* ── Toast notifications ── */
+            .fplms-cl-toast { display:flex; align-items:center; gap:10px; padding:13px 40px 13px 16px; border-radius:10px; margin-bottom:16px; font-size:14px; position:relative; animation:fplmsSlideIn .3s ease; }
+            .fplms-cl-toast-green { background:#ECFDF3; border:1px solid #6ee7b7; color:#065f46; }
+            .fplms-cl-toast-blue  { background:#eff6ff; border:1px solid #93c5fd; color:#1e40af; }
+            .fplms-cl-toast-red   { background:#fef2f2; border:1px solid #fca5a5; color:#991b1b; }
+            .fplms-cl-toast svg  { width:18px; height:18px; fill:currentColor; flex-shrink:0; }
+            .fplms-cl-toast-close { position:absolute; right:10px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:currentColor; opacity:.5; font-size:16px; padding:2px 6px; line-height:1; }
+            .fplms-cl-toast-close:hover { opacity:1; }
+            @keyframes fplmsSlideIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
 
             /* ── Delete modal ── */
             .fplms-cl-modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:100000; align-items:center; justify-content:center; }
@@ -589,20 +797,51 @@ class FairPlay_LMS_Courses_Controller {
             .fplms-cl-modal-confirm { padding:8px 20px; background:#dc2626; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; transition:background .2s; }
             .fplms-cl-modal-confirm:hover { background:#b91c1c; }
 
+            /* ── Instructor modal (blue variant) ── */
+            .fplms-cl-inst-modal-header { padding:18px 22px; border-bottom:1px solid #dbeafe; background:#eff6ff; display:flex; align-items:center; gap:10px; }
+            .fplms-cl-inst-modal-header svg { width:22px; height:22px; fill:#2563eb; flex-shrink:0; }
+            .fplms-cl-inst-modal-header h3 { margin:0; font-size:16px; font-weight:700; color:#1e3a8a; }
+            .fplms-cl-inst-modal-course { padding:10px 14px; background:#f9fafb; border-radius:8px; border-left:3px solid #2563eb; font-weight:600; color:#111827; margin:12px 0; }
+            .fplms-cl-inst-modal-confirm { padding:8px 20px; background:#2563eb; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; transition:background .2s; }
+            .fplms-cl-inst-modal-confirm:hover { background:#1d4ed8; }
+
             @media (max-width:900px) {
                 .fplms-ct { min-width:860px; }
                 .fplms-topbar-c { flex-direction:column; align-items:flex-start; }
-                .fplms-cl-search-input { width:100%; }
-                .fplms-topbar-right-c { width:100%; }
+                .fplms-topbar-right-c { width:100%; flex-wrap:wrap; }
+                .fplms-cl-search-wrap { flex:1; min-width:100%; max-width:100%; }
+                .fplms-cl-search-input { width:100%; box-sizing:border-box; }
             }
         </style>
 
         <div class="fplms-course-list-wrapper">
 
             <?php if ( $deleted_n > 0 ) : ?>
-            <div class="fplms-cl-notice">
+            <div class="fplms-cl-toast fplms-cl-toast-green fplms-cl-toast-auto">
                 <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 13.17l7.59-7.59L19 8l-9 9z"/></svg>
-                <span><?php echo esc_html( $deleted_n ); ?> curso(s) eliminado(s) correctamente.</span>
+                <span><strong><?php echo esc_html( $deleted_n ); ?> curso(s) eliminado(s) permanentemente.</strong><?php if ( $had_structures_n > 0 ) : ?> <em style="font-size:12px;opacity:.85;">(<?php echo esc_html( $had_structures_n ); ?> tenía<?php echo $had_structures_n > 1 ? 'n' : ''; ?> estructuras asignadas que también fueron desvinculadas.)</em><?php endif; ?></span>
+                <button type="button" class="fplms-cl-toast-close" onclick="this.parentElement.remove()">&#x2715;</button>
+            </div>
+            <?php endif; ?>
+            <?php if ( 'instructor_assigned' === $notice ) : ?>
+            <div class="fplms-cl-toast fplms-cl-toast-blue fplms-cl-toast-auto">
+                <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                <span><strong>Docente asignado correctamente.</strong> El cambio fue registrado en la bitácora de auditoría.</span>
+                <button type="button" class="fplms-cl-toast-close" onclick="this.parentElement.remove()">&#x2715;</button>
+            </div>
+            <?php endif; ?>
+            <?php if ( in_array( $notice, [ 'course_activated', 'courses_activated' ], true ) ) : ?>
+            <div class="fplms-cl-toast fplms-cl-toast-green fplms-cl-toast-auto">
+                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 13.17l7.59-7.59L19 8l-9 9z"/></svg>
+                <span><strong><?php echo esc_html( $notice_count ); ?> curso(s) activado(s) correctamente.</strong> Ahora son visibles para todos los roles.</span>
+                <button type="button" class="fplms-cl-toast-close" onclick="this.parentElement.remove()">&#x2715;</button>
+            </div>
+            <?php endif; ?>
+            <?php if ( in_array( $notice, [ 'course_deactivated', 'courses_deactivated' ], true ) ) : ?>
+            <div class="fplms-cl-toast fplms-cl-toast-red fplms-cl-toast-auto">
+                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8 0-1.85.63-3.55 1.69-4.9L16.9 18.31C15.55 19.37 13.85 20 12 20zm6.31-3.1L7.1 5.69C8.45 4.63 10.15 4 12 4c4.42 0 8 3.58 8 8 0 1.85-.63 3.55-1.69 4.9z"/></svg>
+                <span><strong><?php echo esc_html( $notice_count ); ?> curso(s) desactivado(s).</strong> No son visibles para ningún rol fuera del administrador.</span>
+                <button type="button" class="fplms-cl-toast-close" onclick="this.parentElement.remove()">&#x2715;</button>
             </div>
             <?php endif; ?>
 
@@ -617,10 +856,7 @@ class FairPlay_LMS_Courses_Controller {
                     </div>
                     <p class="fplms-cl-page-subtitle"><?php echo esc_html( $total ); ?> curso<?php echo 1 !== $total ? 's' : ''; ?> en total</p>
                 </div>
-                <a href="<?php echo esc_url( admin_url( 'post-new.php?post_type=' . FairPlay_LMS_Config::MS_PT_COURSE ) ); ?>" class="fplms-cl-dl-btn" style="text-decoration:none;color:#374151;">
-                    <svg viewBox="0 0 24 24" style="fill:#667eea;"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-                    Crear Nuevo Curso
-                </a>
+
             </div>
 
             <!-- Table card -->
@@ -639,9 +875,30 @@ class FairPlay_LMS_Courses_Controller {
                         entradas
                     </div>
                     <div class="fplms-topbar-right-c">
+                        <select id="fplms-cl-filter-channel" class="fplms-cl-filter-sel">
+                            <option value="">Todos los canales</option>
+                            <?php foreach ( $filter_channels as $fid => $fname ) : ?>
+                                <option value="<?php echo esc_attr( $fid ); ?>"><?php echo esc_html( $fname ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <select id="fplms-cl-filter-branch" class="fplms-cl-filter-sel">
+                            <option value="">Todas las sucursales</option>
+                            <?php foreach ( $filter_branches as $fid => $fname ) : ?>
+                                <option value="<?php echo esc_attr( $fid ); ?>"><?php echo esc_html( $fname ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <select id="fplms-cl-filter-status" class="fplms-cl-filter-sel">
+                            <option value="">Todos los estados</option>
+                            <option value="publish">&#x2713; Activos</option>
+                            <option value="draft">⦸ Inactivos</option>
+                        </select>
                         <div class="fplms-cl-search-wrap">
                             <input type="text" id="fplms-cl-search" class="fplms-cl-search-input" placeholder="Buscar por título, ID, docente...">
-                            <button type="button" class="fplms-cl-search-clear" id="fplms-cl-search-clear">&#x2715;</button>
+                            <button type="button" class="fplms-cl-search-clear" id="fplms-cl-search-clear" title="Limpiar búsqueda">&#x2715;</button>
+                        </div>
+                        <div id="fplms-cl-active-filters" class="fplms-cl-active-filters" style="display:none;">
+                            <span class="fplms-cl-active-badge" id="fplms-cl-active-badge"></span>
+                            <button type="button" onclick="fplmsClClearAllFilters()" class="fplms-cl-filter-clear-all">&#x2715; Limpiar</button>
                         </div>
                         <div class="fplms-cl-dl-wrap" id="fplms-cl-dl-wrap">
                             <button type="button" class="fplms-cl-dl-btn" onclick="fplmsClToggleDl(event)">
@@ -660,6 +917,10 @@ class FairPlay_LMS_Courses_Controller {
                                 </button>
                             </div>
                         </div>
+                        <a href="<?php echo esc_url( admin_url( 'post-new.php?post_type=' . FairPlay_LMS_Config::MS_PT_COURSE ) ); ?>" class="fplms-cl-create-btn">
+                            <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                            Crear Nuevo Curso
+                        </a>
                     </div>
                 </div>
 
@@ -670,18 +931,15 @@ class FairPlay_LMS_Courses_Controller {
                     seleccionados
                     <select class="fplms-cl-bulk-select" id="fplms-cl-bulk-select">
                         <option value="">— Seleccionar acción —</option>
+                        <option value="bulk_activate">Activar cursos</option>
+                        <option value="bulk_deactivate">Desactivar cursos</option>
                         <option value="bulk_delete">Eliminar</option>
                     </select>
                     <button type="button" class="fplms-cl-bulk-apply" onclick="fplmsClApplyBulk()">Aplicar</button>
                 </div>
 
-                <!-- TABLE FORM (wraps table for bulk checkbox submission) -->
-                <form method="post" id="fplms-cl-bulk-form" action="<?php echo esc_url( admin_url( 'admin.php?page=fplms-courses' ) ); ?>">
-                    <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
-                    <input type="hidden" name="fplms_courses_action" id="fplms-cl-bulk-action-input" value="">
-
-                    <div class="fplms-ct-wrapper">
-                        <table class="fplms-ct" id="fplms-cl-table">
+                <div class="fplms-ct-wrapper">
+                    <table class="fplms-ct" id="fplms-cl-table">
                             <thead>
                                 <tr>
                                     <th style="width:36px;padding-left:18px;"><input type="checkbox" id="fplms-cl-select-all"></th>
@@ -706,7 +964,9 @@ class FairPlay_LMS_Courses_Controller {
                                     $modules_url    = add_query_arg( [ 'page' => 'fplms-courses', 'view' => 'modules',    'course_id' => $course->ID ], admin_url( 'admin.php' ) );
                                     $lessons_url    = add_query_arg( [ 'page' => 'fplms-courses', 'view' => 'lessons',    'course_id' => $course->ID ], admin_url( 'admin.php' ) );
                                     $structures_url = add_query_arg( [ 'page' => 'fplms-courses', 'view' => 'structures', 'course_id' => $course->ID ], admin_url( 'admin.php' ) );
-                                    $edit_url       = get_edit_post_link( $course->ID );
+                                    // Construir URL de edición directamente para evitar que MasterStudy filtre el enlace
+                                    // según autoría — los admins deben poder editar cualquier curso.
+                                    $edit_url       = admin_url( 'post.php?post=' . $course->ID . '&action=edit' );
 
                                     $teacher_id = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
                                     if ( ! $teacher_id ) {
@@ -716,18 +976,24 @@ class FairPlay_LMS_Courses_Controller {
 
                                     $course_structures = $this->get_course_structures( $course->ID );
                                     $fecha             = date_i18n( 'd/m/Y', strtotime( $course->post_date ) );
-                                    $status_label      = 'publish' === $course->post_status ? 'Publicado' : 'Borrador';
-                                    $status_class      = 'publish' === $course->post_status ? 'fplms-cs-publish' : 'fplms-cs-draft';
+                                    $is_active         = 'publish' === $course->post_status;
+                                    $status_label      = $is_active ? 'Publicado' : 'Borrador';
+                                    $status_class      = $is_active ? 'fplms-cs-publish' : 'fplms-cs-draft';
                                     $search_str        = strtolower( get_the_title( $course ) . ' ' . $course->ID . ' ' . $teacher_name );
                                 ?>
-                                <tr class="fplms-cl-row"
+                                <tr class="fplms-cl-row<?php echo $is_active ? '' : ' row-inactive'; ?>"
                                     data-course-id="<?php echo esc_attr( $course->ID ); ?>"
-                                    data-search="<?php echo esc_attr( $search_str ); ?>">
+                                    data-search="<?php echo esc_attr( $search_str ); ?>"
+                                    data-status="<?php echo $is_active ? 'publish' : 'draft'; ?>"
+                                    data-channels="<?php echo esc_attr( implode( '|', array_filter( array_map( 'strval', $course_structures['channels'] ) ) ) ); ?>"
+                                    data-branches="<?php echo esc_attr( implode( '|', array_filter( array_map( 'strval', $course_structures['branches'] ) ) ) ); ?>">
                                     <td style="padding-left:18px;">
-                                        <input type="checkbox" name="fplms_bulk_course_ids[]" value="<?php echo esc_attr( $course->ID ); ?>" class="fplms-cl-cb">
+                                        <input type="checkbox" class="fplms-cl-cb" value="<?php echo esc_attr( $course->ID ); ?>">
                                     </td>
                                     <td>
-                                        <div class="fplms-ct-title"><?php echo esc_html( get_the_title( $course ) ); ?></div>
+                                        <div class="fplms-ct-title">
+                                            <a href="<?php echo esc_url( admin_url( 'post.php?post=' . $course->ID . '&action=edit' ) ); ?>" style="color:inherit;text-decoration:none;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'"><?php echo esc_html( get_the_title( $course ) ); ?></a>
+                                        </div>
                                         <div class="fplms-ct-meta">ID: <?php echo esc_html( $course->ID ); ?></div>
                                         <span class="fplms-cs-badge <?php echo esc_attr( $status_class ); ?>"><?php echo esc_html( $status_label ); ?></span>
                                     </td>
@@ -753,22 +1019,28 @@ class FairPlay_LMS_Courses_Controller {
                                                     </option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <button type="submit" class="fplms-ct-save-btn" title="Guardar docente">
+                                            <button type="button" class="fplms-ct-save-btn" title="Guardar docente"
+                                                    onclick="fplmsClShowInstructorModal(this)">
                                                 <svg viewBox="0 0 24 24"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
                                             </button>
                                         </form>
                                     </td>
                                     <td>
                                         <div class="fplms-ct-actions">
-                                            <a href="<?php echo esc_url( $modules_url ); ?>" class="fplms-ct-btn modules" data-tip="Módulos">
-                                                <svg viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
-                                            </a>
-                                            <a href="<?php echo esc_url( $lessons_url ); ?>" class="fplms-ct-btn lessons" data-tip="Lecciones">
-                                                <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
-                                            </a>
                                             <a href="<?php echo esc_url( $structures_url ); ?>" class="fplms-ct-btn structures" data-tip="Estructuras">
                                                 <svg viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
                                             </a>
+                                            <?php if ( $is_active ) : ?>
+                                            <button type="button" class="fplms-ct-btn deactivate" data-tip="Desactivar"
+                                                    onclick="fplmsClToggleStatus(<?php echo (int)$course->ID; ?>, 'draft', '<?php echo esc_js( get_the_title( $course ) ); ?>')">
+                                                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8 0-1.85.63-3.55 1.69-4.9L16.9 18.31C15.55 19.37 13.85 20 12 20zm6.31-3.1L7.1 5.69C8.45 4.63 10.15 4 12 4c4.42 0 8 3.58 8 8 0 1.85-.63 3.55-1.69 4.9z"/></svg>
+                                            </button>
+                                            <?php else : ?>
+                                            <button type="button" class="fplms-ct-btn activate" data-tip="Activar"
+                                                    onclick="fplmsClToggleStatus(<?php echo (int)$course->ID; ?>, 'publish', '<?php echo esc_js( get_the_title( $course ) ); ?>')">
+                                                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                                            </button>
+                                            <?php endif; ?>
                                             <a href="<?php echo esc_url( $edit_url ); ?>" class="fplms-ct-btn edit" data-tip="Editar">
                                                 <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
                                             </a>
@@ -784,13 +1056,19 @@ class FairPlay_LMS_Courses_Controller {
                             </tbody>
                         </table>
                     </div>
-                </form>
 
                 <!-- PAGINATION -->
                 <div id="fplms-cl-pagination"></div>
 
             </div><!-- .fplms-table-card-c -->
         </div><!-- .fplms-course-list-wrapper -->
+
+        <!-- HIDDEN BULK FORM (standalone outside card — fixes nested-forms bug) -->
+        <form method="post" id="fplms-cl-bulk-form" style="display:none;" action="<?php echo esc_url( admin_url( 'admin.php?page=fplms-courses' ) ); ?>">
+            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+            <input type="hidden" name="fplms_courses_action" id="fplms-cl-bulk-action-input" value="">
+            <div id="fplms-cl-bulk-ids"></div>
+        </form>
 
         <!-- DELETE CONFIRM MODAL -->
         <div id="fplms-cl-delete-modal" class="fplms-cl-modal-overlay">
@@ -811,6 +1089,28 @@ class FairPlay_LMS_Courses_Controller {
             </div>
         </div>
 
+        <!-- INSTRUCTOR ASSIGN CONFIRM MODAL -->
+        <div id="fplms-cl-instructor-modal" class="fplms-cl-modal-overlay">
+            <div class="fplms-cl-modal">
+                <div class="fplms-cl-inst-modal-header">
+                    <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                    <h3>Confirmar asignación de docente</h3>
+                </div>
+                <div class="fplms-cl-modal-body">
+                    <p>¿Deseas asignar el siguiente docente al curso?</p>
+                    <div class="fplms-cl-inst-modal-course" id="fplms-cl-inst-course-name"></div>
+                    <p style="color:#4b5563;margin-top:8px;">
+                        <strong>Nuevo docente:</strong> <span id="fplms-cl-inst-teacher-name" style="color:#1d4ed8;font-weight:600;"></span>
+                    </p>
+                    <p style="color:#6b7280;font-size:13px;">Este cambio quedará registrado en la bitácora de auditoría.</p>
+                </div>
+                <div class="fplms-cl-modal-footer">
+                    <button type="button" class="fplms-cl-modal-cancel" onclick="fplmsClCloseInstructorModal()">Cancelar</button>
+                    <button type="button" class="fplms-cl-inst-modal-confirm" onclick="fplmsClConfirmInstructor()">Confirmar asignación</button>
+                </div>
+            </div>
+        </div>
+
         <script>
         document.addEventListener('DOMContentLoaded', function() {
             var allRows      = Array.from(document.querySelectorAll('.fplms-cl-row'));
@@ -818,28 +1118,69 @@ class FairPlay_LMS_Courses_Controller {
             var currentPage  = 1;
             var perPage      = 20;
 
-            // ── Search ──────────────────────────────────────────────────────
+            // ── Filtros: texto + canal + sucursal + estado ─────────────────────
             var searchInput = document.getElementById('fplms-cl-search');
             var clearBtn    = document.getElementById('fplms-cl-search-clear');
+            var chanSel     = document.getElementById('fplms-cl-filter-channel');
+            var branchSel   = document.getElementById('fplms-cl-filter-branch');
+            var statusSel   = document.getElementById('fplms-cl-filter-status');
 
-            searchInput.addEventListener('input', function() {
-                var q = this.value.trim().toLowerCase();
-                filteredRows = q
-                    ? allRows.filter(function(r) { return r.dataset.search.indexOf(q) !== -1; })
-                    : allRows.slice();
-                clearBtn.classList.toggle('visible', !!this.value);
+            function applyFilters() {
+                var q      = searchInput.value.trim().toLowerCase();
+                var chan    = chanSel    ? chanSel.value    : '';
+                var branch  = branchSel  ? branchSel.value  : '';
+                var status  = statusSel  ? statusSel.value  : '';
+
+                filteredRows = allRows.filter(function(r) {
+                    var matchText   = !q      || r.dataset.search.indexOf(q) !== -1;
+                    var matchChan   = !chan   || ('|' + (r.dataset.channels||'') + '|').indexOf('|' + chan + '|')   !== -1;
+                    var matchBranch = !branch || ('|' + (r.dataset.branches||'') + '|').indexOf('|' + branch + '|') !== -1;
+                    var matchStatus = !status || r.dataset.status === status;
+                    return matchText && matchChan && matchBranch && matchStatus;
+                });
+
+                clearBtn.classList.toggle('visible', !!searchInput.value);
                 currentPage = 1;
                 renderPagination();
                 updateBulkBar();
-            });
+                updateActiveBar();
+            }
 
+            function updateActiveBar() {
+                var hasFilt = searchInput.value || (chanSel && chanSel.value) || (branchSel && branchSel.value) || (statusSel && statusSel.value);
+                var bar   = document.getElementById('fplms-cl-active-filters');
+                var badge = document.getElementById('fplms-cl-active-badge');
+                if (!bar || !badge) return;
+                if (hasFilt) {
+                    var parts = [];
+                    if (searchInput.value) parts.push('"' + searchInput.value + '"');
+                    if (chanSel    && chanSel.value)    parts.push('Canal: '     + chanSel.options[chanSel.selectedIndex].text);
+                    if (branchSel  && branchSel.value)  parts.push('Sucursal: '  + branchSel.options[branchSel.selectedIndex].text);
+                    if (statusSel  && statusSel.value)  parts.push('Estado: '    + statusSel.options[statusSel.selectedIndex].text);
+                    badge.textContent = parts.join(' · ') + ' — ' + filteredRows.length + ' resultado(s)';
+                    bar.style.display = '';
+                } else {
+                    bar.style.display = 'none';
+                }
+            }
+
+            searchInput.addEventListener('input', applyFilters);
             clearBtn.addEventListener('click', function() {
                 searchInput.value = '';
-                this.classList.remove('visible');
-                filteredRows = allRows.slice();
-                currentPage  = 1;
-                renderPagination();
+                applyFilters();
             });
+            if (chanSel)    chanSel.addEventListener('change',    applyFilters);
+            if (branchSel)  branchSel.addEventListener('change',  applyFilters);
+            if (statusSel)  statusSel.addEventListener('change',  applyFilters);
+
+            window.fplmsClApplyFilters = applyFilters;
+            window.fplmsClClearAllFilters = function() {
+                searchInput.value = '';
+                if (chanSel)    chanSel.value    = '';
+                if (branchSel)  branchSel.value  = '';
+                if (statusSel)  statusSel.value  = '';
+                applyFilters();
+            };
 
             // ── Per-page selector ────────────────────────────────────────────
             document.getElementById('fplms-cl-per-page').addEventListener('change', function() {
@@ -1026,16 +1367,56 @@ class FairPlay_LMS_Courses_Controller {
             document.getElementById('fplms-cl-dl-dropdown').classList.remove('open');
         };
 
+        // ── Bulk submit helper ───────────────────────────────────────────────
+        function fplmsClSubmitBulk(action, ids) {
+            var container = document.getElementById('fplms-cl-bulk-ids');
+            container.innerHTML = '';
+            ids.forEach(function(id) {
+                var inp = document.createElement('input');
+                inp.type  = 'hidden';
+                inp.name  = 'fplms_bulk_course_ids[]';
+                inp.value = id;
+                container.appendChild(inp);
+            });
+            document.getElementById('fplms-cl-bulk-action-input').value = action;
+            document.getElementById('fplms-cl-bulk-form').submit();
+        }
+
+        // ── Toggle individual course status ─────────────────────────────
+        window.fplmsClToggleStatus = function(courseId, newStatus, courseTitle) {
+            var label = 'publish' === newStatus ? 'activar' : 'desactivar';
+            var msg   = 'publish' === newStatus
+                ? '¿Activar el curso "' + courseTitle + '"? Será visible para todos los roles.'
+                : '¿Desactivar el curso "' + courseTitle + '"? Dejará de ser visible para todos los roles excepto el administrador.';
+            if (!confirm(msg)) return;
+            var container = document.getElementById('fplms-cl-bulk-ids');
+            container.innerHTML = '';
+            var inp = document.createElement('input');
+            inp.type = 'hidden'; inp.name = 'fplms_bulk_course_ids[]'; inp.value = courseId;
+            container.appendChild(inp);
+            var nsInp = document.createElement('input');
+            nsInp.type = 'hidden'; nsInp.name = 'fplms_new_status'; nsInp.value = newStatus;
+            container.appendChild(nsInp);
+            document.getElementById('fplms-cl-bulk-action-input').value = 'toggle_course_status';
+            document.getElementById('fplms-cl-bulk-form').submit();
+        };
+
         // ── Bulk action ──────────────────────────────────────────────────────
         window.fplmsClApplyBulk = function() {
-            var action = document.getElementById('fplms-cl-bulk-select').value;
+            var action  = document.getElementById('fplms-cl-bulk-select').value;
             if (!action) { alert('Selecciona una acción.'); return; }
-            var count = document.querySelectorAll('.fplms-cl-cb:checked').length;
-            if (!count) { alert('Selecciona al menos un curso.'); return; }
+            var checked = document.querySelectorAll('.fplms-cl-cb:checked');
+            if (!checked.length) { alert('Selecciona al menos un curso.'); return; }
+            var ids = Array.from(checked).map(function(cb) { return cb.value; });
             if (action === 'bulk_delete') {
-                if (!confirm('¿Eliminar permanentemente ' + count + ' curso(s)? Esta acción no se puede deshacer.')) return;
-                document.getElementById('fplms-cl-bulk-action-input').value = 'bulk_delete';
-                document.getElementById('fplms-cl-bulk-form').submit();
+                if (!confirm('¿Eliminar permanentemente ' + ids.length + ' curso(s)? Esta acción no se puede deshacer.')) return;
+                fplmsClSubmitBulk('bulk_delete', ids);
+            } else if (action === 'bulk_activate') {
+                if (!confirm('¿Activar ' + ids.length + ' curso(s)? Serán visibles para todos los roles.')) return;
+                fplmsClSubmitBulk('bulk_activate', ids);
+            } else if (action === 'bulk_deactivate') {
+                if (!confirm('¿Desactivar ' + ids.length + ' curso(s)? No serán visibles para ningún rol fuera del administrador.')) return;
+                fplmsClSubmitBulk('bulk_deactivate', ids);
             }
         };
 
@@ -1053,18 +1434,54 @@ class FairPlay_LMS_Courses_Controller {
         };
         window.fplmsClConfirmDelete = function() {
             if (!_fplmsClDelId) return;
-            document.querySelectorAll('.fplms-cl-cb').forEach(function(cb) {
-                cb.checked = parseInt(cb.value) === _fplmsClDelId;
-            });
-            document.getElementById('fplms-cl-bulk-action-input').value = 'bulk_delete';
             document.getElementById('fplms-cl-delete-modal').classList.remove('active');
-            document.getElementById('fplms-cl-bulk-form').submit();
+            fplmsClSubmitBulk('bulk_delete', [String(_fplmsClDelId)]);
         };
         document.addEventListener('click', function(e) {
             if (e.target.id === 'fplms-cl-delete-modal') fplmsClCloseDeleteModal();
         });
         document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') fplmsClCloseDeleteModal();
+            if (e.key === 'Escape') { fplmsClCloseDeleteModal(); fplmsClCloseInstructorModal(); }
+        });
+
+        // ── Instructor assign modal ──────────────────────────────────────────
+        var _fplmsClInstForm = null;
+
+        window.fplmsClShowInstructorModal = function(btn) {
+            var form = btn.closest('form');
+            if (!form) return;
+            _fplmsClInstForm = form;
+            var select = form.querySelector('select[name="fplms_instructor_id"]');
+            var selectedOpt = select ? select.options[select.selectedIndex] : null;
+            var teacherName = selectedOpt ? selectedOpt.text.trim() : '— Sin docente —';
+            // Get course title from the row
+            var row = form.closest('tr');
+            var titleEl = row ? row.querySelector('.fplms-ct-title a') : null;
+            var courseName = titleEl ? titleEl.textContent.trim() : '';
+            document.getElementById('fplms-cl-inst-course-name').textContent = courseName;
+            document.getElementById('fplms-cl-inst-teacher-name').textContent = teacherName;
+            document.getElementById('fplms-cl-instructor-modal').classList.add('active');
+        };
+        window.fplmsClCloseInstructorModal = function() {
+            document.getElementById('fplms-cl-instructor-modal').classList.remove('active');
+            _fplmsClInstForm = null;
+        };
+        window.fplmsClConfirmInstructor = function() {
+            if (!_fplmsClInstForm) return;
+            document.getElementById('fplms-cl-instructor-modal').classList.remove('active');
+            _fplmsClInstForm.submit();
+        };
+        document.addEventListener('click', function(e) {
+            if (e.target.id === 'fplms-cl-instructor-modal') fplmsClCloseInstructorModal();
+        });
+
+        // ── Toast auto-dismiss ───────────────────────────────────────────────
+        document.querySelectorAll('.fplms-cl-toast-auto').forEach(function(t) {
+            setTimeout(function() {
+                t.style.transition = 'opacity .5s ease';
+                t.style.opacity = '0';
+                setTimeout(function() { if (t.parentNode) t.parentNode.removeChild(t); }, 520);
+            }, 5000);
         });
         </script>
         <?php
@@ -1661,15 +2078,15 @@ class FairPlay_LMS_Courses_Controller {
         </style>
         
         <div class="fplms-cascade-info">
-            <h3 style="margin-top: 0;">ℹ️ Asignación Inteligente en Cascada</h3>
+            <h3 style="margin-top:0;display:flex;align-items:center;gap:8px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="#135e96"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg> Asignación Inteligente en Cascada</h3>
             <p><strong>Cómo funciona:</strong></p>
-            <ul style="margin-left: 20px;">
-                <li>📍 <strong>Selecciona Ciudad(es)</strong> → Se cargan automáticamente todas las empresas, canales, sucursales y cargos de esas ciudades</li>
-                <li>🏢 <strong>Selecciona Empresa(s)</strong> → Se cargan automáticamente todos los canales, sucursales y cargos de esas empresas</li>
-                <li>🏪 <strong>Selecciona Canal(es)</strong> → Se cargan automáticamente todas las sucursales y cargos de esos canales</li>
-                <li>🏬 <strong>Selecciona Sucursal(es)</strong> → Se cargan automáticamente todos los cargos de esas sucursales</li>
+            <ul style="margin-left:20px;list-style:none;padding:0;">
+                <li style="margin:5px 0;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#e53935"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg> <strong>Selecciona Ciudad(es)</strong> → Se cargan automáticamente todas las empresas, canales, sucursales y cargos de esas ciudades</li>
+                <li style="margin:5px 0;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#1565c0"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg> <strong>Selecciona Empresa(s)</strong> → Se cargan automáticamente todos los canales, sucursales y cargos de esas empresas</li>
+                <li style="margin:5px 0;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#0277bd"><path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg> <strong>Selecciona Canal(es)</strong> → Se cargan automáticamente todas las sucursales y cargos de esos canales</li>
+                <li style="margin:5px 0;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#558b2f"><path d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg> <strong>Selecciona Sucursal(es)</strong> → Se cargan automáticamente todos los cargos de esas sucursales</li>
             </ul>
-            <p><strong>✅ Puedes seleccionar una o más opciones en cada nivel.</strong> Las opciones cargadas se pre-seleccionan automáticamente, pero puedes desmarcas las que no necesites.</p>
+            <p><strong><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#2e7d32"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/></svg> Puedes seleccionar una o más opciones en cada nivel.</strong> Las opciones cargadas se pre-seleccionan automáticamente, pero puedes desmarcar las que no necesites.</p>
         </div>
 
         <form method="post" id="fplms-structures-form">
@@ -1679,7 +2096,7 @@ class FairPlay_LMS_Courses_Controller {
 
             <table class="form-table">
                 <tr>
-                    <th scope="row"><label>📍 Ciudades</label></th>
+                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#e53935"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg> Ciudades</label></th>
                     <td>
                         <div class="fplms-structure-container" id="fplms-cities-container">
                             <?php if ( ! empty( $cities ) ) : ?>
@@ -1702,7 +2119,7 @@ class FairPlay_LMS_Courses_Controller {
                 </tr>
 
                 <tr>
-                    <th scope="row"><label>🏢 Empresas</label></th>
+                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#1565c0"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg> Empresas</label></th>
                     <td>
                         <div class="fplms-structure-container" id="fplms-companies-container">
                             <?php if ( ! empty( $companies ) ) : ?>
@@ -1725,7 +2142,7 @@ class FairPlay_LMS_Courses_Controller {
                 </tr>
 
                 <tr>
-                    <th scope="row"><label>🏪 Canales / Franquicias</label></th>
+                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#0277bd"><path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg> Canales / Franquicias</label></th>
                     <td>
                         <div class="fplms-structure-container" id="fplms-channels-container">
                             <?php if ( ! empty( $channels ) ) : ?>
@@ -1748,7 +2165,7 @@ class FairPlay_LMS_Courses_Controller {
                 </tr>
 
                 <tr>
-                    <th scope="row"><label>🏬 Sucursales</label></th>
+                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#558b2f"><path d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg> Sucursales</label></th>
                     <td>
                         <div class="fplms-structure-container" id="fplms-branches-container">
                             <?php if ( ! empty( $branches ) ) : ?>
@@ -1771,7 +2188,7 @@ class FairPlay_LMS_Courses_Controller {
                 </tr>
 
                 <tr>
-                    <th scope="row"><label>👔 Cargos</label></th>
+                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#6a1b9a"><path d="M20 6h-2.18c.07-.44.18-.88.18-1.35C18 2.53 16.5 1 14.65 1c-1.07 0-2.02.5-2.65 1.28L12 2.93l-.5-.65C10.87 1.5 9.96 1 8.85 1 7 1 5.5 2.53 5.5 4.65c0 .47.11.9.18 1.35H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-5.36-3c.98 0 1.86.83 1.86 1.65-.01.45-.1.9-.3 1.35h-3.12c-.2-.45-.3-.9-.3-1.35 0-.82.88-1.65 1.86-1.65zM8.85 3c.98 0 1.86.83 1.86 1.65 0 .45-.1.9-.3 1.35H7.29c-.2-.45-.3-.9-.3-1.35C6.99 3.83 7.87 3 8.85 3zM20 20H4V8h4v1c0 .55.45 1 1 1s1-.45 1-1V8h4v1c0 .55.45 1 1 1s1-.45 1-1V8h4v12z"/></svg> Cargos</label></th>
                     <td>
                         <div class="fplms-structure-container" id="fplms-roles-container">
                             <?php if ( ! empty( $roles ) ) : ?>
@@ -1795,7 +2212,7 @@ class FairPlay_LMS_Courses_Controller {
             </table>
 
             <p class="submit">
-                <button type="submit" class="button button-primary">💾 Guardar estructuras y notificar usuarios</button>
+                <button type="submit" class="button button-primary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:currentColor"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg> Guardar estructuras y notificar usuarios</button>
             </p>
         </form>
         
@@ -1857,7 +2274,7 @@ class FairPlay_LMS_Courses_Controller {
                 // Mostrar indicador de carga en descendientes
                 const descendants = levelHierarchy[level] || [];
                 descendants.forEach(function(descendantLevel) {
-                    containers[descendantLevel].html('<p class="fplms-loading">⏳ Cargando...</p>');
+                    containers[descendantLevel].html('<p class="fplms-loading"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#999"><path d="M6 2v6l2 2-2 2v6h12v-6l-2-2 2-2V2H6zm10 14.5V18H8v-1.5l2-2V12h4v2.5l2 2zm-5-6.5-2-2V4h6v4l-2 2h-2z"/></svg> Cargando...</p>');
                 });
                 
                 $.ajax({
@@ -1901,7 +2318,7 @@ class FairPlay_LMS_Courses_Controller {
                     error: function(xhr, status, error) {
                         console.error('Error AJAX:', error);
                         descendants.forEach(function(descendantLevel) {
-                            containers[descendantLevel].html('<p style="color: red;">❌ Error al cargar estructuras.</p>');
+                            containers[descendantLevel].html('<p style="color:red;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:red"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> Error al cargar estructuras.</p>');
                         });
                     }
                 });
@@ -2969,197 +3386,529 @@ class FairPlay_LMS_Courses_Controller {
      * 
      * @param WP_Post $post El post actual (curso)
      */
+    /**
+     * AJAX: devuelve los términos hijo disponibles dado un nivel superior seleccionado.
+     * Action: fplms_cascade_structures
+     */
+    public function ajax_cascade_structures(): void {
+        check_ajax_referer( 'fplms_cascade_nonce', 'nonce' );
+
+        $level  = isset( $_POST['level'] ) ? sanitize_text_field( wp_unslash( $_POST['level'] ) ) : '';
+        $ids    = isset( $_POST['ids'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['ids'] ) ) : [];
+        $result = [];
+
+        switch ( $level ) {
+            case 'city':
+                // Cities selected → return companies in those cities
+                $terms = $this->structures->get_terms_by_cities( FairPlay_LMS_Config::TAX_COMPANY, $ids );
+                foreach ( $terms as $t ) {
+                    $result[ $t->term_id ] = $t->name;
+                }
+                break;
+            case 'company':
+                // Companies selected → return channels in those companies
+                $terms = $this->structures->get_channels_by_companies( FairPlay_LMS_Config::TAX_CHANNEL, $ids );
+                foreach ( $terms as $t ) {
+                    $result[ $t->term_id ] = $t->name;
+                }
+                break;
+            case 'channel':
+                // Channels selected → return branches in those channels
+                $terms = $this->structures->get_branches_by_channels( FairPlay_LMS_Config::TAX_BRANCH, $ids );
+                foreach ( $terms as $t ) {
+                    $result[ $t->term_id ] = $t->name;
+                }
+                break;
+            case 'branch':
+                // Branches selected → return roles in those branches
+                $terms = $this->structures->get_roles_by_branches( FairPlay_LMS_Config::TAX_ROLE, $ids );
+                foreach ( $terms as $t ) {
+                    $result[ $t->term_id ] = $t->name;
+                }
+                break;
+        }
+
+        wp_send_json_success( $result );
+    }
+
     public function render_structures_meta_box( $post ): void {
-        // Nonce para seguridad
         wp_nonce_field( 'fplms_save_course_structures', 'fplms_structures_nonce' );
-        
-        // Obtener estructuras actuales si el curso ya existe
+
         $current_structures = [];
         if ( $post->ID ) {
             $current_structures = $this->get_course_structures( $post->ID );
         }
         
-        // Obtener estructuras disponibles según rol del usuario
+        // Estructuras disponibles según rol
         $available_structures = $this->get_available_structures_for_user();
-        
-        // Verificar si el usuario es instructor
         $current_user = wp_get_current_user();
-        $is_instructor = in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, $current_user->roles ?? [], true );
-        $is_admin = current_user_can( 'manage_options' );
-        
+        $is_admin     = current_user_can( 'manage_options' );
+
+        // Valores actuales del curso (arrays de IDs)
+        $sel_cities    = array_map( 'intval', (array) ( $current_structures['cities']    ?? [] ) );
+        $sel_companies = array_map( 'intval', (array) ( $current_structures['companies'] ?? [] ) );
+        $sel_channels  = array_map( 'intval', (array) ( $current_structures['channels']  ?? [] ) );
+        $sel_branches  = array_map( 'intval', (array) ( $current_structures['branches']  ?? [] ) );
+        $sel_roles     = array_map( 'intval', (array) ( $current_structures['roles']     ?? [] ) );
+
+        // Pre-cargar opciones para niveles 2-5 basados en la selección actual
+        // (City seleccionadas → empresas asociadas, etc.)
+        $companies_init = $sel_cities
+            ? $this->structures->get_terms_by_cities( FairPlay_LMS_Config::TAX_COMPANY, $sel_cities )
+            : [];
+        $cids_for_ch     = $sel_companies ?: array_column( $companies_init, 'term_id' );
+        $channels_init   = $cids_for_ch
+            ? $this->structures->get_channels_by_companies( FairPlay_LMS_Config::TAX_CHANNEL, $cids_for_ch )
+            : [];
+        $chids_for_br    = $sel_channels ?: array_column( $channels_init, 'term_id' );
+        $branches_init   = $chids_for_br
+            ? $this->structures->get_branches_by_channels( FairPlay_LMS_Config::TAX_BRANCH, $chids_for_br )
+            : [];
+        $brids_for_role  = $sel_branches ?: array_column( $branches_init, 'term_id' );
+        $roles_init      = $brids_for_role
+            ? $this->structures->get_roles_by_branches( FairPlay_LMS_Config::TAX_ROLE, $brids_for_role )
+            : [];
+
+        // Helper → convierte lista de WP_Term en {id:name} para JSON
+        $to_map = static function( array $terms ): array {
+            $map = [];
+            foreach ( $terms as $t ) {
+                $map[ (int) $t->term_id ] = $t->name;
+            }
+            return $map;
+        };
+
+        $ajax_url   = admin_url( 'admin-ajax.php' );
+        $nonce      = wp_create_nonce( 'fplms_cascade_nonce' );
         ?>
-        <div class="fplms-metabox-structures">
-            <style>
-                .fplms-metabox-structures {
-                    font-size: 13px;
-                }
-                .fplms-structure-section {
-                    margin-bottom: 15px;
-                    padding-bottom: 15px;
-                    border-bottom: 1px solid #ddd;
-                }
-                .fplms-structure-section:last-child {
-                    border-bottom: none;
-                }
-                .fplms-structure-title {
-                    font-weight: 600;
-                    margin-bottom: 8px;
-                    color: #1d2327;
-                }
-                .fplms-structure-checkbox {
-                    display: block;
-                    margin: 5px 0;
-                    padding: 3px 0;
-                }
-                .fplms-structure-checkbox input {
-                    margin-right: 5px;
-                }
-                .fplms-cascade-info {
-                    background: #f0f6fc;
-                    border-left: 3px solid #0073aa;
-                    padding: 10px;
-                    margin-bottom: 15px;
-                    font-size: 12px;
-                    line-height: 1.5;
-                }
-                .fplms-cascade-info strong {
-                    display: block;
-                    margin-bottom: 5px;
-                }
-                .fplms-notification-info {
-                    background: #fff3cd;
-                    border-left: 3px solid #ffc107;
-                    padding: 10px;
-                    margin-top: 15px;
-                    font-size: 12px;
-                }
-                .fplms-instructor-info {
-                    background: #fff3cd;
-                    border-left: 3px solid #ffc107;
-                    padding: 10px;
-                    margin-bottom: 15px;
-                    font-size: 12px;
-                    line-height: 1.5;
-                }
-                .fplms-admin-info {
-                    background: #d1ecf1;
-                    border-left: 3px solid #0c5460;
-                    padding: 10px;
-                    margin-bottom: 15px;
-                    font-size: 12px;
-                }
-            </style>
-            
-            <?php if ( $is_instructor && ! $is_admin ) : ?>
-                <div class="fplms-instructor-info">
-                    <strong>👨‍🏫 Modo Instructor</strong><br>
-                    Solo puedes asignar a tus estructuras.
+        <div id="fplms-mb" style="font-size:12.5px;">
+        <style>
+        #fplms-mb { --c1:#0073aa; --cr:#d63638; }
+        .fplms-mb-role { font-size:11px; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-weight:600; }
+        .fplms-mb-role.admin   { background:#dbeafe; color:#1e40af; border-left:3px solid #3b82f6; }
+        .fplms-mb-role.inst    { background:#fef3c7; color:#92400e; border-left:3px solid #f59e0b; }
+        .fplms-mb-level        { margin-bottom:10px; }
+        .fplms-mb-label        { font-weight:600; color:#1d2327; margin-bottom:4px; display:flex; align-items:center; gap:4px; font-size:11.5px; }
+        .fplms-mb-label svg    { width:13px;height:13px;fill:var(--c1);flex-shrink:0; }
+        .fplms-mb-label .cnt   { margin-left:auto; background:var(--c1); color:#fff; border-radius:10px; padding:1px 7px; font-size:10px; font-weight:700; }
+        /* multiselect trigger */
+        .fplms-mb-trigger      { display:flex; align-items:center; justify-content:space-between; padding:5px 8px; border:1px solid #c3c4c7; border-radius:4px; cursor:pointer; background:#fff; min-height:30px; gap:6px; transition:border-color .15s; }
+        .fplms-mb-trigger:hover{ border-color:var(--c1); }
+        .fplms-mb-trigger.open { border-color:var(--c1); box-shadow:0 0 0 2px rgba(0,115,170,.15); }
+        .fplms-mb-trigger.disabled{ background:#f6f7f7; color:#a0a5aa; cursor:default; pointer-events:none; }
+        .fplms-mb-pills        { display:flex; flex-wrap:wrap; gap:3px; flex:1; min-width:0; }
+        .fplms-mb-pill         { background:#e8f0fe; color:#1d4ed8; border-radius:10px; padding:1px 8px; font-size:10.5px; display:flex; align-items:center; gap:3px; white-space:nowrap; }
+        .fplms-mb-pill .rm     { cursor:pointer; font-size:12px; line-height:1; color:#6b7280; }
+        .fplms-mb-pill .rm:hover{ color:var(--cr); }
+        .fplms-mb-placeholder  { color:#a0a5aa; font-size:11.5px; }
+        .fplms-mb-arrow        { flex-shrink:0; color:#a0a5aa; transition:transform .2s; }
+        .fplms-mb-trigger.open .fplms-mb-arrow { transform:rotate(180deg); }
+        /* popover */
+        .fplms-mb-popover      { display:none; background:#fff; border:1px solid #ddd; border-radius:5px; box-shadow:0 4px 16px rgba(0,0,0,.12); max-height:200px; overflow:hidden; flex-direction:column; }
+        .fplms-mb-popover.open { display:flex; }
+        .fplms-mb-search       { padding:5px 8px; border-bottom:1px solid #f0f0f0; }
+        .fplms-mb-search input { width:100%; padding:4px 6px; border:1px solid #ddd; border-radius:3px; font-size:11.5px; outline:none; box-sizing:border-box; }
+        .fplms-mb-search input:focus { border-color:var(--c1); }
+        .fplms-mb-options      { overflow-y:auto; padding:4px 0; flex:1; }
+        .fplms-mb-opt          { display:flex; align-items:center; gap:6px; padding:4px 10px; cursor:pointer; transition:background .1s; font-size:12px; }
+        .fplms-mb-opt:hover    { background:#f0f6fc; }
+        .fplms-mb-opt input    { flex-shrink:0; cursor:pointer; }
+        .fplms-mb-opt.selected { background:#f0f6fc; }
+        .fplms-mb-empty        { padding:8px 10px; color:#a0a5aa; font-size:11.5px; }
+        .fplms-mb-loading      { padding:8px 10px; color:#a0a5aa; font-size:11px; display:flex; align-items:center; gap:5px; }
+        .fplms-mb-spinner      { width:12px;height:12px;border:2px solid #ddd;border-top-color:var(--c1);border-radius:50%;animation:fplms-spin .6s linear infinite; }
+        @keyframes fplms-spin   { to { transform:rotate(360deg); } }
+        /* cascade arrow */
+        .fplms-mb-cascade-arrow{ text-align:center; color:#d1d5db; font-size:10px; margin:2px 0; }
+        /* summary bar */
+        .fplms-mb-summary      { background:#f0f6fc; border-radius:4px; padding:6px 8px; font-size:11px; color:#1d4ed8; margin-top:8px; line-height:1.6; }
+        .fplms-mb-summary strong{ display:block; margin-bottom:2px; color:#1d2327; font-size:11.5px; }
+        </style>
+
+        <?php if ( $is_admin ) : ?>
+        <div class="fplms-mb-role admin">
+            <svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:#1e40af;vertical-align:middle;margin-right:4px;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
+            Administrador — control total
+        </div>
+        <?php else : ?>
+        <div class="fplms-mb-role inst">
+            <?php esc_html_e( 'Instructor — solo tus estructuras', 'fplms' ); ?>
+        </div>
+        <?php endif; ?>
+
+        <?php
+        // Build level definitions for PHP → JS injection
+        $levels = [
+            [
+                'key'         => 'cities',
+                'label'       => 'Ciudades',
+                'icon'        => '<path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>',
+                'options'     => $available_structures['cities'],
+                'selected'    => $sel_cities,
+                'placeholder' => 'Seleccionar ciudades…',
+                'input_name'  => 'fplms_course_cities[]',
+            ],
+            [
+                'key'         => 'companies',
+                'label'       => 'Empresas',
+                'icon'        => '<path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/>',
+                'options'     => $to_map( $companies_init ),
+                'selected'    => $sel_companies,
+                'placeholder' => 'Seleccionar empresas…',
+                'input_name'  => 'fplms_course_companies[]',
+            ],
+            [
+                'key'         => 'channels',
+                'label'       => 'Canales',
+                'icon'        => '<path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>',
+                'options'     => $to_map( $channels_init ),
+                'selected'    => $sel_channels,
+                'placeholder' => 'Seleccionar canales…',
+                'input_name'  => 'fplms_course_channels[]',
+            ],
+            [
+                'key'         => 'branches',
+                'label'       => 'Sucursales',
+                'icon'        => '<path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>',
+                'options'     => $to_map( $branches_init ),
+                'selected'    => $sel_branches,
+                'placeholder' => 'Seleccionar sucursales…',
+                'input_name'  => 'fplms_course_branches[]',
+            ],
+            [
+                'key'         => 'roles',
+                'label'       => 'Cargos',
+                'icon'        => '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>',
+                'options'     => $to_map( $roles_init ),
+                'selected'    => $sel_roles,
+                'placeholder' => 'Seleccionar cargos…',
+                'input_name'  => 'fplms_course_roles[]',
+            ],
+        ];
+
+        foreach ( $levels as $i => $lvl ) :
+            $is_last = ( $i === count( $levels ) - 1 );
+            $level_key  = esc_attr( $lvl['key'] );
+            $opts_json  = wp_json_encode( $lvl['options'] );
+            $sel_json   = wp_json_encode( $lvl['selected'] );
+        ?>
+        <div class="fplms-mb-level" id="fplms-mb-level-<?php echo $level_key; ?>">
+            <div class="fplms-mb-label">
+                <svg viewBox="0 0 24 24"><?php echo $lvl['icon']; // phpcs:ignore ?></svg>
+                <?php echo esc_html( $lvl['label'] ); ?>
+                <span class="cnt" id="fplms-cnt-<?php echo $level_key; ?>">0</span>
+            </div>
+            <!-- hidden inputs populated by JS -->
+            <div id="fplms-inputs-<?php echo $level_key; ?>"></div>
+            <!-- multiselect trigger -->
+            <div class="fplms-mb-trigger" id="fplms-trigger-<?php echo $level_key; ?>"
+                 data-level="<?php echo $level_key; ?>"
+                 onclick="fplmsMbToggle('<?php echo $level_key; ?>')">
+                <div class="fplms-mb-pills" id="fplms-pills-<?php echo $level_key; ?>">
+                    <span class="fplms-mb-placeholder" id="fplms-ph-<?php echo $level_key; ?>"><?php echo esc_html( $lvl['placeholder'] ); ?></span>
                 </div>
-            <?php else : ?>
-                <div class="fplms-admin-info">
-                    <strong>👑 Administrador</strong><br>
-                    Puedes asignar a cualquier estructura.
+                <span class="fplms-mb-arrow">▾</span>
+            </div>
+            <!-- popover -->
+            <div class="fplms-mb-popover" id="fplms-pop-<?php echo $level_key; ?>">
+                <div class="fplms-mb-search">
+                    <input type="text" placeholder="Buscar..." oninput="fplmsMbSearch('<?php echo $level_key; ?>',this.value)">
                 </div>
-            <?php endif; ?>
-            
-            <div class="fplms-cascade-info">
-                <strong>ℹ️ Asignación en cascada</strong>
-                Al seleccionar una estructura, se asignan automáticamente todas las estructuras descendientes.
+                <div class="fplms-mb-options" id="fplms-opts-<?php echo $level_key; ?>"></div>
             </div>
-            
-            <!-- Ciudades -->
-            <?php if ( ! empty( $available_structures['cities'] ) ) : ?>
-            <div class="fplms-structure-section">
-                <div class="fplms-structure-title">📍 Ciudades</div>
-                <?php foreach ( $available_structures['cities'] as $term_id => $term_name ) : ?>
-                    <label class="fplms-structure-checkbox">
-                        <input type="checkbox" 
-                               name="fplms_course_cities[]" 
-                               value="<?php echo esc_attr( $term_id ); ?>"
-                               <?php checked( in_array( $term_id, $current_structures['cities'] ?? [], true ) ); ?>>
-                        <?php echo esc_html( $term_name ); ?>
-                    </label>
-                <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-            
-            <!-- Empresas -->
-            <?php if ( ! empty( $available_structures['companies'] ) ) : ?>
-            <div class="fplms-structure-section">
-                <div class="fplms-structure-title">🏢 Empresas</div>
-                <?php foreach ( $available_structures['companies'] as $term_id => $term_name ) : ?>
-                    <label class="fplms-structure-checkbox">
-                        <input type="checkbox" 
-                               name="fplms_course_companies[]" 
-                               value="<?php echo esc_attr( $term_id ); ?>"
-                               <?php checked( in_array( $term_id, $current_structures['companies'] ?? [], true ) ); ?>>
-                        <?php echo esc_html( $term_name ); ?>
-                    </label>
-                <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-            
-            <!-- Canales -->
-            <?php if ( ! empty( $available_structures['channels'] ) ) : ?>
-            <div class="fplms-structure-section">
-                <div class="fplms-structure-title">🏪 Canales</div>
-                <?php foreach ( $available_structures['channels'] as $term_id => $term_name ) : ?>
-                    <label class="fplms-structure-checkbox">
-                        <input type="checkbox" 
-                               name="fplms_course_channels[]" 
-                               value="<?php echo esc_attr( $term_id ); ?>"
-                               <?php checked( in_array( $term_id, $current_structures['channels'] ?? [], true ) ); ?>>
-                        <?php echo esc_html( $term_name ); ?>
-                    </label>
-                <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-            
-            <!-- Sucursales -->
-            <?php if ( ! empty( $available_structures['branches'] ) ) : ?>
-            <div class="fplms-structure-section">
-                <div class="fplms-structure-title">🏢 Sucursales</div>
-                <?php foreach ( $available_structures['branches'] as $term_id => $term_name ) : ?>
-                    <label class="fplms-structure-checkbox">
-                        <input type="checkbox" 
-                               name="fplms_course_branches[]" 
-                               value="<?php echo esc_attr( $term_id ); ?>"
-                               <?php checked( in_array( $term_id, $current_structures['branches'] ?? [], true ) ); ?>>
-                        <?php echo esc_html( $term_name ); ?>
-                    </label>
-                <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-            
-            <!-- Cargos -->
-            <?php if ( ! empty( $available_structures['roles'] ) ) : ?>
-            <div class="fplms-structure-section">
-                <div class="fplms-structure-title">👔 Cargos</div>
-                <?php foreach ( $available_structures['roles'] as $term_id => $term_name ) : ?>
-                    <label class="fplms-structure-checkbox">
-                        <input type="checkbox" 
-                               name="fplms_course_roles[]" 
-                               value="<?php echo esc_attr( $term_id ); ?>"
-                               <?php checked( in_array( $term_id, $current_structures['roles'] ?? [], true ) ); ?>>
-                        <?php echo esc_html( $term_name ); ?>
-                    </label>
-                <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-            
-            <?php if ( empty( $available_structures['cities'] ) && empty( $available_structures['channels'] ) ) : ?>
-                <p style="color: #d63638; font-size: 12px;">
-                    ⚠️ No tienes estructuras asignadas. Contacta al administrador para poder asignar cursos a estructuras.
-                </p>
-            <?php endif; ?>
-            
-            <div class="fplms-notification-info">
-                📧 Los usuarios de las estructuras seleccionadas recibirán un correo cuando se publique el curso.
-            </div>
+            <!-- init data -->
+            <script>
+            (function(){
+                var lv='<?php echo $level_key; ?>';
+                window._fplmsMbData = window._fplmsMbData||{};
+                window._fplmsMbSel  = window._fplmsMbSel||{};
+                window._fplmsMbData[lv] = <?php echo $opts_json; // phpcs:ignore ?>;
+                window._fplmsMbSel[lv]  = <?php echo $sel_json;  // phpcs:ignore ?>;
+            })();
+            </script>
+        </div>
+        <?php if ( ! $is_last ) : ?>
+        <div class="fplms-mb-cascade-arrow">↓</div>
+        <?php endif; ?>
+        <?php endforeach; ?>
+
+        <div class="fplms-mb-summary" id="fplms-mb-summary" style="display:none;">
+            <strong>Asignación en cascada</strong>
+            <span id="fplms-mb-summary-text"></span>
+        </div>
+
+        <script>
+        (function(){
+            var ajaxUrl = <?php echo wp_json_encode( $ajax_url ); ?>;
+            var nonce   = <?php echo wp_json_encode( $nonce ); ?>;
+            var LEVELS  = ['cities','companies','channels','branches','roles'];
+            var PARENTS = { companies:'cities', channels:'companies', branches:'channels', roles:'branches' };
+            var CHILDREN= { cities:'companies', companies:'channels', channels:'branches', branches:'roles' };
+            var LEVEL_MAP= { cities:'city', companies:'company', channels:'channel', branches:'branch', roles:'branch' };
+            /* LEVEL_MAP: level key → ajax 'level' param for the child load */
+            var LOAD_CHILD_LEVEL = { cities:'city', companies:'company', channels:'channel', branches:'branch' };
+
+            // ─── Render options list ────────────────────────────────────────
+            function renderOpts(lv, q) {
+                var data = window._fplmsMbData[lv]||{};
+                var sel  = window._fplmsMbSel[lv]||[];
+                var el   = document.getElementById('fplms-opts-'+lv);
+                if (!el) return;
+                var html = '';
+                var count = 0;
+                for (var id in data) {
+                    var name = data[id];
+                    if (q && name.toLowerCase().indexOf(q.toLowerCase()) === -1) continue;
+                    var checked = sel.indexOf(parseInt(id)) !== -1 ? ' checked' : '';
+                    var cls     = checked ? ' selected' : '';
+                    html += '<label class="fplms-mb-opt'+cls+'" data-id="'+id+'">'
+                          + '<input type="checkbox" value="'+id+'"'+checked+'>'
+                          + '<span>'+escH(name)+'</span></label>';
+                    count++;
+                }
+                if (!count) html = '<div class="fplms-mb-empty">Sin resultados</div>';
+                el.innerHTML = html;
+
+                // Bind checkboxes
+                var cbks = el.querySelectorAll('input[type=checkbox]');
+                cbks.forEach(function(cb){
+                    cb.addEventListener('change', function(){
+                        toggleSel(lv, parseInt(this.value), this.checked);
+                    });
+                });
+            }
+
+            // ─── Toggle selection ───────────────────────────────────────────
+            function toggleSel(lv, id, on) {
+                var sel  = window._fplmsMbSel[lv]||[];
+                if (on) {
+                    if (sel.indexOf(id) === -1) sel.push(id);
+                } else {
+                    sel = sel.filter(function(x){ return x !== id; });
+                }
+                window._fplmsMbSel[lv] = sel;
+                renderPills(lv);
+                updateHiddenInputs(lv);
+                updateCounter(lv);
+                renderOpts(lv, ''); // refresh checked state in popover
+
+                // Cascade: reload next level
+                var childLv = CHILDREN[lv];
+                if (childLv) {
+                    loadChildLevel(lv, childLv);
+                }
+                updateSummary();
+            }
+
+            // ─── Pills ──────────────────────────────────────────────────────
+            function renderPills(lv) {
+                var sel  = window._fplmsMbSel[lv]||[];
+                var data = window._fplmsMbData[lv]||{};
+                var ph   = document.getElementById('fplms-ph-'+lv);
+                var pillsEl = document.getElementById('fplms-pills-'+lv);
+                // Remove old pills
+                Array.from(pillsEl.querySelectorAll('.fplms-mb-pill')).forEach(function(p){ p.remove(); });
+                if (sel.length === 0) {
+                    if (ph) ph.style.display = '';
+                } else {
+                    if (ph) ph.style.display = 'none';
+                    sel.forEach(function(id){
+                        var name = data[id] || '#'+id;
+                        var pill = document.createElement('span');
+                        pill.className = 'fplms-mb-pill';
+                        pill.innerHTML = escH(name)
+                            +'<span class="rm" data-id="'+id+'" data-lv="'+lv+'" title="Quitar">×</span>';
+                        pill.querySelector('.rm').addEventListener('click', function(e){
+                            e.stopPropagation();
+                            toggleSel(lv, parseInt(this.dataset.id), false);
+                        });
+                        pillsEl.insertBefore(pill, ph);
+                    });
+                }
+            }
+
+            // ─── Hidden inputs ──────────────────────────────────────────────
+            function updateHiddenInputs(lv) {
+                var sel     = window._fplmsMbSel[lv]||[];
+                var wrapper = document.getElementById('fplms-inputs-'+lv);
+                if (!wrapper) return;
+                var names   = { cities:'fplms_course_cities[]', companies:'fplms_course_companies[]',
+                                channels:'fplms_course_channels[]', branches:'fplms_course_branches[]',
+                                roles:'fplms_course_roles[]' };
+                var html = '';
+                sel.forEach(function(id){
+                    html += '<input type="hidden" name="'+names[lv]+'" value="'+parseInt(id)+'">';
+                });
+                wrapper.innerHTML = html;
+            }
+
+            // ─── Counter badge ──────────────────────────────────────────────
+            function updateCounter(lv) {
+                var cnt = document.getElementById('fplms-cnt-'+lv);
+                if (cnt) cnt.textContent = (window._fplmsMbSel[lv]||[]).length;
+            }
+
+            // ─── AJAX load child level ──────────────────────────────────────
+            function loadChildLevel(parentLv, childLv) {
+                var parentSel = window._fplmsMbSel[parentLv]||[];
+                var allParent = Object.keys(window._fplmsMbData[parentLv]||{}).map(Number);
+                // If nothing selected in parent → use all available parent items
+                var idsToSend = parentSel.length ? parentSel : allParent;
+
+                if (!idsToSend.length) {
+                    // Parent has no options at all → clear child and all descendants
+                    clearLevel(childLv, true);
+                    return;
+                }
+
+                setLoading(childLv, true);
+
+                var fd = new FormData();
+                fd.append('action', 'fplms_cascade_structures');
+                fd.append('nonce',  nonce);
+                fd.append('level',  LOAD_CHILD_LEVEL[parentLv]);
+                idsToSend.forEach(function(id){ fd.append('ids[]', id); });
+
+                fetch(ajaxUrl, { method:'POST', body:fd, credentials:'same-origin' })
+                    .then(function(r){ return r.json(); })
+                    .then(function(resp){
+                        setLoading(childLv, false);
+                        if (resp && resp.success) {
+                            var newData = resp.data||{};
+                            window._fplmsMbData[childLv] = newData;
+                            // Keep only selected IDs that still exist in new data
+                            var prevSel = window._fplmsMbSel[childLv]||[];
+                            var newKeys = Object.keys(newData).map(Number);
+                            window._fplmsMbSel[childLv] = prevSel.filter(function(id){
+                                return newKeys.indexOf(id) !== -1;
+                            });
+                            renderOpts(childLv, '');
+                            renderPills(childLv);
+                            updateHiddenInputs(childLv);
+                            updateCounter(childLv);
+                            enableLevel(childLv, Object.keys(newData).length > 0);
+                            // Cascade further
+                            var grandChild = CHILDREN[childLv];
+                            if (grandChild) loadChildLevel(childLv, grandChild);
+                        }
+                    })
+                    .catch(function(){ setLoading(childLv, false); });
+            }
+
+            function clearLevel(lv, cascade) {
+                window._fplmsMbData[lv] = {};
+                window._fplmsMbSel[lv]  = [];
+                renderOpts(lv, '');
+                renderPills(lv);
+                updateHiddenInputs(lv);
+                updateCounter(lv);
+                enableLevel(lv, false);
+                if (cascade) {
+                    var ch = CHILDREN[lv];
+                    if (ch) clearLevel(ch, true);
+                }
+            }
+
+            function setLoading(lv, on) {
+                var el = document.getElementById('fplms-opts-'+lv);
+                if (on && el) el.innerHTML = '<div class="fplms-mb-loading"><div class="fplms-mb-spinner"></div> Cargando…</div>';
+            }
+
+            function enableLevel(lv, enabled) {
+                var trig = document.getElementById('fplms-trigger-'+lv);
+                if (!trig) return;
+                if (enabled) {
+                    trig.classList.remove('disabled');
+                } else {
+                    trig.classList.add('disabled');
+                    closePop(lv);
+                }
+            }
+
+            // ─── Open / close popover ───────────────────────────────────────
+            window.fplmsMbToggle = function(lv) {
+                var trig = document.getElementById('fplms-trigger-'+lv);
+                if (trig && trig.classList.contains('disabled')) return;
+                var pop = document.getElementById('fplms-pop-'+lv);
+                if (!pop) return;
+                var isOpen = pop.classList.contains('open');
+                // Close all others
+                LEVELS.forEach(function(l){ closePop(l); });
+                if (!isOpen) {
+                    pop.classList.add('open');
+                    trig.classList.add('open');
+                    renderOpts(lv, '');
+                    var si = pop.querySelector('input[type=text]');
+                    if (si) { si.value=''; si.focus(); }
+                }
+            };
+
+            function closePop(lv) {
+                var pop  = document.getElementById('fplms-pop-'+lv);
+                var trig = document.getElementById('fplms-trigger-'+lv);
+                if (pop)  pop.classList.remove('open');
+                if (trig) trig.classList.remove('open');
+            }
+
+            document.addEventListener('click', function(e) {
+                if (!e.target.closest('.fplms-mb-level')) {
+                    LEVELS.forEach(function(l){ closePop(l); });
+                }
+            });
+
+            // ─── Search filter ──────────────────────────────────────────────
+            window.fplmsMbSearch = function(lv, q) { renderOpts(lv, q); };
+
+            // ─── Summary ────────────────────────────────────────────────────
+            function updateSummary() {
+                var parts = [];
+                var labels = { cities:'Ciudades', companies:'Empresas', channels:'Canales',
+                               branches:'Sucursales', roles:'Cargos' };
+                LEVELS.forEach(function(lv){
+                    var n = (window._fplmsMbSel[lv]||[]).length;
+                    if (n) parts.push(n + ' ' + labels[lv].toLowerCase());
+                });
+                var el = document.getElementById('fplms-mb-summary');
+                var tx = document.getElementById('fplms-mb-summary-text');
+                if (parts.length) {
+                    el.style.display = '';
+                    tx.textContent   = parts.join(' · ');
+                } else {
+                    el.style.display = 'none';
+                }
+            }
+
+            // ─── Escape HTML ────────────────────────────────────────────────
+            function escH(s) {
+                return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+            }
+
+            // ─── Init ────────────────────────────────────────────────────────
+            document.addEventListener('DOMContentLoaded', function() {
+                LEVELS.forEach(function(lv){
+                    renderPills(lv);
+                    updateHiddenInputs(lv);
+                    updateCounter(lv);
+                    var hasOpts = Object.keys(window._fplmsMbData[lv]||{}).length > 0;
+                    var isFirst = lv === 'cities';
+                    enableLevel(lv, isFirst || hasOpts);
+                });
+                updateSummary();
+            });
+        })();
+        </script>
         </div>
         <?php
     }
 
+    /**
+     * Guarda las estructuras cuando se guarda/publica un curso de MasterStudy.
+     * Incluye validación de permisos para instructores.
+     * 
+     * @param int     $post_id ID del post
+     * @param WP_Post $post    Objeto del post
+     * @param bool    $update  Si es actualización o nuevo
+     */
     /**
      * Guarda las estructuras cuando se guarda/publica un curso de MasterStudy.
      * Incluye validación de permisos para instructores.
@@ -3270,7 +4019,7 @@ class FairPlay_LMS_Courses_Controller {
             ];
             
             // Registrar en la bitácora de auditoría
-            $this->logger->log(
+            $this->logger->log_action(
                 $action,
                 'course',
                 $post_id,
@@ -3574,41 +4323,74 @@ class FairPlay_LMS_Courses_Controller {
 		}
 
 		$structures_controller = new FairPlay_LMS_Structures_Controller();
-		$channels_to_assign    = [];
 
-		// Detectar qué categorías están vinculadas a canales
+		// === Clasificación jerárquica (igual que sync_categories_to_structures) ===
+		$channels_found    = [];
+		$explicit_branches = [];
+		$explicit_roles    = [];
+
 		foreach ( $category_ids as $category_id ) {
-			// Validar que la categoría existe
-			$category = get_term( $category_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
-			if ( ! $category || is_wp_error( $category ) ) {
+			$cat_id = (int) $category_id;
+
+			$linked_channel = $structures_controller->get_linked_channel( $cat_id );
+			if ( $linked_channel ) {
+				$channels_found[] = $linked_channel;
 				continue;
 			}
 
-			$channel_id = $structures_controller->get_linked_channel( $category_id );
-			if ( $channel_id ) {
-				// Validar que el canal existe
-				$channel = get_term( $channel_id, FairPlay_LMS_Config::TAX_CHANNEL );
-				if ( $channel && ! is_wp_error( $channel ) ) {
-					$channels_to_assign[] = $channel_id;
-				} else {
-					// Canal vinculado no existe, limpiar vinculación
-					delete_term_meta( $category_id, 'fplms_linked_channel_id' );
+			$linked_branch_id = (int) get_term_meta( $cat_id, 'fplms_linked_branch_id', true );
+			if ( $linked_branch_id ) {
+				$explicit_branches[] = $linked_branch_id;
+				$branch_cat          = get_term( $cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+				if ( $branch_cat && ! is_wp_error( $branch_cat ) && $branch_cat->parent ) {
+					$parent_channel = $structures_controller->get_linked_channel( $branch_cat->parent );
+					if ( $parent_channel ) {
+						$channels_found[] = $parent_channel;
+					}
 				}
+				continue;
+			}
+
+			$linked_role_id = (int) get_term_meta( $cat_id, 'fplms_linked_role_id', true );
+			if ( $linked_role_id ) {
+				$explicit_roles[] = $linked_role_id;
+				$role_cat         = get_term( $cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+				if ( $role_cat && ! is_wp_error( $role_cat ) && $role_cat->parent ) {
+					$parent_branch_id = (int) get_term_meta( $role_cat->parent, 'fplms_linked_branch_id', true );
+					if ( $parent_branch_id ) {
+						$explicit_branches[] = $parent_branch_id;
+					}
+					$branch_cat = get_term( $role_cat->parent, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+					if ( $branch_cat && ! is_wp_error( $branch_cat ) && $branch_cat->parent ) {
+						$grandparent_channel = $structures_controller->get_linked_channel( $branch_cat->parent );
+						if ( $grandparent_channel ) {
+							$channels_found[] = $grandparent_channel;
+						}
+					}
+				}
+				continue;
 			}
 		}
+
+		$channels_to_assign = array_values( array_unique( array_filter( $channels_found ) ) );
+		$explicit_branches  = array_values( array_unique( array_filter( $explicit_branches ) ) );
+		$explicit_roles     = array_values( array_unique( array_filter( $explicit_roles ) ) );
 
 		if ( empty( $channels_to_assign ) ) {
 			return;
 		}
 
-		// Aplicar cascada de estructuras
-		$cascaded = $this->apply_structure_cascade(
-			[],              // cities
-			[],              // companies
-			$channels_to_assign,
-			[],              // branches
-			[]               // roles
-		);
+		// Leer restricciones guardadas por sync_categories_to_structures (puede haberse ejecutado antes)
+		$manual_branches = array_filter( array_map( 'absint', (array) get_post_meta( $post_id, 'fplms_manual_branches', true ) ) );
+		$manual_roles    = array_filter( array_map( 'absint', (array) get_post_meta( $post_id, 'fplms_manual_roles',    true ) ) );
+		// Si la llamada proviene del editor clásico (admin), usar las restricciones derivadas directamente
+		if ( ! empty( $explicit_branches ) || ! empty( $explicit_roles ) ) {
+			$manual_branches = $explicit_branches;
+			$manual_roles    = $explicit_roles;
+		}
+
+		// Aplicar cascada con restricciones
+		$cascaded = $this->apply_cascade_with_restrictions( $channels_to_assign, array_values( $manual_branches ), array_values( $manual_roles ) );
 
 		// Guardar en post_meta
 		update_post_meta( $post_id, 'fplms_course_cities', $cascaded['cities'] );
@@ -3674,41 +4456,77 @@ class FairPlay_LMS_Courses_Controller {
 		define( 'FPLMS_SYNCING_CATEGORIES', true );
 
 		$structures_controller = new FairPlay_LMS_Structures_Controller();
-		$channels_to_assign    = [];
 
-		// Detectar qué categorías están vinculadas a canales
+		// === Clasificación jerárquica de categorías seleccionadas ===
+		// Canal  → categoría raíz (meta: fplms_linked_channel_id)
+		// Sucursal → subcategoría  (meta: fplms_linked_branch_id)
+		// Cargo  → sub-subcategoría (meta: fplms_linked_role_id)
+		$channels_found    = [];   // IDs de canales derivados de la selección
+		$explicit_branches = [];   // Sucursales elegidas explícitamente
+		$explicit_roles    = [];   // Cargos elegidos explícitamente
+
 		foreach ( $terms as $term_id ) {
-			// Validar que el término existe
-			$term = get_term( $term_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
-			if ( ! $term || is_wp_error( $term ) ) {
+			$term_id_int = (int) $term_id;
+
+			// ¿Es una categoría de canal?
+			$linked_channel = $structures_controller->get_linked_channel( $term_id_int );
+			if ( $linked_channel ) {
+				$channels_found[] = $linked_channel;
 				continue;
 			}
 
-			$channel_id = $structures_controller->get_linked_channel( $term_id );
-			if ( $channel_id ) {
-				// Validar que el canal existe
-				$channel = get_term( $channel_id, FairPlay_LMS_Config::TAX_CHANNEL );
-				if ( $channel && ! is_wp_error( $channel ) ) {
-					$channels_to_assign[] = $channel_id;
-				} else {
-					// Canal vinculado no existe, limpiar vinculación
-					delete_term_meta( $term_id, 'fplms_linked_channel_id' );
+			// ¿Es una subcategoría de sucursal?
+			$linked_branch_id = (int) get_term_meta( $term_id_int, 'fplms_linked_branch_id', true );
+			if ( $linked_branch_id ) {
+				$explicit_branches[] = $linked_branch_id;
+				// Derivar canal desde la categoría padre
+				$branch_cat = get_term( $term_id_int, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+				if ( $branch_cat && ! is_wp_error( $branch_cat ) && $branch_cat->parent ) {
+					$parent_channel = $structures_controller->get_linked_channel( $branch_cat->parent );
+					if ( $parent_channel ) {
+						$channels_found[] = $parent_channel;
+					}
 				}
+				continue;
+			}
+
+			// ¿Es una sub-subcategoría de cargo?
+			$linked_role_id = (int) get_term_meta( $term_id_int, 'fplms_linked_role_id', true );
+			if ( $linked_role_id ) {
+				$explicit_roles[] = $linked_role_id;
+				// Derivar sucursal y canal desde abuelo/padre
+				$role_cat = get_term( $term_id_int, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+				if ( $role_cat && ! is_wp_error( $role_cat ) && $role_cat->parent ) {
+					$parent_branch_id = (int) get_term_meta( $role_cat->parent, 'fplms_linked_branch_id', true );
+					if ( $parent_branch_id ) {
+						$explicit_branches[] = $parent_branch_id;
+					}
+					$branch_cat = get_term( $role_cat->parent, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+					if ( $branch_cat && ! is_wp_error( $branch_cat ) && $branch_cat->parent ) {
+						$grandparent_channel = $structures_controller->get_linked_channel( $branch_cat->parent );
+						if ( $grandparent_channel ) {
+							$channels_found[] = $grandparent_channel;
+						}
+					}
+				}
+				continue;
 			}
 		}
+
+		$channels_to_assign = array_values( array_unique( array_filter( $channels_found ) ) );
+		$explicit_branches  = array_values( array_unique( array_filter( $explicit_branches ) ) );
+		$explicit_roles     = array_values( array_unique( array_filter( $explicit_roles ) ) );
 
 		if ( empty( $channels_to_assign ) ) {
 			return;
 		}
 
-		// Aplicar cascada de estructuras
-		$cascaded = $this->apply_structure_cascade(
-			[],              // cities
-			[],              // companies
-			$channels_to_assign,
-			[],              // branches
-			[]               // roles
-		);
+		// Persistir restricciones derivadas de la selección de categorías
+		update_post_meta( $object_id, 'fplms_manual_branches', $explicit_branches );
+		update_post_meta( $object_id, 'fplms_manual_roles',    $explicit_roles );
+
+		// Aplicar cascada con las restricciones detectadas
+		$cascaded = $this->apply_cascade_with_restrictions( $channels_to_assign, $explicit_branches, $explicit_roles );
 
 		// Guardar en post_meta
 		update_post_meta( $object_id, 'fplms_course_cities', $cascaded['cities'] );
@@ -4002,5 +4820,574 @@ class FairPlay_LMS_Courses_Controller {
 
 		$this->logger->log_quiz_deleted( $post_id, get_the_title( $post_id ) );
 	}
-}
 
+	// ═══════════════════════════════════════════════════════════════════════════
+	// FEATURE: Restricción de Estructuras en Editor Frontend de Cursos
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	/**
+	 * Aplica la cascada jerárquica desde canales respetando restricciones manuales
+	 * de sucursales y cargos.
+	 *
+	 * Canal → sube a Empresa → Ciudad (siempre completo).
+	 * Canal → Sucursales (todas, o solo las de $manual_branches si está definido).
+	 * Sucursal → Cargos (todos, o solo los de $manual_roles si está definido).
+	 *
+	 * @param array $channels        IDs de canales seleccionados.
+	 * @param array $manual_branches IDs de sucursales explícitamente seleccionadas (vacío = todas).
+	 * @param array $manual_roles    IDs de cargos explícitamente seleccionados (vacío = todos).
+	 * @return array Estructura completa con cities, companies, channels, branches, roles.
+	 */
+	private function apply_cascade_with_restrictions( array $channels, array $manual_branches = [], array $manual_roles = [] ): array {
+		$structures_ctrl = new FairPlay_LMS_Structures_Controller();
+
+		$result = [
+			'cities'    => [],
+			'companies' => [],
+			'channels'  => $channels,
+			'branches'  => [],
+			'roles'     => [],
+		];
+
+		if ( empty( $channels ) ) {
+			return $result;
+		}
+
+		// ── Subir jerarquía: Channel → Company → City (siempre completo) ────────
+		foreach ( $channels as $channel_id ) {
+			$company_ids = $structures_ctrl->get_term_companies( $channel_id );
+			foreach ( (array) $company_ids as $company_id ) {
+				if ( ! in_array( $company_id, $result['companies'], true ) ) {
+					$result['companies'][] = (int) $company_id;
+				}
+				$city_ids = $structures_ctrl->get_term_cities( $company_id );
+				foreach ( (array) $city_ids as $city_id ) {
+					if ( ! in_array( $city_id, $result['cities'], true ) ) {
+						$result['cities'][] = (int) $city_id;
+					}
+				}
+			}
+		}
+
+		// ── Bajar jerarquía: Channel → Branch (con restricción opcional) ─────────
+		$all_branch_ids = [];
+		foreach ( $channels as $channel_id ) {
+			$all_branch_ids = array_unique( array_merge( $all_branch_ids, $this->get_branches_by_channel( (int) $channel_id ) ) );
+		}
+
+		// Si hay selección manual, validar que pertenecen a alguno de los canales.
+		$effective_branches = ! empty( $manual_branches )
+			? array_values( array_intersect( array_map( 'intval', $manual_branches ), $all_branch_ids ) )
+			: $all_branch_ids;
+
+		$result['branches'] = $effective_branches;
+
+		// ── Bajar jerarquía: Branch → Role (con restricción opcional) ────────────
+		$all_role_ids = [];
+		foreach ( $effective_branches as $branch_id ) {
+			$all_role_ids = array_unique( array_merge( $all_role_ids, $this->get_roles_by_branch( (int) $branch_id ) ) );
+		}
+
+		// Si hay selección manual de cargos, validar que pertenecen a las sucursales efectivas.
+		$result['roles'] = ! empty( $manual_roles )
+			? array_values( array_intersect( array_map( 'intval', $manual_roles ), $all_role_ids ) )
+			: $all_role_ids;
+
+		return $result;
+	}
+
+	/**
+	 * AJAX: Devuelve las sucursales y cargos disponibles para un curso (basados en
+	 * su canal) junto con el estado actual de restricciones manuales guardadas.
+	 */
+	public function ajax_get_frontend_structures(): void {
+		check_ajax_referer( 'fplms_frontend_structures', 'nonce' );
+
+		$course_id = absint( $_POST['course_id'] ?? 0 );
+		if ( ! $course_id || ! current_user_can( 'edit_post', $course_id ) ) {
+			wp_send_json_error( 'Permiso denegado o curso no válido.' );
+		}
+
+		$channels = array_filter( array_map( 'absint', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ) ) );
+
+		if ( empty( $channels ) ) {
+			wp_send_json_success( [
+				'channel_names'   => [],
+				'branches'        => [],
+				'manual_branches' => [],
+				'roles'           => [],
+				'manual_roles'    => [],
+			] );
+			return;
+		}
+
+		// Nombres de los canales.
+		$channel_names = [];
+		foreach ( $channels as $cid ) {
+			$t = get_term( $cid, FairPlay_LMS_Config::TAX_CHANNEL );
+			if ( $t && ! is_wp_error( $t ) ) {
+				$channel_names[] = $t->name;
+			}
+		}
+
+		// Todas las sucursales de esos canales.
+		$all_branch_ids = [];
+		foreach ( $channels as $cid ) {
+			$all_branch_ids = array_unique( array_merge( $all_branch_ids, $this->get_branches_by_channel( $cid ) ) );
+		}
+		$branches = [];
+		foreach ( $all_branch_ids as $bid ) {
+			$t = get_term( $bid, FairPlay_LMS_Config::TAX_BRANCH );
+			if ( $t && ! is_wp_error( $t ) ) {
+				$branches[ $bid ] = $t->name;
+			}
+		}
+
+		// Selecciones manuales actuales.
+		$manual_branches = array_values( array_filter( array_map( 'absint', (array) get_post_meta( $course_id, 'fplms_manual_branches', true ) ) ) );
+		$manual_roles    = array_values( array_filter( array_map( 'absint', (array) get_post_meta( $course_id, 'fplms_manual_roles',    true ) ) ) );
+
+		// Cargos disponibles: de las sucursales manuales si hay, si no de todas.
+		$branch_ids_for_roles = ! empty( $manual_branches ) ? $manual_branches : $all_branch_ids;
+		$all_role_ids         = [];
+		foreach ( $branch_ids_for_roles as $bid ) {
+			$all_role_ids = array_unique( array_merge( $all_role_ids, $this->get_roles_by_branch( $bid ) ) );
+		}
+		$roles = [];
+		foreach ( $all_role_ids as $rid ) {
+			$t = get_term( $rid, FairPlay_LMS_Config::TAX_ROLE );
+			if ( $t && ! is_wp_error( $t ) ) {
+				$roles[ $rid ] = $t->name;
+			}
+		}
+
+		wp_send_json_success( [
+			'channel_names'   => $channel_names,
+			'branches'        => $branches,
+			'manual_branches' => $manual_branches,
+			'roles'           => $roles,
+			'manual_roles'    => $manual_roles,
+		] );
+	}
+
+	/**
+	 * AJAX: Devuelve los cargos de un conjunto de sucursales (carga dinámica
+	 * cuando el usuario cambia la selección de sucursales en el panel frontend).
+	 */
+	public function ajax_get_branch_roles(): void {
+		check_ajax_referer( 'fplms_frontend_structures', 'nonce' );
+
+		if ( ! is_user_logged_in() ) {
+			wp_send_json_error( 'No autenticado.' );
+		}
+
+		$branch_ids = isset( $_POST['branch_ids'] )
+			? array_filter( array_map( 'absint', (array) wp_unslash( $_POST['branch_ids'] ) ) )
+			: [];
+
+		$all_role_ids = [];
+		foreach ( $branch_ids as $bid ) {
+			$all_role_ids = array_unique( array_merge( $all_role_ids, $this->get_roles_by_branch( $bid ) ) );
+		}
+
+		$roles = [];
+		foreach ( $all_role_ids as $rid ) {
+			$t = get_term( $rid, FairPlay_LMS_Config::TAX_ROLE );
+			if ( $t && ! is_wp_error( $t ) ) {
+				$roles[ $rid ] = $t->name;
+			}
+		}
+
+		wp_send_json_success( $roles );
+	}
+
+	/**
+	 * AJAX: Guarda las restricciones manuales de sucursal/cargo para un curso
+	 * y re-aplica la cascada con esas restricciones.
+	 */
+	public function ajax_save_frontend_structures(): void {
+		check_ajax_referer( 'fplms_frontend_structures', 'nonce' );
+
+		$course_id = absint( $_POST['course_id'] ?? 0 );
+		if ( ! $course_id || ! current_user_can( 'edit_post', $course_id ) ) {
+			wp_send_json_error( 'Permiso denegado o curso no válido.' );
+		}
+
+		$branch_ids = isset( $_POST['branch_ids'] )
+			? array_values( array_filter( array_map( 'absint', (array) wp_unslash( $_POST['branch_ids'] ) ) ) )
+			: [];
+		$role_ids   = isset( $_POST['role_ids'] )
+			? array_values( array_filter( array_map( 'absint', (array) wp_unslash( $_POST['role_ids'] ) ) ) )
+			: [];
+
+		// Guardar selecciones manuales.
+		update_post_meta( $course_id, 'fplms_manual_branches', $branch_ids );
+		update_post_meta( $course_id, 'fplms_manual_roles',    $role_ids );
+
+		// Obtener canales actuales del curso.
+		$channels = array_values( array_filter( array_map( 'absint', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ) ) ) );
+
+		if ( empty( $channels ) ) {
+			wp_send_json_error( 'El curso no tiene canal asignado. Primero selecciona una Categoría/Canal en el editor del curso.' );
+		}
+
+		// Re-aplicar la cascada con las restricciones guardadas.
+		$cascaded = $this->apply_cascade_with_restrictions( $channels, $branch_ids, $role_ids );
+
+		update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES,    $cascaded['cities'] );
+		update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, $cascaded['companies'] );
+		update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS,  $cascaded['channels'] );
+		update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES,  $cascaded['branches'] );
+		update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES,     $cascaded['roles'] );
+
+		if ( class_exists( 'FairPlay_LMS_Audit_Logger' ) ) {
+			( new FairPlay_LMS_Audit_Logger() )->log_action(
+				'course_manual_restrictions_saved',
+				'course',
+				$course_id,
+				get_the_title( $course_id ),
+				null,
+				[
+					'channels'  => $channels,
+					'branches'  => $branch_ids,
+					'roles'     => $role_ids,
+					'cascaded'  => $cascaded,
+				]
+			);
+		}
+
+		wp_send_json_success( [
+			'message' => sprintf(
+				'%d sucursal(es) y %d cargo(s) asignados.',
+				count( $cascaded['branches'] ),
+				count( $cascaded['roles'] )
+			),
+		] );
+	}
+
+	/**
+	 * Inyecta el panel de "Restricción de Estructuras" en el editor frontend de
+	 * cursos de MasterStudy. Llamado desde el hook wp_footer.
+	 * Renames "Categoría" → "Canal" via MutationObserver JS.
+	 */
+	public function render_frontend_structure_panel(): void {
+		if ( ! is_user_logged_in() ) {
+			return;
+		}
+		$request_uri = sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ?? '' ) );
+		if ( strpos( $request_uri, 'edit-course' ) === false ) {
+			return;
+		}
+
+		$course_id    = absint( $_GET['course_id'] ?? 0 );
+		$nonce        = wp_create_nonce( 'fplms_frontend_structures' );
+		$ajax_url_js  = esc_js( admin_url( 'admin-ajax.php' ) );
+		$nonce_js     = esc_js( $nonce );
+		$course_id_js = (int) $course_id;
+		?>
+		<style>
+			#fplms-fe-panel { display:none; background:#fff; border-radius:14px; border:1px solid #e5e7eb; box-shadow:0 2px 12px rgba(0,0,0,.08); margin:28px auto; max-width:768px; width:100%; overflow:hidden; }
+			#fplms-fe-panel * { box-sizing:border-box; }
+			#fplms-fe-panel p { margin:0; }
+			.fplms-fe-hdr  { background:linear-gradient(135deg,#667eea,#764ba2); padding:16px 22px; display:flex; align-items:center; gap:12px; }
+			.fplms-fe-hdr svg { width:22px;height:22px;fill:#fff;flex-shrink:0; }
+			.fplms-fe-hdr-text h3 { margin:0;font-size:15px;font-weight:700;color:#fff; }
+			.fplms-fe-hdr-text p  { margin:3px 0 0;font-size:12px;color:rgba(255,255,255,.8); }
+			.fplms-fe-body { padding:20px 22px; }
+			.fplms-fe-channel-row { display:flex;align-items:center;gap:10px;padding:10px 14px;background:#f0f6fe;border-radius:8px;border-left:3px solid #667eea;margin-bottom:18px;font-size:14px;color:#1e3a5f; }
+			.fplms-fe-channel-row svg { width:16px;height:16px;fill:#667eea;flex-shrink:0; }
+			.fplms-fe-sec-title { font-size:13px;font-weight:700;color:#374151;margin-bottom:5px;display:flex;align-items:center;gap:6px; }
+			.fplms-fe-sec-title svg { width:14px;height:14px;fill:#6b7280; }
+			.fplms-fe-hint { font-size:12px;color:#9ca3af;margin-bottom:10px; }
+			.fplms-fe-chips { display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px; }
+			.fplms-fe-chip { display:inline-flex;align-items:center;gap:6px;padding:5px 12px;background:#f3f4f6;border:1.5px solid #e5e7eb;border-radius:20px;font-size:13px;color:#374151;cursor:pointer;transition:all .15s;user-select:none; }
+			.fplms-fe-chip input { display:none; }
+			.fplms-fe-chip:hover { border-color:#667eea;color:#667eea; }
+			.fplms-fe-chip.sel  { background:#667eea;border-color:#667eea;color:#fff; }
+			.fplms-fe-empty { font-size:13px;color:#9ca3af;padding:6px 0; }
+			.fplms-fe-hr { border:none;border-top:1px solid #f3f4f6;margin:18px 0; }
+			.fplms-fe-footer { display:flex;align-items:center;gap:12px;padding:14px 22px;border-top:1px solid #f3f4f6;background:#f9fafb;flex-wrap:wrap; }
+			.fplms-fe-save-btn { display:inline-flex;align-items:center;gap:8px;padding:9px 22px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .2s; }
+			.fplms-fe-save-btn:hover { opacity:.88; }
+			.fplms-fe-save-btn svg { width:16px;height:16px;fill:#fff; }
+			.fplms-fe-save-btn:disabled { opacity:.5;cursor:not-allowed; }
+			.fplms-fe-status { font-size:13px;color:#6b7280;flex:1; }
+			.fplms-fe-status.ok  { color:#027A48; }
+			.fplms-fe-status.err { color:#dc2626; }
+			@keyframes fplmsSpin { to { transform:rotate(360deg); } }
+			.fplms-fe-spin { display:inline-block;width:14px;height:14px;border:2px solid rgba(102,126,234,.3);border-top-color:#667eea;border-radius:50%;animation:fplmsSpin .7s linear infinite;vertical-align:middle; }
+			.fplms-fe-notice { background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:12px 16px;font-size:13px;color:#92400e;display:flex;align-items:flex-start;gap:10px; }
+			.fplms-fe-notice svg { width:18px;height:18px;fill:#f59e0b;flex-shrink:0;margin-top:1px; }
+		</style>
+
+		<div id="fplms-fe-panel">
+			<div class="fplms-fe-hdr">
+				<svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+				<div class="fplms-fe-hdr-text">
+					<h3>Restricción de Estructuras</h3>
+					<p>Define a qué sucursales y cargos aplica este curso</p>
+				</div>
+			</div>
+			<div class="fplms-fe-body">
+				<?php if ( ! $course_id ) : ?>
+				<div class="fplms-fe-notice">
+					<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+					<span>Guarda el curso primero para configurar restricciones de sucursal y cargo.</span>
+				</div>
+				<?php else : ?>
+				<div id="fplms-fe-inner">
+					<div style="text-align:center;padding:20px;"><span class="fplms-fe-spin"></span> Cargando estructuras…</div>
+				</div>
+				<?php endif; ?>
+			</div>
+			<?php if ( $course_id ) : ?>
+			<div class="fplms-fe-footer">
+				<button type="button" id="fplms-fe-save" class="fplms-fe-save-btn" disabled>
+					<svg viewBox="0 0 24 24"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+					Guardar Estructuras
+				</button>
+				<span class="fplms-fe-status" id="fplms-fe-status"></span>
+			</div>
+			<?php endif; ?>
+		</div>
+
+		<script>
+		(function() {
+			var NONCE     = '<?php echo $nonce_js; ?>';
+			var AJAX_URL  = '<?php echo $ajax_url_js; ?>';
+			var COURSE_ID = <?php echo $course_id_js; ?>;
+			var _branches = {};  // { id: name }
+			var _roles    = {};  // { id: name }
+			var _selB     = [];  // checked branch IDs
+			var _selR     = [];  // checked role IDs
+
+			// ── Inject panel after MasterStudy form ──────────────────────────
+			function inject() {
+				var panel = document.getElementById('fplms-fe-panel');
+				if ( !panel || panel._injected ) return false;
+				var targets = [
+					'.masterstudy-course-builder', '.stm-lms-course-builder',
+					'[class*="course-builder"]', '.masterstudy-user-account__content',
+					'.stm-lms-user-account__content', '.masterstudy-page__content',
+					'main .entry-content', '.stm-content__inner', 'main'
+				];
+				for ( var i = 0; i < targets.length; i++ ) {
+					var el = document.querySelector(targets[i]);
+					if ( el ) {
+						el.insertAdjacentElement('afterend', panel);
+						panel.style.display = 'block';
+						panel._injected = true;
+						return true;
+					}
+				}
+				document.body.appendChild(panel);
+				panel.style.display = 'block';
+				panel._injected = true;
+				return true;
+			}
+			function tryInject() {
+				if ( inject() ) return;
+				var n = 0, t = setInterval(function() { if ( inject() || ++n > 30 ) clearInterval(t); }, 400);
+			}
+
+			// ── Rename "Categoría" → "Canal" via MutationObserver ───────────
+			function renameLabels() {
+				document.querySelectorAll('label, span, p, div').forEach(function(el) {
+					if ( el.children.length === 0 ) {
+						var txt = el.textContent.trim();
+						if ( txt === 'Categoría' || txt === 'Category' ) el.textContent = 'Canal';
+					}
+				});
+			}
+			new MutationObserver(renameLabels).observe(document.body, { childList:true, subtree:true });
+
+			// ── Event delegation: chip toggle ────────────────────────────────
+			document.addEventListener('click', function(e) {
+				var chip = e.target && e.target.closest && e.target.closest('.fplms-fe-chip');
+				if ( !chip || !chip.closest('#fplms-fe-inner') ) return;
+				var cb = chip.querySelector('input[type="checkbox"]');
+				if ( !cb ) return;
+				cb.checked = !cb.checked;
+				chip.classList.toggle('sel', cb.checked);
+				syncSel();
+				if ( chip.dataset.type === 'branch' ) reloadRoles();
+				markDirty();
+			});
+
+			// ── Save button ──────────────────────────────────────────────────
+			document.addEventListener('click', function(e) {
+				if ( e.target && e.target.id === 'fplms-fe-save' ) doSave();
+			});
+
+			// ── Sync state from DOM ──────────────────────────────────────────
+			function syncSel() {
+				_selB = [];
+				document.querySelectorAll('#fplms-fe-branches .fplms-fe-chip.sel').forEach(function(c) { _selB.push(Number(c.dataset.id)); });
+				_selR = [];
+				document.querySelectorAll('#fplms-fe-roles-area .fplms-fe-chip.sel').forEach(function(c) { _selR.push(Number(c.dataset.id)); });
+			}
+
+			// ── Render full panel from AJAX data ─────────────────────────────
+			function renderPanel(d) {
+				_branches = d.branches    || {};
+				_roles    = d.roles       || {};
+				_selB     = (d.manual_branches || []).map(Number);
+				_selR     = (d.manual_roles    || []).map(Number);
+
+				var chName = (d.channel_names || []).join(', ') || '—';
+				var html   = '';
+
+				// Canal info row
+				html += '<div class="fplms-fe-channel-row">'
+					+ '<svg viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>'
+					+ '<div><strong>Canal:</strong> ' + esc(chName) + '</div></div>';
+
+				// Branches
+				html += '<div class="fplms-fe-sec-title">'
+					+ '<svg viewBox="0 0 24 24"><path d="M13 7h-2v2h2V7zm0 4h-2v2h2v-2zm4 0h-2v2h2v-2zM3 3v18h18V3H3zm16 16H5V5h14v14zM9 7H7v2h2V7zm0 4H7v2h2v-2z"/></svg>'
+					+ 'Sucursal <span style="font-weight:400;color:#9ca3af;font-size:11px;">(opcional)</span></div>'
+					+ '<p class="fplms-fe-hint">Sin selección = aplica a todas las sucursales del canal</p>';
+
+				var bIds = Object.keys(_branches);
+				if ( bIds.length === 0 ) {
+					html += '<p class="fplms-fe-empty">No hay sucursales configuradas para este canal.</p>';
+				} else {
+					html += '<div class="fplms-fe-chips" id="fplms-fe-branches">';
+					bIds.forEach(function(bid) {
+						var on = _selB.indexOf(Number(bid)) !== -1;
+						html += '<div class="fplms-fe-chip' + (on ? ' sel' : '') + '" data-id="' + bid + '" data-type="branch">'
+							+ '<input type="checkbox" value="' + bid + '"' + (on ? ' checked' : '') + '>' + esc(_branches[bid]) + '</div>';
+					});
+					html += '</div>';
+				}
+
+				html += '<hr class="fplms-fe-hr">';
+
+				// Roles wrapper
+				html += '<div class="fplms-fe-sec-title">'
+					+ '<svg viewBox="0 0 24 24"><path d="M20 6h-2.18c.07-.44.18-.88.18-1 0-2.21-1.79-4-4-4s-4 1.79-4 4c0 .12.11.56.18 1H8c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h12c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-6-3c1.1 0 2 .9 2 2 0 .12-.11.56-.18 1h-3.64C12.11 5.56 12 5.12 12 5c0-1.1.9-2 2-2zm6 17H8V8h2v1c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V8h2v12z"/></svg>'
+					+ 'Cargo <span style="font-weight:400;color:#9ca3af;font-size:11px;">(opcional)</span></div>'
+					+ '<p class="fplms-fe-hint">Sin selección = aplica a todos los cargos de las sucursales elegidas</p>';
+				html += '<div id="fplms-fe-roles-area">' + buildRolesHtml(_roles, _selR) + '</div>';
+
+				document.getElementById('fplms-fe-inner').innerHTML = html;
+				var btn = document.getElementById('fplms-fe-save');
+				if ( btn ) btn.disabled = false;
+				setStatus('');
+			}
+
+			function buildRolesHtml(rolesObj, selR) {
+				var rIds = Object.keys(rolesObj);
+				if ( rIds.length === 0 ) {
+					return '<p class="fplms-fe-empty">Selecciona sucursales para ver los cargos disponibles.</p>';
+				}
+				var h = '<div class="fplms-fe-chips">';
+				rIds.forEach(function(rid) {
+					var on = selR.indexOf(Number(rid)) !== -1;
+					h += '<div class="fplms-fe-chip' + (on ? ' sel' : '') + '" data-id="' + rid + '" data-type="role">'
+						+ '<input type="checkbox" value="' + rid + '"' + (on ? ' checked' : '') + '>' + esc(rolesObj[rid]) + '</div>';
+				});
+				return h + '</div>';
+			}
+
+			// ── Reload roles when branches selection changes ──────────────────
+			function reloadRoles() {
+				var area = document.getElementById('fplms-fe-roles-area');
+				if ( !area ) return;
+				// If no branches selected, load roles of ALL channel branches.
+				var branchIdsToLoad = _selB.length > 0 ? _selB : Object.keys(_branches).map(Number);
+				if ( branchIdsToLoad.length === 0 ) {
+					area.innerHTML = '<p class="fplms-fe-empty">Sin sucursales disponibles.</p>';
+					return;
+				}
+				area.innerHTML = '<span class="fplms-fe-spin"></span>';
+				var fd = new FormData();
+				fd.append('action', 'fplms_get_branch_roles');
+				fd.append('nonce',   NONCE);
+				branchIdsToLoad.forEach(function(bid) { fd.append('branch_ids[]', bid); });
+				fetch(AJAX_URL, { method:'POST', body:fd })
+					.then(function(r){ return r.json(); })
+					.then(function(d){
+						if ( d && d.success ) {
+							_roles = d.data || {};
+							// Invalidate selections that no longer exist.
+							var valid = Object.keys(_roles).map(Number);
+							_selR = _selR.filter(function(r){ return valid.indexOf(r) !== -1; });
+							area.innerHTML = buildRolesHtml(_roles, _selR);
+						}
+					})
+					.catch(function(){});
+			}
+
+			// ── Save ─────────────────────────────────────────────────────────
+			function doSave() {
+				var btn = document.getElementById('fplms-fe-save');
+				if ( !btn || btn.disabled ) return;
+				syncSel();
+				btn.disabled = true;
+				setStatus('<span class="fplms-fe-spin"></span> Guardando…');
+				var fd = new FormData();
+				fd.append('action',    'fplms_save_frontend_structures');
+				fd.append('nonce',      NONCE);
+				fd.append('course_id',  COURSE_ID);
+				_selB.forEach(function(b){ fd.append('branch_ids[]', b); });
+				_selR.forEach(function(r){ fd.append('role_ids[]',   r); });
+				fetch(AJAX_URL, { method:'POST', body:fd })
+					.then(function(r){ return r.json(); })
+					.then(function(d){
+						btn.disabled = false;
+						if ( d && d.success ) {
+							setStatus('✓ ' + (d.data.message || 'Guardado.'), 'ok');
+						} else {
+							setStatus('✗ ' + (d.data || 'Error al guardar.'), 'err');
+						}
+					})
+					.catch(function(){ btn.disabled = false; setStatus('✗ Error de red.', 'err'); });
+			}
+
+			// ── Load initial data ─────────────────────────────────────────────
+			function loadData() {
+				if ( !COURSE_ID ) return;
+				var fd = new FormData();
+				fd.append('action',    'fplms_get_frontend_structures');
+				fd.append('nonce',      NONCE);
+				fd.append('course_id',  COURSE_ID);
+				fetch(AJAX_URL, { method:'POST', body:fd })
+					.then(function(r){ return r.json(); })
+					.then(function(d){
+						if ( d && d.success ) {
+							renderPanel(d.data);
+						} else {
+							var inner = document.getElementById('fplms-fe-inner');
+							if (inner) inner.innerHTML = '<p style="color:#dc2626;font-size:13px;">No se pudieron cargar las estructuras. Verifica que el curso tenga un Canal (Categoría) asignado.</p>';
+						}
+					})
+					.catch(function(){
+						var inner = document.getElementById('fplms-fe-inner');
+						if (inner) inner.innerHTML = '<p style="color:#dc2626;font-size:13px;">Error de red.</p>';
+					});
+			}
+
+			function markDirty() { setStatus('Cambios sin guardar.'); }
+			function setStatus(msg, cls) {
+				var el = document.getElementById('fplms-fe-status');
+				if (!el) return;
+				el.innerHTML = msg;
+				el.className = 'fplms-fe-status' + (cls ? ' ' + cls : '');
+			}
+			function esc(s) {
+				return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+			}
+
+			// ── Bootstrap ────────────────────────────────────────────────────
+			if ( document.readyState === 'loading' ) {
+				document.addEventListener('DOMContentLoaded', function(){ tryInject(); renameLabels(); loadData(); });
+			} else {
+				tryInject(); renameLabels(); loadData();
+			}
+		})();
+		</script>
+		<?php
+	}
+
+}

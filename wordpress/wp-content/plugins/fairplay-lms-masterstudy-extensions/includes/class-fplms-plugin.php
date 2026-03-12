@@ -108,6 +108,9 @@ class FairPlay_LMS_Plugin {
         // Formularios de cursos / módulos / temas / profesor
         add_action( 'admin_init', [ $this->courses, 'handle_form' ] );
 
+        // Ocultar cursos inactivos (draft) a roles no-administrador (frontend + REST + AJAX)
+        add_action( 'pre_get_posts', [ $this->courses, 'filter_inactive_courses' ] );
+
         // Usuarios: vincular estructuras
         add_action( 'show_user_profile',        [ $this->users, 'render_user_structures_fields' ] );
         add_action( 'edit_user_profile',        [ $this->users, 'render_user_structures_fields' ] );
@@ -196,6 +199,14 @@ class FairPlay_LMS_Plugin {
         add_action( 'created_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'sync_channel_to_category' ], 10, 3 );
         add_action( 'edited_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'sync_channel_to_category' ], 10, 3 );
         add_action( 'delete_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'unsync_channel_on_delete' ], 10, 4 );
+
+        // FEATURE 2b: Sincronización Sucursales/Cargos → Subcategorías (jerarquía nativa en Course Builder)
+        add_action( 'created_' . FairPlay_LMS_Config::TAX_BRANCH,       [ $this->structures, 'sync_branch_to_subcategory' ], 10, 3 );
+        add_action( 'edited_' . FairPlay_LMS_Config::TAX_BRANCH,        [ $this->structures, 'sync_branch_to_subcategory' ], 10, 3 );
+        add_action( 'delete_' . FairPlay_LMS_Config::TAX_BRANCH,        [ $this->structures, 'unsync_branch_on_delete' ], 10, 4 );
+        add_action( 'created_' . FairPlay_LMS_Config::TAX_ROLE,         [ $this->structures, 'sync_role_to_subcategory' ], 10, 3 );
+        add_action( 'edited_' . FairPlay_LMS_Config::TAX_ROLE,          [ $this->structures, 'sync_role_to_subcategory' ], 10, 3 );
+        add_action( 'delete_' . FairPlay_LMS_Config::TAX_ROLE,          [ $this->structures, 'unsync_role_on_delete' ], 10, 4 );
         
         // FEATURE 3: Detectar categorías asignadas en Course Builder y aplicar cascada
         add_action( 'set_object_terms', [ $this->courses, 'sync_categories_to_structures' ], 10, 6 );
@@ -227,6 +238,51 @@ class FairPlay_LMS_Plugin {
         add_action( 'wp_ajax_fplms_resend_welcome', [ $this->onboarding, 'ajax_resend_welcome_email' ] );
         // Enviar email al crear usuario desde el panel FairPlay LMS
         add_action( 'fplms_user_created', [ $this->onboarding, 'send_welcome_email' ], 10, 1 );
+
+        // FEATURE: AJAX helpers para gestión de estructuras (usados desde panel admin de cursos)
+        add_action( 'wp_ajax_fplms_get_frontend_structures',  [ $this->courses, 'ajax_get_frontend_structures' ] );
+        add_action( 'wp_ajax_fplms_get_branch_roles',         [ $this->courses, 'ajax_get_branch_roles' ] );
+        add_action( 'wp_ajax_fplms_save_frontend_structures', [ $this->courses, 'ajax_save_frontend_structures' ] );
+        // Cascade multiselect en meta box de estructuras del editor clásico
+        add_action( 'wp_ajax_fplms_cascade_structures',       [ $this->courses, 'ajax_cascade_structures' ] );
+        // Nota: render_frontend_structure_panel NO se usa (reemplazado por jerarquía de subcategorías nativa)
+
+        // Administradores tienen control total sobre todos los cursos MasterStudy,
+        // independientemente de quién sea el autor del curso.
+        add_filter( 'map_meta_cap', [ $this, 'grant_admin_full_course_control' ], 10, 4 );
+    }
+
+    /**
+     * Permite a usuarios con rol administrator editar/eliminar/publicar cualquier
+     * curso de MasterStudy aunque no sean el autor del post.
+     *
+     * @param array  $caps    Capacidades mapeadas.
+     * @param string $cap     Capacidad solicitada.
+     * @param int    $user_id ID del usuario.
+     * @param array  $args    Argumentos adicionales (normalmente [post_id]).
+     * @return array
+     */
+    public function grant_admin_full_course_control( array $caps, string $cap, int $user_id, $args ): array {
+        $args = is_array( $args ) ? $args : [];
+        // Solo actuar sobre operaciones de curso
+        $course_caps = [ 'edit_post', 'delete_post', 'publish_post', 'read_post' ];
+        if ( ! in_array( $cap, $course_caps, true ) ) {
+            return $caps;
+        }
+
+        // Solo si hay un post_id y el usuario es administrador
+        $post_id = ! empty( $args[0] ) ? (int) $args[0] : 0;
+        if ( ! $post_id || ! user_can( $user_id, 'administrator' ) ) {
+            return $caps;
+        }
+
+        // Solo para el tipo de post de cursos MasterStudy
+        if ( get_post_type( $post_id ) !== FairPlay_LMS_Config::MS_PT_COURSE ) {
+            return $caps;
+        }
+
+        // Eliminar cualquier restricción basada en autoría — el admin puede todo
+        return array_diff( $caps, [ 'do_not_allow' ] );
     }
 
     /**
