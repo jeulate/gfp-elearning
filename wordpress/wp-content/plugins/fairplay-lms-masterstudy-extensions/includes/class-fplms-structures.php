@@ -734,6 +734,46 @@ class FairPlay_LMS_Structures_Controller {
     }
 
     /**
+     * Devuelve un icono SVG inline por nombre para uso en el panel de administración.
+     * Usa inicialización estática para inicializar el mapa de paths una sola vez por request.
+     */
+    private function fplms_svg( string $name, int $size = 16 ): string {
+        static $icons = null;
+        if ( null === $icons ) {
+            $icons = [
+                'pin'         => '<path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z"/>',
+                'building'    => '<path stroke-linecap="round" stroke-linejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21"/>',
+                'store'       => '<path stroke-linecap="round" stroke-linejoin="round" d="M13.5 21v-7.5a.75.75 0 0 1 .75-.75h3a.75.75 0 0 1 .75.75V21m-4.5 0H2.36m11.14 0H18m0 0h3.64m-1.39 0V9.349M3.75 21V9.349m0 0a3.001 3.001 0 0 0 3.75-.615A2.993 2.993 0 0 0 9.75 9.75c.896 0 1.7-.393 2.25-1.016a2.993 2.993 0 0 0 2.25 1.016c.896 0 1.7-.393 2.25-1.015a3.001 3.001 0 0 0 3.75.614m-16.5 0a3.004 3.004 0 0 1-.621-4.72l1.189-1.19A1.5 1.5 0 0 1 5.378 3h13.243a1.5 1.5 0 0 1 1.06.44l1.19 1.189a3 3 0 0 1-.621 4.72M6.75 18h3.75a.75.75 0 0 0 .75-.75V13.5a.75.75 0 0 0-.75-.75H6.75a.75.75 0 0 0-.75.75v3.75c0 .414.336.75.75.75Z"/>',
+                'branch'      => '<path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5m-18-18v18m10.5-18v18m6-13.5V21M6.75 6.75h.75m-.75 3h.75m-.75 3h.75m3-6h.75m-.75 3h.75m-.75 3h.75M6.75 21v-3.375c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21M3 3h12m-.75 4.5H21m-3.75 3.75h.008v.008h-.008v-.008Zm0 3h.008v.008h-.008v-.008Zm0 3h.008v.008h-.008v-.008Z"/>',
+                'briefcase'   => '<path stroke-linecap="round" stroke-linejoin="round" d="M20.25 14.15v4.25c0 1.094-.787 2.036-1.872 2.18-2.087.277-4.216.42-6.378.42s-4.291-.143-6.378-.42c-1.085-.144-1.872-1.086-1.872-2.18v-4.25m16.5 0a2.18 2.18 0 0 0 .75-1.661V8.706c0-1.081-.768-2.015-1.837-2.175a48.114 48.114 0 0 0-3.413-.387m4.5 8.006c-.194.165-.42.295-.673.38A23.978 23.978 0 0 1 12 15.75c-2.648 0-5.195-.429-7.577-1.22a2.016 2.016 0 0 1-.673-.38m0 0A2.18 2.18 0 0 1 3 12.489V8.706c0-1.081.768-2.015 1.837-2.175a48.111 48.111 0 0 1 3.413-.387m7.5 0V5.25A2.25 2.25 0 0 0 13.5 3h-3a2.25 2.25 0 0 0-2.25 2.25v.894m7.5 0a48.667 48.667 0 0 0-7.5 0M12 12.75h.008v.008H12v-.008Z"/>',
+                'settings'    => '<path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>',
+                'search'      => '<path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"/>',
+                'trash'       => '<path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>',
+                'pencil'      => '<path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125"/>',
+                'note'        => '<path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>',
+                'plus'        => '<path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>',
+                'save'        => '<path stroke-linecap="round" stroke-linejoin="round" d="M9 3.75H6.912a2.25 2.25 0 0 0-2.15 1.588L2.35 13.177a2.25 2.25 0 0 0-.1.661V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 0 0-2.15-1.588H15M2.25 13.5h3.86a2.25 2.25 0 0 1 2.012 1.244l.256.512a2.25 2.25 0 0 0 2.013 1.244h3.218a2.25 2.25 0 0 0 2.013-1.244l.256-.512a2.25 2.25 0 0 1 2.013-1.244h3.859M12 3v8.25m0 0-3-3m3 3 3-3"/>',
+                'check'       => '<path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/>',
+                'check-circle'=> '<path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>',
+                'x-circle'    => '<path stroke-linecap="round" stroke-linejoin="round" d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>',
+                'warning'     => '<path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>',
+                'chevron'     => '<path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/>',
+                'inbox'       => '<path stroke-linecap="round" stroke-linejoin="round" d="M2.25 13.5h3.86a2.25 2.25 0 0 1 2.012 1.244l.256.512a2.25 2.25 0 0 0 2.013 1.244h3.218a2.25 2.25 0 0 0 2.013-1.244l.256-.512a2.25 2.25 0 0 1 2.013-1.244h3.859m-19.5.338V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 0 0-2.15-1.588H6.911a2.25 2.25 0 0 0-2.15 1.588L2.35 13.177a2.25 2.25 0 0 0-.1.661Z"/>',
+                'toggle-on'   => '<path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z"/>',
+                'toggle-off'  => '<path stroke-linecap="round" stroke-linejoin="round" d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5m2.25-9.001A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z"/>',
+                'table'       => '<path stroke-linecap="round" stroke-linejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 0 1-1.125-1.125M3.375 19.5h1.5C5.496 19.5 6 18.996 6 18.375m-3.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-1.5A1.125 1.125 0 0 1 18 18.375m1.5-1.125H6m0 0c0 .621-.504 1.125-1.125 1.125M6 17.25V5.625m0 0c-.621 0-1.125.504-1.125 1.125m1.125-1.125H18m0 0c.621 0 1.125.504 1.125 1.125M18 5.625v12.75"/>',
+                'file'        => '<path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>',
+            ];
+        }
+        $path = $icons[ $name ] ?? '';
+        return sprintf(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="%1$d" height="%1$d" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="display:inline-block;vertical-align:middle;flex-shrink:0">%2$s</svg>',
+            $size,
+            $path
+        );
+    }
+
+    /**
      * Página de estructuras (admin).
      */
     public function render_page(): void {
@@ -744,32 +784,32 @@ class FairPlay_LMS_Structures_Controller {
 
         $tabs = [
             'city'    => [
-                'label'    => '📍 Ciudades',
-                'icon'     => '📍',
+                'label'    => 'Ciudades',
+                'icon'     => $this->fplms_svg( 'pin', 18 ),
                 'taxonomy' => FairPlay_LMS_Config::TAX_CITY,
                 'color'    => '#0073aa',
             ],
             'company' => [
-                'label'    => '🏢 Empresas',
-                'icon'     => '🏢',
+                'label'    => 'Empresas',
+                'icon'     => $this->fplms_svg( 'building', 18 ),
                 'taxonomy' => FairPlay_LMS_Config::TAX_COMPANY,
                 'color'    => '#9333ea',
             ],
             'channel' => [
-                'label'    => '🏪 Canales / Franquicias',
-                'icon'     => '🏪',
+                'label'    => 'Canales / Franquicias',
+                'icon'     => $this->fplms_svg( 'store', 18 ),
                 'taxonomy' => FairPlay_LMS_Config::TAX_CHANNEL,
                 'color'    => '#00a000',
             ],
             'branch'  => [
-                'label'    => '🏬 Sucursales',
-                'icon'     => '🏬',
+                'label'    => 'Sucursales',
+                'icon'     => $this->fplms_svg( 'branch', 18 ),
                 'taxonomy' => FairPlay_LMS_Config::TAX_BRANCH,
                 'color'    => '#ff6f00',
             ],
             'role'    => [
-                'label'    => '👔 Cargos',
-                'icon'     => '👔',
+                'label'    => 'Cargos',
+                'icon'     => $this->fplms_svg( 'briefcase', 18 ),
                 'taxonomy' => FairPlay_LMS_Config::TAX_ROLE,
                 'color'    => '#7c3aed',
             ],
@@ -800,9 +840,12 @@ class FairPlay_LMS_Structures_Controller {
                 border-bottom: 2px solid #f0f0f0;
             }
             .fplms-structures-icon {
-                font-size: 32px;
+                display: flex;
+                align-items: center;
                 flex-shrink: 0;
             }
+            .fplms-structures-icon svg { width: 32px; height: 32px; }
+            .fplms-tab-icon { display: inline-flex; align-items: center; }
             .fplms-structures-title {
                 margin: 0;
                 font-size: 24px;
@@ -975,7 +1018,9 @@ class FairPlay_LMS_Structures_Controller {
             
             /* BADGES */
             .fplms-status-badge {
-                display: inline-block;
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
                 padding: 4px 10px;
                 border-radius: 12px;
                 font-size: 12px;
@@ -1083,7 +1128,7 @@ class FairPlay_LMS_Structures_Controller {
         <div class="fplms-structures-wrapper">
             <div class="fplms-structures-container">
                 <div class="fplms-structures-header">
-                    <div class="fplms-structures-icon">⚙️</div>
+                    <div class="fplms-structures-icon"><?php echo $this->fplms_svg( 'settings', 32 ); ?></div>
                     <h1 class="fplms-structures-title">Gestión de Estructuras</h1>
                 </div>
                 <p class="fplms-structures-subtitle">
@@ -1102,8 +1147,9 @@ class FairPlay_LMS_Structures_Controller {
                     ?>
                     <div class="fplms-accordion-item">
                         <div class="fplms-accordion-header" data-tab="<?php echo esc_attr( $tab_key ); ?>" style="border-left: 5px solid <?php echo esc_attr( $tab_info['color'] ); ?>;">
-                            <span class="fplms-accordion-icon">▶</span>
+                            <span class="fplms-accordion-icon"><?php echo $this->fplms_svg( 'chevron', 14 ); ?></span>
                             <span class="fplms-accordion-title">
+                                <span class="fplms-tab-icon"><?php echo $tab_info['icon']; ?></span>
                                 <?php echo esc_html( $tab_info['label'] ); ?>
                                 <span class="fplms-accordion-count">( <?php echo count( is_wp_error( $terms ) ? [] : $terms ); ?> )</span>
                             </span>
@@ -1118,8 +1164,8 @@ class FairPlay_LMS_Structures_Controller {
                                         <input type="text" 
                                                id="fplms-search-<?php echo esc_attr( $tab_key ); ?>" 
                                                class="fplms-search-input" 
-                                               placeholder="🔍 Buscar por nombre..." 
-                                               onkeyup="fplmsFilterTable('<?php echo esc_attr( $tab_key ); ?>')">
+                                               placeholder="Buscar por nombre..." 
+                                               onkeyup="fplmsFilterTable('<?php echo esc_attr( $tab_key ); ?>')">  
                                     </div>
                                     
                                     <!-- Acciones masivas -->
@@ -1128,9 +1174,9 @@ class FairPlay_LMS_Structures_Controller {
                                         <span id="fplms-bulk-count-<?php echo esc_attr( $tab_key ); ?>">0 seleccionados</span>
                                         <select id="fplms-bulk-action-<?php echo esc_attr( $tab_key ); ?>" class="fplms-bulk-select">
                                             <option value="">-- Acciones masivas --</option>
-                                            <option value="deactivate">❌ Desactivar seleccionados</option>
-                                            <option value="activate">✅ Activar seleccionados</option>
-                                            <option value="delete">🗑️ Eliminar seleccionados</option>
+                                            <option value="deactivate">Desactivar seleccionados</option>
+                                            <option value="activate">Activar seleccionados</option>
+                                            <option value="delete">Eliminar seleccionados</option>
                                         </select>
                                         <button type="button" 
                                                 class="button fplms-bulk-apply-btn" 
@@ -1151,13 +1197,13 @@ class FairPlay_LMS_Structures_Controller {
                                             <button type="button" 
                                                     class="button fplms-export-btn" 
                                                     onclick="fplmsExportStructures('<?php echo esc_attr( $tab_key ); ?>', 'xls', 'all')">
-                                                📊 Exportar XLS (Todo)
+                                                <?php echo $this->fplms_svg( 'table' ); ?> Exportar XLS (Todo)
                                             </button>
                                             
                                             <button type="button" 
                                                     class="button fplms-export-btn" 
                                                     onclick="fplmsExportStructures('<?php echo esc_attr( $tab_key ); ?>', 'pdf', 'all')">
-                                                📄 Exportar PDF (Todo)
+                                                <?php echo $this->fplms_svg( 'file' ); ?> Exportar PDF (Todo)
                                             </button>
                                             
                                             <button type="button" 
@@ -1165,7 +1211,7 @@ class FairPlay_LMS_Structures_Controller {
                                                     id="fplms-export-selected-<?php echo esc_attr( $tab_key ); ?>" 
                                                     onclick="fplmsExportStructures('<?php echo esc_attr( $tab_key ); ?>', 'xls', 'selected')" 
                                                     style="display: none;">
-                                                ✓ Exportar Seleccionados
+                                                <?php echo $this->fplms_svg( 'check' ); ?> Exportar Seleccionados
                                             </button>
                                         </form>
                                     </div>
@@ -1185,10 +1231,10 @@ class FairPlay_LMS_Structures_Controller {
                                             <?php if ( 'city' !== $tab_key ) : ?>
                                                 <?php
                                                 $relation_labels = [
-                                                    'company' => '📍 Ciudades',
-                                                    'channel' => '🏢 Empresas',
-                                                    'branch'  => '🏪 Canales',
-                                                    'role'    => '🏬 Sucursales',
+                                                    'company' => 'Ciudades',
+                                                    'channel' => 'Empresas',
+                                                    'branch'  => 'Canales',
+                                                    'role'    => 'Sucursales',
                                                 ];
                                                 ?>
                                                 <th><?php echo esc_html( $relation_labels[ $tab_key ] ); ?></th>
@@ -1211,16 +1257,16 @@ class FairPlay_LMS_Structures_Controller {
                                             
                                             if ( 'company' === $tab_key ) {
                                                 $parent_ids   = $this->get_term_cities( $term->term_id );
-                                                $parent_label = '📍';
+                                                $parent_label = 'ciudad';
                                             } elseif ( 'channel' === $tab_key ) {
                                                 $parent_ids   = $this->get_term_companies( $term->term_id );
-                                                $parent_label = '🏢';
+                                                $parent_label = 'empresa';
                                             } elseif ( 'branch' === $tab_key ) {
                                                 $parent_ids   = $this->get_term_channels( $term->term_id );
-                                                $parent_label = '🏪';
+                                                $parent_label = 'canal';
                                             } elseif ( 'role' === $tab_key ) {
                                                 $parent_ids   = $this->get_term_branches( $term->term_id );
-                                                $parent_label = '🏬';
+                                                $parent_label = 'sucursal';
                                             }
                                             
                                             foreach ( $parent_ids as $parent_id ) {
@@ -1251,26 +1297,27 @@ class FairPlay_LMS_Structures_Controller {
                                                 <?php endif; ?>
                                                 <td>
                                                     <span class="fplms-status-badge <?php echo $active ? 'active' : 'inactive'; ?>">
-                                                        <?php echo $active ? '✓ Activo' : '✗ Inactivo'; ?>
+                                                        <?php echo $this->fplms_svg( $active ? 'check' : 'x-circle' ); ?>
+                                                        <?php echo $active ? 'Activo' : 'Inactivo'; ?>
                                                     </span>
                                                 </td>
                                                 <td class="fplms-table-actions">
                                                     <button type="button" class="fplms-btn fplms-btn-toggle" 
                                                         onclick="fplmsToggleStatus(<?php echo esc_attr( $term->term_id ); ?>, '<?php echo esc_js( $term->name ); ?>', '<?php echo esc_attr( $tab_info['taxonomy'] ); ?>', '<?php echo esc_attr( $tab_key ); ?>', <?php echo $active ? '1' : '0'; ?>)"
                                                         title="<?php echo $active ? 'Desactivar' : 'Activar'; ?>">
-                                                        <?php echo $active ? '⊙' : '○'; ?>
+                                                        <?php echo $this->fplms_svg( $active ? 'toggle-on' : 'toggle-off' ); ?>
                                                     </button>
                                                     
                                                     <button type="button" class="fplms-btn fplms-btn-edit" 
                                                         onclick="fplmsToggleTableEditRow(<?php echo esc_attr( $term->term_id ); ?>, '<?php echo esc_attr( $tab_key ); ?>')"
                                                         title="Editar">
-                                                        ✏️
+                                                        <?php echo $this->fplms_svg( 'pencil' ); ?>
                                                     </button>
                                                     
                                                     <button type="button" class="fplms-btn fplms-btn-delete" 
                                                         onclick="fplmsDeleteStructure(<?php echo esc_attr( $term->term_id ); ?>, '<?php echo esc_attr( $tab_info['taxonomy'] ); ?>', '<?php echo esc_attr( $tab_key ); ?>')"
                                                         title="Eliminar">
-                                                        🗑️
+                                                        <?php echo $this->fplms_svg( 'trash' ); ?>
                                                     </button>
                                                 </td>
                                             </tr>
@@ -1297,7 +1344,7 @@ class FairPlay_LMS_Structures_Controller {
                                                                 <!-- Campo Descripción en Edición -->
                                                                 <div class="fplms-edit-field">
                                                                     <label for="fplms_edit_description_<?php echo esc_attr( $term->term_id ); ?>">
-                                                                        📝 Descripción
+                                                                        <?php echo $this->fplms_svg( 'note' ); ?> Descripción
                                                                     </label>
                                                                     <?php 
                                                                     $current_description = get_term_meta( $term->term_id, FairPlay_LMS_Config::META_TERM_DESCRIPTION, true );
@@ -1316,9 +1363,9 @@ class FairPlay_LMS_Structures_Controller {
                                                                 
                                                                 <?php if ( 'company' === $tab_key ) : ?>
                                                                 <div class="fplms-edit-field fplms-parent-field">
-                                                                    <label>📍 Ciudades Relacionadas</label>
+                                                                    <label><?php echo $this->fplms_svg( 'pin' ); ?> Ciudades Relacionadas</label>
                                                                     <div class="fplms-parent-selector">
-                                                                        <input type="text" class="fplms-parent-search" placeholder="🔍 Buscar ciudad...">
+                                                                        <input type="text" class="fplms-parent-search" placeholder="Buscar ciudad...">
                                                                         <div class="fplms-parent-list">
                                                                             <?php
                                                                             $all_parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
@@ -1335,9 +1382,9 @@ class FairPlay_LMS_Structures_Controller {
                                                                 </div>
                                                                 <?php elseif ( 'channel' === $tab_key ) : ?>
                                                                 <div class="fplms-edit-field fplms-parent-field">
-                                                                    <label>🏢 Empresas Relacionadas</label>
+                                                                    <label><?php echo $this->fplms_svg( 'building' ); ?> Empresas Relacionadas</label>
                                                                     <div class="fplms-parent-selector">
-                                                                        <input type="text" class="fplms-parent-search" placeholder="🔍 Buscar empresa...">
+                                                                        <input type="text" class="fplms-parent-search" placeholder="Buscar empresa...">
                                                                         <div class="fplms-parent-list">
                                                                             <?php
                                                                             $all_parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_COMPANY );
@@ -1357,9 +1404,9 @@ class FairPlay_LMS_Structures_Controller {
                                                                 </div>
                                                                 <?php elseif ( 'branch' === $tab_key ) : ?>
                                                                 <div class="fplms-edit-field fplms-parent-field">
-                                                                    <label>🏪 Canales Relacionados</label>
+                                                                    <label><?php echo $this->fplms_svg( 'store' ); ?> Canales Relacionados</label>
                                                                     <div class="fplms-parent-selector">
-                                                                        <input type="text" class="fplms-parent-search" placeholder="🔍 Buscar canal...">
+                                                                        <input type="text" class="fplms-parent-search" placeholder="Buscar canal...">
                                                                         <div class="fplms-parent-list">
                                                                             <?php
                                                                             $all_parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
@@ -1379,9 +1426,9 @@ class FairPlay_LMS_Structures_Controller {
                                                                 </div>
                                                                 <?php elseif ( 'role' === $tab_key ) : ?>
                                                                 <div class="fplms-edit-field fplms-parent-field">
-                                                                    <label>🏢 Sucursales Relacionadas</label>
+                                                                    <label><?php echo $this->fplms_svg( 'branch' ); ?> Sucursales Relacionadas</label>
                                                                     <div class="fplms-parent-selector">
-                                                                        <input type="text" class="fplms-parent-search" placeholder="🔍 Buscar sucursal...">
+                                                                        <input type="text" class="fplms-parent-search" placeholder="Buscar sucursal...">
                                                                         <div class="fplms-parent-list">
                                                                             <?php
                                                                             $all_parents = $this->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH );
@@ -1400,7 +1447,7 @@ class FairPlay_LMS_Structures_Controller {
                                                             </div>
                                                             
                                                             <div class="fplms-edit-actions-row">
-                                                                <button type="button" class="button" onclick="fplmsToggleTableEditRow(<?php echo esc_attr( $term->term_id ); ?>, '<?php echo esc_attr( $tab_key ); ?>')">Cancelar</button>
+                                                                <button type="button" class="button" onclick="location.reload()">Cancelar</button>
                                                                 <button type="submit" class="button button-primary">Guardar Cambios</button>
                                                             </div>
                                                         </form>
@@ -1424,7 +1471,7 @@ class FairPlay_LMS_Structures_Controller {
                                                                 <!-- Campo Descripción en Edición de Ciudad -->
                                                                 <div class="fplms-edit-field">
                                                                     <label for="fplms_edit_description_<?php echo esc_attr( $term->term_id ); ?>">
-                                                                        📝 Descripción
+                                                                        <?php echo $this->fplms_svg( 'note' ); ?> Descripción
                                                                     </label>
                                                                     <?php 
                                                                     $current_description = get_term_meta( $term->term_id, FairPlay_LMS_Config::META_TERM_DESCRIPTION, true );
@@ -1443,7 +1490,7 @@ class FairPlay_LMS_Structures_Controller {
                                                             </div>
                                                             
                                                             <div class="fplms-edit-actions-row">
-                                                                <button type="button" class="button" onclick="fplmsToggleTableEditRow(<?php echo esc_attr( $term->term_id ); ?>, '<?php echo esc_attr( $tab_key ); ?>')">Cancelar</button>
+                                                                <button type="button" class="button" onclick="location.reload()">Cancelar</button>
                                                                 <button type="submit" class="button button-primary">Guardar Cambios</button>
                                                             </div>
                                                         </form>
@@ -1462,13 +1509,13 @@ class FairPlay_LMS_Structures_Controller {
                                 
                             <?php else : ?>
                                 <div class="fplms-empty-state">
-                                    <p>📭 No hay <?php echo esc_html( strtolower( $tab_info['label'] ) ); ?> creadas todavía.</p>
+                                    <p><?php echo $this->fplms_svg( 'inbox', 18 ); ?> No hay <?php echo esc_html( strtolower( $tab_info['label'] ) ); ?> creadas todavía.</p>
                                 </div>
                             <?php endif; ?>
                             
                             
                             <div class="fplms-new-item-form">
-                                <h4>➕ Crear nuevo elemento</h4>
+                                <h4><?php echo $this->fplms_svg( 'plus', 16 ); ?> Crear nuevo elemento</h4>
                                 <form method="post" class="fplms-inline-form">
                                     <?php wp_nonce_field( 'fplms_structures_save', 'fplms_structures_nonce' ); ?>
                                     <input type="hidden" name="fplms_structures_action" value="create">
@@ -1491,7 +1538,7 @@ class FairPlay_LMS_Structures_Controller {
                                         <!-- Campo Descripción -->
                                         <div class="fplms-description-field" style="margin-top: 10px;">
                                             <label for="fplms_description_<?php echo esc_attr( $tab_key ); ?>">
-                                                📝 Descripción (opcional)
+                                                <?php echo $this->fplms_svg( 'note' ); ?> Descripción (opcional)
                                             </label>
                                             <textarea 
                                                 id="fplms_description_<?php echo esc_attr( $tab_key ); ?>"
@@ -1508,11 +1555,11 @@ class FairPlay_LMS_Structures_Controller {
                                         <?php if ( 'city' !== $tab_key ) : ?>
                                             <?php if ( 'company' === $tab_key ) : ?>
                                             <div class="fplms-edit-field fplms-parent-field">
-                                                <label>📍 Ciudades Asociadas</label>
+                                                <label><?php echo $this->fplms_svg( 'pin' ); ?> Ciudades Asociadas</label>
                                                 <div class="fplms-parent-selector">
                                                     <input type="text" 
                                                            class="fplms-parent-search" 
-                                                           placeholder="🔍 Buscar ciudad...">
+                                                           placeholder="Buscar ciudad...">
                                                     
                                                     <div class="fplms-parent-list">
                                                         <?php 
@@ -1531,11 +1578,11 @@ class FairPlay_LMS_Structures_Controller {
                                             </div>
                                             <?php elseif ( 'channel' === $tab_key ) : ?>
                                             <div class="fplms-edit-field fplms-parent-field">
-                                                <label>🏢 Empresas Asociadas</label>
+                                                <label><?php echo $this->fplms_svg( 'building' ); ?> Empresas Asociadas</label>
                                                 <div class="fplms-parent-selector">
                                                     <input type="text" 
                                                            class="fplms-parent-search" 
-                                                           placeholder="🔍 Buscar empresa...">
+                                                           placeholder="Buscar empresa...">
                                                     
                                                     <div class="fplms-parent-list">
                                                         <?php 
@@ -1557,11 +1604,11 @@ class FairPlay_LMS_Structures_Controller {
                                             </div>
                                             <?php elseif ( 'branch' === $tab_key ) : ?>
                                             <div class="fplms-edit-field fplms-parent-field">
-                                                <label>🏪 Canales Asociados</label>
+                                                <label><?php echo $this->fplms_svg( 'store' ); ?> Canales Asociados</label>
                                                 <div class="fplms-parent-selector">
                                                     <input type="text" 
                                                            class="fplms-parent-search" 
-                                                           placeholder="🔍 Buscar canal...">
+                                                           placeholder="Buscar canal...">
                                                     
                                                     <div class="fplms-parent-list">
                                                         <?php 
@@ -1583,11 +1630,11 @@ class FairPlay_LMS_Structures_Controller {
                                             </div>
                                             <?php elseif ( 'role' === $tab_key ) : ?>
                                             <div class="fplms-edit-field fplms-parent-field">
-                                                <label>🏬 Sucursales Asociadas</label>
+                                                <label><?php echo $this->fplms_svg( 'branch' ); ?> Sucursales Asociadas</label>
                                                 <div class="fplms-parent-selector">
                                                     <input type="text" 
                                                            class="fplms-parent-search" 
-                                                           placeholder="🔍 Buscar sucursal...">
+                                                           placeholder="Buscar sucursal...">
                                                     
                                                     <div class="fplms-parent-list">
                                                         <?php 
@@ -1632,7 +1679,7 @@ class FairPlay_LMS_Structures_Controller {
             <div id="fplms-delete-modal" class="fplms-modal" style="display:none;">
                 <div class="fplms-modal-content" style="max-width: 400px;">
                     <div class="fplms-modal-header">
-                        <h3>🗑️ Confirmar Eliminación</h3>
+                        <h3><?php echo $this->fplms_svg( 'trash' ); ?> Confirmar Eliminación</h3>
                         <button class="fplms-modal-close" onclick="fplmsCloseDeleteModal()">✕</button>
                     </div>
                     <div class="fplms-modal-body">
@@ -1651,7 +1698,7 @@ class FairPlay_LMS_Structures_Controller {
             <div id="fplms-save-modal" class="fplms-modal" style="display:none;">
                 <div class="fplms-modal-content" style="max-width: 450px;">
                     <div class="fplms-modal-header">
-                        <h3>💾 Confirmar Cambios</h3>
+                        <h3><?php echo $this->fplms_svg( 'save' ); ?> Confirmar Cambios</h3>
                         <button class="fplms-modal-close" onclick="fplmsCloseSaveModal()">✕</button>
                     </div>
                     <div class="fplms-modal-body">
@@ -1673,7 +1720,7 @@ class FairPlay_LMS_Structures_Controller {
             <div id="fplms-toggle-modal" class="fplms-modal" style="display:none;">
                 <div class="fplms-modal-content" style="max-width: 450px;">
                     <div class="fplms-modal-header">
-                        <h3 id="fplms-toggle-modal-title">⊙ Cambiar Estado</h3>
+                        <h3 id="fplms-toggle-modal-title"><?php echo $this->fplms_svg( 'toggle-on' ); ?> Cambiar Estado</h3>
                         <button class="fplms-modal-close" onclick="fplmsCloseToggleModal()">✕</button>
                     </div>
                     <div class="fplms-modal-body">
@@ -1695,7 +1742,7 @@ class FairPlay_LMS_Structures_Controller {
             <div id="fplms-bulk-modal" class="fplms-modal" style="display:none;">
                 <div class="fplms-modal-content" style="max-width: 500px;">
                     <div class="fplms-modal-header">
-                        <h3 id="fplms-bulk-modal-title">⚠️ Confirmar Acción Masiva</h3>
+                        <h3 id="fplms-bulk-modal-title"><?php echo $this->fplms_svg( 'warning' ); ?> Confirmar Acción Masiva</h3>
                         <button class="fplms-modal-close" onclick="fplmsCloseBulkModal()">✕</button>
                     </div>
                     <div class="fplms-modal-body">
@@ -1705,7 +1752,7 @@ class FairPlay_LMS_Structures_Controller {
                             <p style="margin: 4px 0 0 0; color: #856404; font-size: 13px;" id="fplms_bulk_elements"></p>
                         </div>
                         <div id="fplms-bulk-delete-warning" style="display: none; background: #ffebee; padding: 12px; border-radius: 4px; border-left: 3px solid #d32f2f; margin: 12px 0;">
-                            <p style="margin: 0; color: #c62828; font-weight: 600;">⚠️ ADVERTENCIA: Esta acción es IRREVERSIBLE</p>
+                            <p style="margin: 0; color: #c62828; font-weight: 600;"><?php echo $this->fplms_svg( 'warning' ); ?> ADVERTENCIA: Esta acción es IRREVERSIBLE</p>
                             <p style="margin: 4px 0 0 0; color: #c62828; font-size: 13px;">Los elementos y sus relaciones se eliminarán permanentemente.</p>
                         </div>
                         <p style="color: #666; font-size: 12px; margin-bottom: 0;">Esta acción se registrará en la bitácora del sistema.</p>
@@ -1980,12 +2027,10 @@ class FairPlay_LMS_Structures_Controller {
             }
 
             .fplms-parent-list {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 8px;
-                max-height: 200px;
+                display: block;
+                max-height: 240px;
                 overflow-y: auto;
-                padding: 8px;
+                padding: 4px;
                 background: white;
                 border: 1px solid #ddd;
                 border-radius: 4px;
@@ -1996,13 +2041,39 @@ class FairPlay_LMS_Structures_Controller {
                 align-items: center;
                 gap: 6px;
                 padding: 6px 10px;
+                margin-bottom: 2px;
                 background: white;
                 border: 1px solid #ddd;
                 border-radius: 3px;
                 cursor: pointer;
                 font-size: 12px;
-                transition: all 0.2s ease;
-                white-space: nowrap;
+                transition: background 0.2s ease, border-color 0.2s ease;
+                white-space: normal;
+                width: 100%;
+                box-sizing: border-box;
+            }
+
+            .fplms-select-all-row {
+                padding: 4px 4px 6px;
+                border-bottom: 1px solid #e0e0e0;
+                margin-bottom: 4px;
+            }
+
+            .fplms-select-all-label {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 600;
+                color: #0073aa;
+                padding: 4px 6px;
+                border-radius: 3px;
+                user-select: none;
+            }
+
+            .fplms-select-all-label:hover {
+                background: #f0f7fc;
             }
 
             .fplms-parent-option:hover {
@@ -2102,9 +2173,9 @@ class FairPlay_LMS_Structures_Controller {
             }
 
             .fplms-accordion-icon {
-                display: inline-block;
+                display: inline-flex;
+                align-items: center;
                 transition: transform 0.3s ease;
-                font-size: 12px;
                 color: #666;
             }
 
@@ -2564,6 +2635,14 @@ class FairPlay_LMS_Structures_Controller {
             </style>
 
             <script>
+            var FPLMS_SVG_TRASH     = <?php echo wp_json_encode( $this->fplms_svg( 'trash', 16 ) ); ?>;
+            var FPLMS_SVG_XCIRCLE   = <?php echo wp_json_encode( $this->fplms_svg( 'x-circle', 16 ) ); ?>;
+            var FPLMS_SVG_CHKCIRCLE = <?php echo wp_json_encode( $this->fplms_svg( 'check-circle', 16 ) ); ?>;
+            var FPLMS_SVG_WARNING   = <?php echo wp_json_encode( $this->fplms_svg( 'warning', 16 ) ); ?>;
+            var FPLMS_SVG_CHECK     = <?php echo wp_json_encode( $this->fplms_svg( 'check', 16 ) ); ?>;
+            var FPLMS_SVG_CHECK_LG  = <?php echo wp_json_encode( $this->fplms_svg( 'check', 32 ) ); ?>;
+            var FPLMS_SVG_TOGGLE_ON  = <?php echo wp_json_encode( $this->fplms_svg( 'toggle-on', 16 ) ); ?>;
+            var FPLMS_SVG_TOGGLE_OFF = <?php echo wp_json_encode( $this->fplms_svg( 'toggle-off', 16 ) ); ?>;
             // Manejo del Acordeón
             document.addEventListener('DOMContentLoaded', function() {
                 const headers = document.querySelectorAll('.fplms-accordion-header');
@@ -2753,9 +2832,8 @@ class FairPlay_LMS_Structures_Controller {
                 const isActive = currentStatus === 1 || currentStatus === '1';
                 const newStatus = isActive ? 'Inactivo' : 'Activo';
                 const action = isActive ? 'desactivar' : 'activar';
-                const emoji = isActive ? '○' : '⊙';
-                
-                document.getElementById('fplms-toggle-modal-title').textContent = emoji + ' ' + (isActive ? 'Desactivar' : 'Activar') + ' Elemento';
+
+                document.getElementById('fplms-toggle-modal-title').innerHTML = (isActive ? FPLMS_SVG_TOGGLE_ON : FPLMS_SVG_TOGGLE_OFF) + ' ' + (isActive ? 'Desactivar' : 'Activar') + ' Elemento';
                 document.getElementById('fplms-toggle-modal-question').textContent = `¿Estás seguro de que deseas ${action} este elemento?`;
                 document.getElementById('fplms_toggle_name').textContent = `"${termName}"`;
                 document.getElementById('fplms_toggle_status').textContent = `Estado actual: ${isActive ? 'Activo' : 'Inactivo'} → Cambiar a: ${newStatus}`;
@@ -2846,19 +2924,19 @@ class FairPlay_LMS_Structures_Controller {
                 let btnColor = '';
                 
                 if (action === 'delete') {
-                    modalTitle.textContent = '🗑️ Eliminar Elementos';
+                    modalTitle.innerHTML = FPLMS_SVG_TRASH + ' Eliminar Elementos';
                     actionLabel = 'Eliminar ' + termIds.length + ' elemento' + (termIds.length > 1 ? 's' : '');
                     questionText = '¿Estás seguro de que deseas ELIMINAR estos elementos?';
                     btnColor = '#d32f2f';
                     deleteWarning.style.display = 'block';
                 } else if (action === 'deactivate') {
-                    modalTitle.textContent = '❌ Desactivar Elementos';
+                    modalTitle.innerHTML = FPLMS_SVG_XCIRCLE + ' Desactivar Elementos';
                     actionLabel = 'Desactivar ' + termIds.length + ' elemento' + (termIds.length > 1 ? 's' : '');
                     questionText = '¿Estás seguro de que deseas DESACTIVAR estos elementos?';
                     btnColor = '#ff9800';
                     deleteWarning.style.display = 'none';
                 } else if (action === 'activate') {
-                    modalTitle.textContent = '✅ Activar Elementos';
+                    modalTitle.innerHTML = FPLMS_SVG_CHKCIRCLE + ' Activar Elementos';
                     actionLabel = 'Activar ' + termIds.length + ' elemento' + (termIds.length > 1 ? 's' : '');
                     questionText = '¿Estás seguro de que deseas ACTIVAR estos elementos?';
                     btnColor = '#4caf50';
@@ -3083,6 +3161,63 @@ class FairPlay_LMS_Structures_Controller {
             }
 
             /**
+             * Activa o desactiva todos los checkboxes del selector padre
+             */
+            function fplmsToggleAllParents(selectAllCb) {
+                var parentSelector = selectAllCb.closest('.fplms-parent-selector');
+                if (!parentSelector) return;
+                var parentList = parentSelector.querySelector('.fplms-parent-list');
+                if (!parentList) return;
+                var checkboxes = parentList.querySelectorAll('.fplms-parent-option input[type="checkbox"]');
+                checkboxes.forEach(function(cb) {
+                    cb.checked = selectAllCb.checked;
+                });
+            }
+
+            /**
+             * Inserta el control "Seleccionar todos" en cada selector de padres
+             * y mantiene su estado sincronizado con los checks individuales
+             */
+            document.addEventListener('DOMContentLoaded', function() {
+                document.querySelectorAll('.fplms-parent-selector').forEach(function(selector) {
+                    var parentList = selector.querySelector('.fplms-parent-list');
+                    if (!parentList) return;
+                    var totalCbs = parentList.querySelectorAll('.fplms-parent-option input[type="checkbox"]');
+                    if (totalCbs.length === 0) return;
+
+                    var selectAllRow = document.createElement('div');
+                    selectAllRow.className = 'fplms-select-all-row';
+                    selectAllRow.innerHTML =
+                        '<label class="fplms-select-all-label">'
+                        + '<input type="checkbox" class="fplms-select-all-cb" onchange="fplmsToggleAllParents(this)">'
+                        + '<span>Seleccionar todos</span>'
+                        + '</label>';
+                    selector.insertBefore(selectAllRow, parentList);
+
+                    // Estado inicial
+                    var selectAllCb = selectAllRow.querySelector('.fplms-select-all-cb');
+                    var allChecked = Array.from(totalCbs).every(function(cb) { return cb.checked; });
+                    var anyChecked = Array.from(totalCbs).some(function(cb) { return cb.checked; });
+                    selectAllCb.checked = allChecked;
+                    selectAllCb.indeterminate = !allChecked && anyChecked;
+                });
+
+                // Sincronizar "Seleccionar todos" cuando cambia un item individual
+                document.addEventListener('change', function(e) {
+                    if (!e.target.matches('.fplms-parent-option input[type="checkbox"]')) return;
+                    var parentSelector = e.target.closest('.fplms-parent-selector');
+                    if (!parentSelector) return;
+                    var allCbs = parentSelector.querySelectorAll('.fplms-parent-list .fplms-parent-option input[type="checkbox"]');
+                    var selectAllCb = parentSelector.querySelector('.fplms-select-all-cb');
+                    if (!selectAllCb) return;
+                    var allChecked = Array.from(allCbs).every(function(cb) { return cb.checked; });
+                    var anyChecked = Array.from(allCbs).some(function(cb) { return cb.checked; });
+                    selectAllCb.checked = allChecked;
+                    selectAllCb.indeterminate = !allChecked && anyChecked;
+                });
+            });
+
+            /**
              * Envía el formulario de edición inline - MUESTRA MODAL DE CONFIRMACIÓN
              */
             function fplmsSubmitEdit(event, form) {
@@ -3140,7 +3275,7 @@ class FairPlay_LMS_Structures_Controller {
                 const noticeHTML = `
                     <div class="fplms-success-notice">
                         <div class="fplms-notice-content">
-                            <span class="fplms-notice-icon">✓</span>
+                            ${FPLMS_SVG_CHECK}
                             <span class="fplms-notice-text">${message}</span>
                             <button type="button" class="fplms-notice-close" onclick="fplmsCloseNotice(this.closest('.fplms-success-notice'))">×</button>
                         </div>
@@ -3175,7 +3310,7 @@ class FairPlay_LMS_Structures_Controller {
                 const noticeHTML = `
                     <div class="fplms-error-notice">
                         <div class="fplms-notice-content">
-                            <span class="fplms-notice-icon">⚠</span>
+                            ${FPLMS_SVG_WARNING}
                             <span class="fplms-notice-text">${message}</span>
                             <button type="button" class="fplms-notice-close" onclick="fplmsCloseNotice(this.closest('.fplms-error-notice'))">×</button>
                         </div>
@@ -3239,7 +3374,7 @@ class FairPlay_LMS_Structures_Controller {
                         <div class="fplms-modal-content" style="max-width: 500px; text-align: center;">
                             <div class="fplms-modal-header" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white;">
                                 <h3 style="margin: 0; display: flex; align-items: center; justify-content: center; gap: 10px;">
-                                    <span style="font-size: 32px;">✓</span>
+                                    ${FPLMS_SVG_CHECK_LG}
                                     <span>¡Operación Exitosa!</span>
                                 </h3>
                             </div>
@@ -3600,8 +3735,8 @@ class FairPlay_LMS_Structures_Controller {
                         }
                     });
                     
-                    // Mostrar esta fila
-                    editRow.style.display = '';
+                    // Mostrar esta fila (usar valor explícito para que el toggle detecte correctamente)
+                    editRow.style.display = 'table-row';
                 } else {
                     editRow.style.display = 'none';
                 }

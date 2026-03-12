@@ -120,6 +120,19 @@ class FairPlay_LMS_Plugin {
         // Matriz de privilegios
         add_action( 'admin_init', [ $this->users, 'handle_caps_matrix_form' ] );
 
+        // Interceptar el AJAX de MasterStudy ANTES de que lo procese (prioridad 0)
+        // para bloquear usuarios inactivos con mensaje personalizado en el formato nativo de Vue.
+        add_action( 'wp_ajax_nopriv_stm_lms_login', [ $this->users, 'intercept_masterstudy_login' ], 0 );
+
+        // Bloquear inicio de sesión de usuarios inactivos (prioridad 30, después de validar credenciales)
+        add_filter( 'authenticate', [ $this->users, 'block_inactive_user_login' ], 30, 1 );
+
+        // AJAX (sin sesión): verificar si el último login falló por cuenta inactiva
+        add_action( 'wp_ajax_nopriv_fplms_check_blocked', [ $this->users, 'ajax_check_blocked' ] );
+
+        // Inyectar script de reemplazo de mensaje en formularios de login del frontend
+        add_action( 'wp_footer', [ $this, 'inject_inactive_login_message_script' ] );
+
         // Registrar último login de usuario
         add_action( 'wp_login', [ $this->users, 'record_user_login' ], 10, 2 );
 
@@ -138,6 +151,12 @@ class FairPlay_LMS_Plugin {
         // Filtrado de cursos por visibilidad de estructura
         add_filter( 'stm_lms_get_user_courses', [ $this->visibility, 'filter_courses_array' ], 10, 1 );
         add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
+
+        // Filtrado de cursos por estructura en pre_get_posts (frontend + admin instructores)
+        add_action( 'pre_get_posts', [ $this, 'filter_courses_pre_get_posts' ] );
+
+        // Auto-asignar estructura del instructor al crear un curso nuevo
+        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this, 'auto_assign_instructor_structure_to_course' ], 1, 3 );
 
         // Visualización de cursos en frontend (estructuras, ocultar ratings/estudiantes)
         $this->course_display->register_hooks();
@@ -197,6 +216,110 @@ class FairPlay_LMS_Plugin {
     }
 
     /**
+     * Inyecta un MutationObserver que, cuando Vue muestra cualquier mensaje de error
+     * de login, consulta via AJAX si el fallo fue por cuenta inactiva y reemplaza el
+     * texto. Usa transients (BD) en lugar de cookies para evitar el stripping de
+     * headers por proxies/CDN/caching plugins.
+     */
+    public function inject_inactive_login_message_script(): void {
+        if ( is_user_logged_in() ) {
+            return;
+        }
+        $ajax_url = esc_js( admin_url( 'admin-ajax.php' ) );
+        ?>
+        <script>
+        (function() {
+            var MSG      = 'Usuario no habilitado, cont\u00e1ctate con el administrador del sitio.';
+            var AJAX_URL = '<?php echo $ajax_url; ?>';
+
+            // Selector exacto confirmado por inspecci\u00f3n DOM (MasterStudy 3.x):
+            // <span data-error-id="wrong_password"
+            //       class="masterstudy-authorization__form-field-error">Wrong password</span>
+            var ERROR_SELS = [
+                '.masterstudy-authorization__form-field-error',
+                '[data-error-id]',
+                '.stm-lms-login__error',
+                '.stm-lms-form__error'
+            ];
+
+            // Busca el campo de email/usuario dentro del formulario de login
+            function getLoginEmail() {
+                var form = document.querySelector(
+                    '.masterstudy-authorization__form, form[class*="authorization"], form[class*="login"]'
+                );
+                var root = form || document;
+                var el = root.querySelector(
+                    'input[type="email"], input[name="user_login"], input[name="log"], ' +
+                    'input[name="email"], input[type="text"]'
+                );
+                return el ? el.value.trim() : '';
+            }
+
+            // ¿Algún selector de error tiene texto visible ahora?
+            function hasVisibleError() {
+                return ERROR_SELS.some(function(s) {
+                    var els = document.querySelectorAll(s);
+                    for (var i = 0; i < els.length; i++) {
+                        if (els[i].textContent.trim()) return true;
+                    }
+                    return false;
+                });
+            }
+
+            // Reemplaza el texto en todos los elementos de error visibles
+            function replaceErrorText() {
+                ERROR_SELS.forEach(function(s) {
+                    document.querySelectorAll(s).forEach(function(el) {
+                        if (el.textContent.trim()) el.textContent = MSG;
+                    });
+                });
+                clearInterval(pollTimer);
+                observer.disconnect();
+            }
+
+            var checking = false;
+
+            function checkAndReplace() {
+                if (checking) return;
+                if (!hasVisibleError()) return;
+                checking = true;
+                var fd = new FormData();
+                fd.append('action', 'fplms_check_blocked');
+                fetch(AJAX_URL, { method: 'POST', body: fd })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data && data.success && data.data && data.data.blocked) {
+                            replaceErrorText();
+                        }
+                    })
+                    .catch(function() {})
+                setTimeout(function() { checking = false; }, 2000);
+            }
+
+            // Polling: dispara checkAndReplace cada 600 ms hasta que reemplace o pase 30 s
+            var pollTimer = setInterval(checkAndReplace, 600);
+            setTimeout(function() { clearInterval(pollTimer); }, 30000);
+
+            // MutationObserver simplificado: cualquier mutación DOM puede ser relevante
+            var observer = new MutationObserver(function() {
+                checkAndReplace();
+            });
+
+            function startObserver() {
+                observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', startObserver);
+            } else {
+                startObserver();
+            }
+        })();
+        </script>
+        <?php
+    }
+
+    /**
      * Encola el script del heartbeat para rastrear actividad de usuarios.
      */
     public function enqueue_heartbeat_script(): void {
@@ -253,6 +376,82 @@ class FairPlay_LMS_Plugin {
         }
 
         return $query_args;
+    }
+
+    /**
+     * Filtra cursos por estructura del usuario vía pre_get_posts.
+     * - Frontend: aplica a todos los usuarios no administradores.
+     * - Admin: aplica solo a instructores.
+     */
+    public function filter_courses_pre_get_posts( WP_Query $query ): void {
+
+        if ( ! $query->is_main_query() ) {
+            return;
+        }
+
+        if ( $query->get( 'post_type' ) !== FairPlay_LMS_Config::MS_PT_COURSE ) {
+            return;
+        }
+
+        $user_id = get_current_user_id();
+
+        if ( 0 === $user_id || current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        // En admin, solo aplicar a instructores
+        if ( is_admin() ) {
+            $user = wp_get_current_user();
+            if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $user->roles, true ) ) {
+                return;
+            }
+        }
+
+        $visible = $this->visibility->get_visible_courses_for_user( $user_id );
+        $query->set( 'post__in', ! empty( $visible ) ? $visible : [ 0 ] );
+    }
+
+    /**
+     * Auto-asigna la estructura del instructor al crear un nuevo curso.
+     * Solo actúa en la creación (no en actualizaciones) y solo para instructores.
+     *
+     * @param int     $post_id ID del post.
+     * @param WP_Post $post    Objeto post.
+     * @param bool    $update  True si es una actualización, false si es creación.
+     */
+    public function auto_assign_instructor_structure_to_course( int $post_id, WP_Post $post, bool $update ): void {
+
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+            return;
+        }
+
+        if ( $update ) {
+            return; // Solo en creación
+        }
+
+        if ( current_user_can( 'manage_options' ) ) {
+            return; // Los administradores asignan estructuras manualmente
+        }
+
+        $current_user = wp_get_current_user();
+
+        if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $current_user->roles, true ) ) {
+            return;
+        }
+
+        $meta_map = [
+            FairPlay_LMS_Config::META_COURSE_CITIES    => FairPlay_LMS_Config::USER_META_CITY,
+            FairPlay_LMS_Config::META_COURSE_COMPANIES => FairPlay_LMS_Config::USER_META_COMPANY,
+            FairPlay_LMS_Config::META_COURSE_CHANNELS  => FairPlay_LMS_Config::USER_META_CHANNEL,
+            FairPlay_LMS_Config::META_COURSE_BRANCHES  => FairPlay_LMS_Config::USER_META_BRANCH,
+        ];
+
+        foreach ( $meta_map as $course_meta => $user_meta ) {
+            $val = (int) get_user_meta( $current_user->ID, $user_meta, true );
+            if ( $val > 0 ) {
+                update_post_meta( $post_id, $course_meta, [ $val ] );
+            }
+        }
     }
 
     /**

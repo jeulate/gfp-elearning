@@ -155,6 +155,117 @@ class FairPlay_LMS_Users_Controller {
      * @param string $user_login Nombre de usuario que inició sesión
      * @param WP_User $user Objeto del usuario
      */
+    /**
+     * Bloquea el inicio de sesión de usuarios marcados como inactivos en FairPlay LMS.
+     * Se engancha en 'authenticate' (prioridad 30) para ejecutarse después de que
+     * WordPress haya validado las credenciales.
+     *
+     * @param WP_User|WP_Error|null $user  Resultado de la autenticación de WordPress.
+     * @return WP_User|WP_Error
+     */
+    /**
+     * Intercepta el AJAX de login propio de MasterStudy (stm_lms_login) en prioridad 0,
+     * ANTES de que MasterStudy procese la petición. Si el usuario existe y está inactivo,
+     * devuelve el error en el formato JSON exacto de MasterStudy para que Vue lo muestre
+     * directamente, sin necesidad de JS/transients adicionales.
+     */
+    public function intercept_masterstudy_login(): void {
+        // MasterStudy puede enviar el campo como 'user_login', 'email' o 'log'
+        $raw_login = '';
+        foreach ( [ 'user_login', 'email', 'log' ] as $field ) {
+            if ( ! empty( $_POST[ $field ] ) ) {
+                $raw_login = sanitize_text_field( wp_unslash( $_POST[ $field ] ) );
+                break;
+            }
+        }
+
+        if ( empty( $raw_login ) ) {
+            return; // Sin credenciales: dejar que MasterStudy lo maneje
+        }
+
+        $user = get_user_by( 'login', $raw_login );
+        if ( ! $user ) {
+            $user = get_user_by( 'email', $raw_login );
+        }
+        if ( ! $user ) {
+            return; // Usuario no existe: dejar que MasterStudy devuelva su propio error
+        }
+
+        // Los administradores nunca quedan bloqueados.
+        if ( in_array( 'administrator', (array) $user->roles, true ) ) {
+            return;
+        }
+
+        $status = get_user_meta( $user->ID, 'fplms_user_status', true );
+        if ( ! empty( $status ) && $status === 'inactive' ) {
+            // Respuesta en el formato exacto de MasterStudy: Vue la muestra de forma nativa
+            wp_send_json( [
+                'status' => 'error',
+                'errors' => [
+                    [
+                        'id'    => 'wrong_password',
+                        'field' => 'user_password',
+                        'text'  => 'Usuario no habilitado, contáctate con el administrador del sitio.',
+                    ],
+                ],
+            ] );
+        }
+        // Usuario activo: retornamos sin hacer nada → MasterStudy continúa normalmente
+    }
+
+    public function block_inactive_user_login( $user ) {
+        // Si ya hay un error o no hay usuario, dejarlo pasar sin modificar.
+        if ( ! ( $user instanceof WP_User ) ) {
+            return $user;
+        }
+
+        // Los administradores nunca quedan bloqueados.
+        if ( in_array( 'administrator', (array) $user->roles, true ) ) {
+            return $user;
+        }
+
+        $status = get_user_meta( $user->ID, 'fplms_user_status', true );
+
+        // Un valor vacío significa que nunca se asignó estado → se considera activo.
+        if ( ! empty( $status ) && $status === 'inactive' ) {
+            // Guardar flag en transient (BD) para que el JS frontend pueda verificarlo.
+            // Clave basada en la IP del cliente: la misma en esta request (authenticate)
+            // y en la siguiente (AJAX check), independientemente del valor del formulario.
+            set_transient( 'fplms_blocked_' . md5( $this->get_client_ip() ), 1, 30 );
+
+            return new WP_Error(
+                'fplms_user_inactive',
+                __( 'Tu cuenta ha sido desactivada. Contacta al administrador para reactivarla.', 'fairplay-lms' )
+            );
+        }
+
+        return $user;
+    }
+
+    /** Obtiene la IP real del cliente respetando Cloudflare y proxies comunes. */
+    private function get_client_ip(): string {
+        foreach ( [ 'HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'REMOTE_ADDR' ] as $key ) {
+            if ( ! empty( $_SERVER[ $key ] ) ) {
+                // X_FORWARDED_FOR puede contener lista; tomamos la primera IP
+                return sanitize_text_field( strtok( $_SERVER[ $key ], ',' ) );
+            }
+        }
+        return 'unknown';
+    }
+
+    /**
+     * AJAX (nopriv): comprueba si el último intento de login desde esta IP falló
+     * porque la cuenta estaba inactiva. Consume el transient (uso único).
+     */
+    public function ajax_check_blocked(): void {
+        $key     = 'fplms_blocked_' . md5( $this->get_client_ip() );
+        $blocked = (bool) get_transient( $key );
+        if ( $blocked ) {
+            delete_transient( $key );
+        }
+        wp_send_json_success( [ 'blocked' => $blocked ] );
+    }
+
     public function record_user_login( string $user_login, $user ): void {
         if ( ! function_exists('update_user_meta') || ! function_exists('current_time') ) {
             return; // Solo ejecutar en entorno WordPress
@@ -351,6 +462,12 @@ class FairPlay_LMS_Users_Controller {
         // Si se solicita edición de un usuario específico, mostrar formulario de edición
         if ( isset( $_GET['action'] ) && 'edit' === $_GET['action'] && isset( $_GET['user_id'] ) ) {
             $this->render_edit_user_form( absint( $_GET['user_id'] ) );
+            return;
+        }
+
+        // Se solicita vista de información del usuario (solo lectura)
+        if ( isset( $_GET['action'] ) && 'view' === $_GET['action'] && isset( $_GET['user_id'] ) ) {
+            $this->render_view_user( absint( $_GET['user_id'] ) );
             return;
         }
 
@@ -1426,8 +1543,8 @@ class FairPlay_LMS_Users_Controller {
                     font-weight: 600;
                     text-transform: uppercase;
                     letter-spacing: .5px;
-                    color: #6b7280;
-                    background: #f9fafb;
+                    color: #ffffff;
+                    background: #55585b;
                     border-bottom: 1px solid #e5e7eb;
                     white-space: nowrap;
                 }
@@ -1495,6 +1612,7 @@ class FairPlay_LMS_Users_Controller {
                 .fplms-action-icon-btn.delete:hover svg    { fill: #dc2626; }
                 .fplms-action-icon-btn.activate:hover svg  { fill: #059669; }
                 .fplms-action-icon-btn.deactivate:hover svg { fill: #d97706; }
+                .fplms-action-icon-btn.view:hover svg        { fill: #7c3aed; }
 
                 /* ── Checkbox ── */
                 .checkbox-input { width: 16px; height: 16px; cursor: pointer; accent-color: #667eea; }
@@ -1623,8 +1741,8 @@ class FairPlay_LMS_Users_Controller {
                     font-weight: 600;
                     text-transform: uppercase;
                     letter-spacing: .5px;
-                    color: #6b7280;
-                    background: #f9fafb;
+                    color: #ffffff;
+                    background: #55585b;
                     border-bottom: 1px solid #e5e7eb;
                     white-space: nowrap;
                 }
@@ -1905,6 +2023,10 @@ class FairPlay_LMS_Users_Controller {
                                 </td>
                                 <td class="actions-cell">
                                     <div class="fplms-direct-actions">
+                                        <a href="<?php echo esc_url( add_query_arg( [ 'action' => 'view', 'user_id' => $user->ID ], admin_url( 'admin.php?page=fplms-users' ) ) ); ?>"
+                                           class="fplms-action-icon-btn view" title="Ver información del usuario">
+                                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                                        </a>
                                         <a href="<?php echo esc_url( add_query_arg( [ 'action' => 'edit', 'user_id' => $user->ID ], admin_url( 'admin.php?page=fplms-users' ) ) ); ?>"
                                            class="fplms-action-icon-btn edit" title="Editar usuario">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
@@ -2123,9 +2245,10 @@ class FairPlay_LMS_Users_Controller {
                                 'invalid_id_usuario'  => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
                                 'id_usuario_exists'   => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
                                 'user_exists'         => 'Error al crear el usuario. Verifica que el nombre de usuario o correo no existan.',
+                                'structure_required'  => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
                             ];
                             
-                            echo isset( $error_messages[ $error_msg ] ) ? esc_html( $error_messages[ $error_msg ] ) : 'Error al crear el usuario.';
+                            echo isset( $error_messages[ $error_msg ] ) ? esc_html( $error_messages[ $error_msg ] ) : 'Error al crear el usuario';
                             ?>
                         </p>
                     </div>
@@ -2231,7 +2354,7 @@ class FairPlay_LMS_Users_Controller {
                                 <div class="fplms-card-body">
                                     <div class="fplms-form-row">
                                         <div class="fplms-form-group">
-                                            <label for="fplms_city">Ciudad</label>
+                                            <label for="fplms_city">Ciudad <span class="required structure-req-badge" style="display:none;">*</span></label>
                                             <select name="fplms_city" id="fplms_city">
                                                 <option value="">— Sin asignar —</option>
                                                 <?php foreach ( $cities as $id => $name ) : ?>
@@ -2240,22 +2363,22 @@ class FairPlay_LMS_Users_Controller {
                                             </select>
                                         </div>
                                         <div class="fplms-form-group">
-                                            <label for="fplms_company">Empresa</label>
+                                            <label for="fplms_company">Empresa <span class="required structure-req-badge" style="display:none;">*</span></label>
                                             <select name="fplms_company" id="fplms_company"><option value="">— Sin asignar —</option></select>
                                         </div>
                                     </div>
                                     <div class="fplms-form-row">
                                         <div class="fplms-form-group">
-                                            <label for="fplms_channel">Canal / Franquicia</label>
+                                            <label for="fplms_channel">Canal / Franquicia <span class="required structure-req-badge" style="display:none;">*</span></label>
                                             <select name="fplms_channel" id="fplms_channel"><option value="">— Sin asignar —</option></select>
                                         </div>
                                         <div class="fplms-form-group">
-                                            <label for="fplms_branch">Sucursal</label>
+                                            <label for="fplms_branch">Sucursal <span class="required structure-req-badge" style="display:none;">*</span></label>
                                             <select name="fplms_branch" id="fplms_branch"><option value="">— Sin asignar —</option></select>
                                         </div>
                                     </div>
                                     <div class="fplms-form-group">
-                                        <label for="fplms_job_role">Cargo</label>
+                                        <label for="fplms_job_role">Cargo <span class="required structure-req-badge" style="display:none;">*</span></label>
                                         <select name="fplms_job_role" id="fplms_job_role"><option value="">— Sin asignar —</option></select>
                                     </div>
                                 </div>
@@ -2721,7 +2844,7 @@ class FairPlay_LMS_Users_Controller {
                         const nonceInput = document.createElement('input');
                         nonceInput.type = 'hidden';
                         nonceInput.name = 'fplms_bulk_users_nonce';
-                        nonceInput.value = '<?php echo wp_create_nonce( 'fplms_bulk_users' ); ?>';
+                        nonceInput.value = '<?php echo wp_create_nonce( 'fplms_bulk_users_action' ); ?>';
                         form.appendChild(nonceInput);
 
                         // Agregar acción
@@ -2813,6 +2936,39 @@ class FairPlay_LMS_Users_Controller {
                     // INICIALIZAR TABLA AL CARGAR
                     if (document.querySelector('.fplms-users-table')) {
                         initUserTable();
+                    }
+
+                    // Mostrar/ocultar indicador * requerido en estructura según el rol
+                    const roleSelectInline = document.getElementById('fplms_user_role');
+                    if (roleSelectInline) {
+                        function syncCreateStructureBadges() {
+                            var isAdmin = roleSelectInline.value === 'administrator';
+                            document.querySelectorAll('#crear-usuario .structure-req-badge').forEach(function(el) {
+                                el.style.display = isAdmin ? 'none' : 'inline';
+                            });
+                        }
+                        roleSelectInline.addEventListener('change', syncCreateStructureBadges);
+                        syncCreateStructureBadges();
+                    }
+
+                    // Validar estructura antes de enviar formulario de creación
+                    const createUserForm = document.getElementById('form-crear-usuario');
+                    if (createUserForm) {
+                        createUserForm.addEventListener('submit', function(e) {
+                            var role = document.getElementById('fplms_user_role').value;
+                            if (role && role !== 'administrator') {
+                                var city    = document.getElementById('fplms_city').value;
+                                var company = document.getElementById('fplms_company').value;
+                                var channel = document.getElementById('fplms_channel').value;
+                                var branch  = document.getElementById('fplms_branch').value;
+                                var jobRole = document.getElementById('fplms_job_role').value;
+                                if (!city || !company || !channel || !branch || !jobRole) {
+                                    e.preventDefault();
+                                    alert('Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.');
+                                    return false;
+                                }
+                            }
+                        });
                     }
                 });
 
@@ -3164,7 +3320,20 @@ class FairPlay_LMS_Users_Controller {
         $channels  = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CHANNEL );
         $branches  = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_BRANCH );
         $job_roles = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_ROLE );
-        
+
+        // Nombres de estructura para data-orig del modal de confirmación
+        $city_name_orig        = $city_id    && isset( $cities[ $city_id ] )           ? $cities[ $city_id ]           : '—';
+        $company_name_orig     = $company_id && isset( $companies[ $company_id ] )     ? $companies[ $company_id ]     : '—';
+        $channel_name_orig     = $channel_id && isset( $channels[ $channel_id ] )      ? $channels[ $channel_id ]      : '—';
+        $branch_name_orig      = $branch_id  && isset( $branches[ $branch_id ] )       ? $branches[ $branch_id ]       : '—';
+        $role_struct_name_orig = $role_id    && isset( $job_roles[ $role_id ] )        ? $job_roles[ $role_id ]        : '—';
+        $roles_display_map = [
+            'subscriber'                            => 'Estudiante',
+            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Docente',
+            'administrator'                         => 'Administrador',
+        ];
+        $role_display_orig = $roles_display_map[ $user_role ] ?? ucfirst( $user_role );
+
         // Roles disponibles
         $roles_def_labels = [
             'subscriber'                                  => 'Estudiante',
@@ -3230,8 +3399,9 @@ class FairPlay_LMS_Users_Controller {
                             'incomplete_data'     => 'Datos incompletos. Verifica que llenes todos los campos requeridos.',
                             'invalid_id_usuario'  => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
                             'id_usuario_exists'   => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
+                            'structure_required'  => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
                         ];
-                        echo isset( $error_messages[ $error_msg ] ) ? esc_html( $error_messages[ $error_msg ] ) : 'Error al actualizar el usuario.';
+                        echo isset( $error_messages[ $error_msg ] ) ? esc_html( $error_messages[ $error_msg ] ) : 'Error al actualizar el usuario';
                         ?>
                     </p>
                 </div>
@@ -3486,7 +3656,24 @@ class FairPlay_LMS_Users_Controller {
             </style>
             
             <div class="fplms-edit-user-container">
-                <form method="post" id="fplms-edit-user-form" enctype="multipart/form-data">
+                <form method="post" id="fplms-edit-user-form" enctype="multipart/form-data"
+                    data-orig-first-name="<?php echo esc_attr( $first_name ); ?>"
+                    data-orig-last-name="<?php echo esc_attr( $last_name ); ?>"
+                    data-orig-email="<?php echo esc_attr( $user->user_email ); ?>"
+                    data-orig-id="<?php echo esc_attr( $id_usuario ); ?>"
+                    data-orig-role="<?php echo esc_attr( $user_role ); ?>"
+                    data-orig-role-name="<?php echo esc_attr( $role_display_orig ); ?>"
+                    data-orig-city="<?php echo esc_attr( (string) $city_id ); ?>"
+                    data-orig-city-name="<?php echo esc_attr( $city_name_orig ); ?>"
+                    data-orig-company="<?php echo esc_attr( (string) $company_id ); ?>"
+                    data-orig-company-name="<?php echo esc_attr( $company_name_orig ); ?>"
+                    data-orig-channel="<?php echo esc_attr( (string) $channel_id ); ?>"
+                    data-orig-channel-name="<?php echo esc_attr( $channel_name_orig ); ?>"
+                    data-orig-branch="<?php echo esc_attr( (string) $branch_id ); ?>"
+                    data-orig-branch-name="<?php echo esc_attr( $branch_name_orig ); ?>"
+                    data-orig-job-role="<?php echo esc_attr( (string) $role_id ); ?>"
+                    data-orig-job-role-name="<?php echo esc_attr( $role_struct_name_orig ); ?>"
+                    data-orig-status="<?php echo esc_attr( $is_user_active ? 'active' : 'inactive' ); ?>">
                     <?php wp_nonce_field( 'fplms_edit_user_save', 'fplms_edit_user_nonce' ); ?>
                     <input type="hidden" name="fplms_edit_user_action" value="update_user">
                     <input type="hidden" name="fplms_user_id" value="<?php echo esc_attr( $user_id ); ?>">
@@ -3632,7 +3819,7 @@ class FairPlay_LMS_Users_Controller {
                                     <div class="fplms-form-group">
                                         <label for="fplms_city">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
-                                            Ciudad
+                                            Ciudad <span class="required structure-req-badge" style="display:none;">*</span>
                                         </label>
                                         <select name="fplms_city" id="fplms_city">
                                             <option value="">— Sin asignar —</option>
@@ -3646,7 +3833,7 @@ class FairPlay_LMS_Users_Controller {
                                     <div class="fplms-form-group">
                                         <label for="fplms_company">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>
-                                            Empresa
+                                            Empresa <span class="required structure-req-badge" style="display:none;">*</span>
                                         </label>
                                         <select name="fplms_company" id="fplms_company">
                                             <option value="">— Sin asignar —</option>
@@ -3662,7 +3849,7 @@ class FairPlay_LMS_Users_Controller {
                                     <div class="fplms-form-group">
                                         <label for="fplms_channel">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
-                                            Canal / Franquicia
+                                            Canal / Franquicia <span class="required structure-req-badge" style="display:none;">*</span>
                                         </label>
                                         <select name="fplms_channel" id="fplms_channel">
                                             <option value="">— Sin asignar —</option>
@@ -3676,7 +3863,7 @@ class FairPlay_LMS_Users_Controller {
                                     <div class="fplms-form-group">
                                         <label for="fplms_branch">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M13 7h-2v2h2V7zm0 4h-2v6h2v-6zm4-9.99L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
-                                            Sucursal
+                                            Sucursal <span class="required structure-req-badge" style="display:none;">*</span>
                                         </label>
                                         <select name="fplms_branch" id="fplms_branch">
                                             <option value="">— Sin asignar —</option>
@@ -3691,7 +3878,7 @@ class FairPlay_LMS_Users_Controller {
                                 <div class="fplms-form-group">
                                     <label for="fplms_job_role">
                                         <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6h-2.18c.07-.44.18-.88.18-1.33C18 2.1 15.9 0 13.33 0c-1.44 0-2.68.63-3.57 1.62L8 3.5 6.24 1.62C5.35.63 4.1 0 2.67 0 1.1 0-1.1 2.1-1.1 4.67c0 .45.11.89.18 1.33H-1c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h21c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
-                                        Cargo
+                                        Cargo <span class="required structure-req-badge" style="display:none;">*</span>
                                     </label>
                                     <select name="fplms_job_role" id="fplms_job_role">
                                         <option value="">— Sin asignar —</option>
@@ -3847,6 +4034,75 @@ class FairPlay_LMS_Users_Controller {
                             }
                         });
                     }
+
+                    // Mostrar/ocultar indicador * requerido en estructura según el rol
+                    const roleSelectEdit = document.getElementById('fplms_user_role');
+                    if (roleSelectEdit) {
+                        function toggleStructureRequired() {
+                            var isAdmin = roleSelectEdit.value === 'administrator';
+                            document.querySelectorAll('.structure-req-badge').forEach(function(el) {
+                                el.style.display = isAdmin ? 'none' : 'inline';
+                            });
+                        }
+                        roleSelectEdit.addEventListener('change', toggleStructureRequired);
+                        toggleStructureRequired(); // Estado inicial según el rol actual
+                    }
+
+                    // ── Cascada de selects: Ciudad → Empresa → Canal → Sucursal → Cargo ──
+                    const citySelectEdit    = document.getElementById('fplms_city');
+                    const companySelectEdit = document.getElementById('fplms_company');
+                    const channelSelectEdit = document.getElementById('fplms_channel');
+                    const branchSelectEdit  = document.getElementById('fplms_branch');
+                    const jobRoleSelectEdit = document.getElementById('fplms_job_role');
+
+                    function updateEditSelectOptions(parentSelect, childSelect, taxonomy, parentKey, savedChildValue) {
+                        if (!parentSelect || !childSelect) return;
+                        parentSelect.addEventListener('change', function() {
+                            const parentValue = this.value;
+                            if (!parentValue) {
+                                childSelect.innerHTML = '<option value="">— Sin asignar —</option>';
+                                resetEditDescendantSelects(childSelect);
+                                return;
+                            }
+                            childSelect.innerHTML = '<option value="">Cargando...</option>';
+                            const formData = new FormData();
+                            formData.append('action', 'fplms_get_terms_by_parent');
+                            formData.append(parentKey, parentValue);
+                            formData.append('taxonomy', taxonomy);
+                            fetch(ajaxurl, { method: 'POST', body: formData })
+                                .then(response => response.json())
+                                .then(data => {
+                                    if (data.success && data.data) {
+                                        let html = '<option value="">— Sin asignar —</option>';
+                                        for (const [termId, termName] of Object.entries(data.data)) {
+                                            html += '<option value="' + termId + '">' + termName + '</option>';
+                                        }
+                                        childSelect.innerHTML = html;
+                                    } else {
+                                        childSelect.innerHTML = '<option value="">— Sin asignar —</option>';
+                                    }
+                                })
+                                .catch(() => {
+                                    childSelect.innerHTML = '<option value="">— Sin asignar —</option>';
+                                });
+                        });
+                    }
+
+                    function resetEditDescendantSelects(fromSelect) {
+                        const selectElements = [companySelectEdit, channelSelectEdit, branchSelectEdit, jobRoleSelectEdit];
+                        let shouldReset = false;
+                        for (const select of selectElements) {
+                            if (shouldReset && select) {
+                                select.innerHTML = '<option value="">— Sin asignar —</option>';
+                            }
+                            if (select === fromSelect) shouldReset = true;
+                        }
+                    }
+
+                    updateEditSelectOptions(citySelectEdit,    companySelectEdit, '<?php echo FairPlay_LMS_Config::TAX_COMPANY; ?>', 'city_id');
+                    updateEditSelectOptions(companySelectEdit, channelSelectEdit, '<?php echo FairPlay_LMS_Config::TAX_CHANNEL; ?>', 'company_id');
+                    updateEditSelectOptions(channelSelectEdit, branchSelectEdit,  '<?php echo FairPlay_LMS_Config::TAX_BRANCH; ?>',  'channel_id');
+                    updateEditSelectOptions(branchSelectEdit,  jobRoleSelectEdit, '<?php echo FairPlay_LMS_Config::TAX_ROLE; ?>',    'branch_id');
                 });
 
                 // ── Modal de confirmación para guardar cambios ──
@@ -3854,35 +4110,78 @@ class FairPlay_LMS_Users_Controller {
                 if (editForm) {
                     editForm.addEventListener('submit', function(e) {
                         e.preventDefault();
+                        // Validar estructura para usuarios no administradores
+                        var roleVal    = document.getElementById('fplms_user_role') ? document.getElementById('fplms_user_role').value : '';
+                        if (roleVal && roleVal !== 'administrator') {
+                            var cityVal    = document.getElementById('fplms_city')     ? document.getElementById('fplms_city').value     : '';
+                            var companyVal = document.getElementById('fplms_company')  ? document.getElementById('fplms_company').value  : '';
+                            var channelVal = document.getElementById('fplms_channel')  ? document.getElementById('fplms_channel').value  : '';
+                            var branchVal  = document.getElementById('fplms_branch')   ? document.getElementById('fplms_branch').value   : '';
+                            var jobRoleVal = document.getElementById('fplms_job_role') ? document.getElementById('fplms_job_role').value : '';
+                            if (!cityVal || !companyVal || !channelVal || !branchVal || !jobRoleVal) {
+                                alert('Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.');
+                                return;
+                            }
+                        }
+                        // Construir lista de cambios
+                        var form = document.getElementById('fplms-edit-user-form');
+                        var d = form.dataset;
+                        function getSelText(id) {
+                            var el = document.getElementById(id);
+                            if (!el || !el.value) return '— Sin asignar —';
+                            return el.options[el.selectedIndex].text;
+                        }
+                        var fields = [
+                            { label: 'Nombre',         orig: d.origFirstName,    curr: (document.getElementById('fplms_first_name') || {value:''}).value },
+                            { label: 'Apellido',        orig: d.origLastName,     curr: (document.getElementById('fplms_last_name') || {value:''}).value },
+                            { label: 'Correo',          orig: d.origEmail,        curr: (document.getElementById('fplms_user_email') || {value:''}).value },
+                            { label: 'IDUsuario',       orig: d.origId,           curr: (document.getElementById('fplms_id_usuario') || {value:''}).value },
+                            { label: 'Tipo de usuario', orig: d.origRoleName,     curr: getSelText('fplms_user_role') },
+                            { label: 'Ciudad',          orig: d.origCityName,     curr: getSelText('fplms_city') },
+                            { label: 'Empresa',         orig: d.origCompanyName,  curr: getSelText('fplms_company') },
+                            { label: 'Canal',           orig: d.origChannelName,  curr: getSelText('fplms_channel') },
+                            { label: 'Sucursal',        orig: d.origBranchName,   curr: getSelText('fplms_branch') },
+                            { label: 'Cargo',           orig: d.origJobRoleName,  curr: getSelText('fplms_job_role') },
+                            { label: 'Estado',          orig: d.origStatus === 'active' ? 'Activo' : 'Inactivo',
+                                                         curr: (document.getElementById('fplms_user_status') || {}).checked ? 'Activo' : 'Inactivo' },
+                        ];
+                        var changedRows = fields.filter(function(f) { return (f.orig || '').trim() !== (f.curr || '').trim(); });
+                        var diffHTML = '';
+                        if (changedRows.length === 0) {
+                            diffHTML = '<p style="color:#666;font-size:14px;margin:0;">No se detectaron cambios en los campos.</p>';
+                        } else {
+                            diffHTML = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+                            diffHTML += '<thead><tr style="background:#f0f4ff;"><th style="padding:6px 10px;text-align:left;border-bottom:2px solid #c7d2fe;">Campo</th><th style="padding:6px 10px;text-align:left;border-bottom:2px solid #c7d2fe;">Anterior</th><th style="padding:6px 10px;text-align:left;border-bottom:2px solid #c7d2fe;">Nuevo</th></tr></thead><tbody>';
+                            changedRows.forEach(function(f, i) {
+                                var bg = i % 2 === 0 ? '#fff' : '#f9fafb';
+                                diffHTML += '<tr style="background:' + bg + '">';
+                                diffHTML += '<td style="padding:6px 10px;font-weight:600;color:#374151;border-bottom:1px solid #e5e7eb;">' + f.label + '</td>';
+                                diffHTML += '<td style="padding:6px 10px;color:#dc2626;text-decoration:line-through;border-bottom:1px solid #e5e7eb;">' + (f.orig || '—') + '</td>';
+                                diffHTML += '<td style="padding:6px 10px;color:#059669;border-bottom:1px solid #e5e7eb;">' + (f.curr || '—') + '</td>';
+                                diffHTML += '</tr>';
+                            });
+                            diffHTML += '</tbody></table>';
+                        }
                         const modalHTML = `
                             <div id="fplms-edit-confirm-modal" class="fplms-modal" style="display: flex; z-index: 100000;">
-                                <div class="fplms-modal-content" style="max-width: 500px;">
+                                <div class="fplms-modal-content" style="max-width: 620px;">
                                     <div class="fplms-modal-header" style="background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%); color: white;">
                                         <h3 style="margin: 0; display: flex; align-items: center; gap: 10px;">
                                             <span style="font-size: 24px;">⚠️</span>
-                                            <span>Confirmar Actualización</span>
+                                            <span>Confirmar cambios</span>
                                         </h3>
                                     </div>
-                                    <div class="fplms-modal-body" style="padding: 30px 20px;">
-                                        <p style="font-size: 16px; color: #333; margin: 0 0 15px 0;">
-                                            ¿Estás seguro de que deseas actualizar la información de este usuario?
-                                        </p>
-                                        <p style="font-size: 14px; color: #666; margin: 0;">
-                                            Los cambios se guardarán permanentemente en el sistema.
-                                        </p>
+                                    <div class="fplms-modal-body" style="padding: 20px;">
+                                        <p style="font-size:14px;color:#555;margin:0 0 14px;">Revisa los cambios que se aplicarán antes de confirmar:</p>
+                                        ${diffHTML}
                                     </div>
                                     <div class="fplms-modal-footer" style="display: flex; gap: 10px; justify-content: flex-end; padding: 15px 20px; background: #f8f9fa; border-top: 1px solid #dee2e6;">
-                                        <button type="button" class="button" onclick="fplmsCloseEditConfirmModal()" style="padding: 10px 20px;">
-                                            Cancelar
-                                        </button>
-                                        <button type="button" class="button button-primary" onclick="fplmsConfirmEditUser()" style="padding: 10px 30px; background: #2196F3; border-color: #2196F3;">
-                                            💾 Guardar Cambios
-                                        </button>
+                                        <button type="button" class="button" onclick="fplmsCloseEditConfirmModal()" style="padding: 10px 20px;">Cancelar</button>
+                                        <button type="button" class="button button-primary" onclick="fplmsConfirmEditUser()" style="padding: 10px 30px; background: #2196F3; border-color: #2196F3;">💾 Guardar Cambios</button>
                                     </div>
                                 </div>
                             </div>
                         `;
-                        
                         document.body.insertAdjacentHTML('beforeend', modalHTML);
                     });
                 }
@@ -3904,10 +4203,9 @@ class FairPlay_LMS_Users_Controller {
                     
                     const editForm = document.getElementById('fplms-edit-user-form');
                     if (editForm) {
-                        // Remover el event listener para evitar loop
-                        const newForm = editForm.cloneNode(true);
-                        editForm.parentNode.replaceChild(newForm, editForm);
-                        newForm.submit();
+                        // Usar .submit() nativo (no dispara event listeners, evita loop)
+                        // y preserva los valores actuales de los selects dinámicos (cascade)
+                        editForm.submit();
                     }
                 };
                 
@@ -3926,6 +4224,344 @@ class FairPlay_LMS_Users_Controller {
                 }
             </script>
         </div>
+        <?php
+    }
+
+    /**
+     * Mostrar información del usuario en modo solo lectura.
+     */
+    private function render_view_user( int $user_id ): void {
+        $user = get_userdata( $user_id );
+        if ( ! $user ) {
+            echo '<div class="wrap"><h1>Usuario no encontrado</h1><p><a href="' . esc_url( admin_url( 'admin.php?page=fplms-users' ) ) . '" class="button">← Volver a usuarios</a></p></div>';
+            return;
+        }
+
+        $first_name  = get_user_meta( $user_id, 'first_name', true );
+        $last_name   = get_user_meta( $user_id, 'last_name', true );
+        $id_usuario  = get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ID_USUARIO, true );
+        $city_id     = (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CITY, true );
+        $company_id  = (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_COMPANY, true );
+        $channel_id  = (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CHANNEL, true );
+        $branch_id   = (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_BRANCH, true );
+        $role_id     = (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ROLE, true );
+        $user_status = get_user_meta( $user_id, 'fplms_user_status', true );
+        $is_active   = empty( $user_status ) || 'active' === $user_status;
+        $user_role   = ! empty( $user->roles ) ? $user->roles[0] : '';
+
+        // Nombres de estructuras
+        $get_term_name = function ( int $id ): string {
+            if ( ! $id ) return '— Sin asignar —';
+            $term = get_term( $id );
+            return ( $term && ! is_wp_error( $term ) ) ? $term->name : '— Sin asignar —';
+        };
+        $city_name     = $get_term_name( $city_id );
+        $company_name  = $get_term_name( $company_id );
+        $channel_name  = $get_term_name( $channel_id );
+        $branch_name   = $get_term_name( $branch_id );
+        $job_role_name = $get_term_name( $role_id );
+
+        $roles_display = [
+            'subscriber'                            => 'Estudiante',
+            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Docente',
+            'administrator'                         => 'Administrador',
+        ];
+        $role_display = $roles_display[ $user_role ] ?? ucfirst( $user_role );
+
+        // Foto de perfil
+        $user_photo_url = get_user_meta( $user_id, 'fplms_user_photo_url', true );
+        if ( empty( $user_photo_url ) ) {
+            $photo_id = get_user_meta( $user_id, 'fplms_user_photo_id', true );
+            if ( $photo_id ) {
+                $user_photo_url = wp_get_attachment_url( $photo_id );
+            }
+        }
+        if ( empty( $user_photo_url ) ) {
+            $stm_url = get_user_meta( $user_id, 'stm_lms_user_avatar', true );
+            if ( $stm_url && filter_var( $stm_url, FILTER_VALIDATE_URL ) ) {
+                $user_photo_url = $stm_url;
+            }
+        }
+
+        $last_login_ts = get_user_meta( $user_id, 'last_login', true );
+        $last_login    = $last_login_ts ? date( 'd/m/Y H:i', (int) $last_login_ts ) : '—';
+        ?>
+        <div class="wrap">
+            <h1>👁️ Información de: <?php echo esc_html( trim( $first_name . ' ' . $last_name ) ); ?></h1>
+            <p>
+                <a href="<?php echo esc_url( admin_url( 'admin.php?page=fplms-users' ) ); ?>" class="button">← Volver a la lista</a>
+                &nbsp;
+                <a href="<?php echo esc_url( add_query_arg( [ 'action' => 'edit', 'user_id' => $user_id ], admin_url( 'admin.php?page=fplms-users' ) ) ); ?>" class="button button-primary">✏️ Editar usuario</a>
+            </p>
+
+            <style>
+                /* ── Variables ── */
+                .fplms-edit-user-container { --clr-primary: #667eea; --clr-primary-dark: #764ba2; }
+
+                /* ── Hero ── */
+                .fplms-edit-user-container .fplms-profile-hero {
+                    background: linear-gradient(135deg, var(--clr-primary) 0%, var(--clr-primary-dark) 100%);
+                    border-radius: 16px; padding: 36px; margin-bottom: 28px;
+                    display: flex; align-items: center; gap: 28px;
+                    position: relative; overflow: hidden;
+                    box-shadow: 0 8px 30px rgba(102,126,234,.35);
+                }
+                .fplms-edit-user-container .fplms-profile-hero::after {
+                    content: ''; position: absolute; right: -60px; top: -60px;
+                    width: 260px; height: 260px; border-radius: 50%;
+                    background: rgba(255,255,255,.12);
+                }
+                .fplms-edit-user-container .fplms-hero-avatar-wrap { position: relative; z-index: 1; flex-shrink: 0; }
+                .fplms-edit-user-container .fplms-hero-avatar {
+                    width: 110px; height: 110px; border-radius: 50%;
+                    border: 4px solid #fff; object-fit: cover;
+                    box-shadow: 0 6px 20px rgba(0,0,0,.25); display: block;
+                }
+                .fplms-edit-user-container .fplms-hero-avatar-placeholder {
+                    width: 110px; height: 110px; border-radius: 50%;
+                    border: 4px solid #fff; background: rgba(255,255,255,.25);
+                    display: flex; align-items: center; justify-content: center;
+                    box-shadow: 0 6px 20px rgba(0,0,0,.25);
+                }
+                .fplms-edit-user-container .fplms-hero-avatar-placeholder svg { width: 56px; height: 56px; fill: rgba(255,255,255,.9); }
+                .fplms-edit-user-container .fplms-hero-info { flex: 1; color: #fff; position: relative; z-index: 1; }
+                .fplms-edit-user-container .fplms-hero-name { font-size: 26px; font-weight: 700; margin: 0 0 6px; color: #fff; }
+                .fplms-edit-user-container .fplms-hero-chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+                .fplms-edit-user-container .fplms-hero-chip {
+                    display: inline-flex; align-items: center; gap: 6px;
+                    background: rgba(255,255,255,.2); backdrop-filter: blur(8px);
+                    border-radius: 20px; padding: 5px 14px; font-size: 13px; color: #fff;
+                }
+                .fplms-edit-user-container .fplms-hero-chip svg { width: 14px; height: 14px; fill: #fff; }
+
+                /* ── Cards ── */
+                .fplms-edit-user-container .fplms-cards-grid {
+                    display: grid; grid-template-columns: repeat(auto-fit, minmax(340px,1fr)); gap: 22px;
+                }
+                .fplms-edit-user-container .fplms-card {
+                    background: #fff; border-radius: 14px;
+                    box-shadow: 0 2px 12px rgba(0,0,0,.07); overflow: hidden;
+                    transition: transform .2s, box-shadow .2s;
+                }
+                .fplms-edit-user-container .fplms-card:hover { transform: translateY(-2px); box-shadow: 0 6px 22px rgba(0,0,0,.10); }
+                .fplms-edit-user-container .fplms-card-header {
+                    padding: 18px 22px; background: #fafbff;
+                    border-bottom: 1px solid #edf0fb;
+                    display: flex; align-items: center; gap: 12px;
+                }
+                .fplms-edit-user-container .fplms-card-header-icon {
+                    width: 38px; height: 38px; border-radius: 10px;
+                    background: linear-gradient(135deg, var(--clr-primary) 0%, var(--clr-primary-dark) 100%);
+                    display: flex; align-items: center; justify-content: center;
+                    box-shadow: 0 3px 10px rgba(102,126,234,.4);
+                }
+                .fplms-edit-user-container .fplms-card-header-icon svg { width: 20px; height: 20px; fill: #fff; }
+                .fplms-edit-user-container .fplms-card-header h3 { margin: 0; font-size: 15px; font-weight: 600; color: #2d3748; }
+                .fplms-edit-user-container .fplms-card-header p  { margin: 2px 0 0; font-size: 12px; color: #6c757d; }
+                .fplms-edit-user-container .fplms-card-body { padding: 22px; }
+
+                /* ── Form groups ── */
+                .fplms-edit-user-container .fplms-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+                .fplms-edit-user-container .fplms-form-group { display: flex; flex-direction: column; margin-bottom: 18px; }
+                .fplms-edit-user-container .fplms-form-group:last-child { margin-bottom: 0; }
+                .fplms-edit-user-container .fplms-form-group label {
+                    display: flex; align-items: center; gap: 6px;
+                    font-size: 12px; font-weight: 600; letter-spacing: .4px;
+                    text-transform: uppercase; color: #6c757d; margin-bottom: 8px;
+                }
+                .fplms-edit-user-container .fplms-form-group label svg { width: 13px; height: 13px; fill: #a0aec0; }
+
+                /* ── View field (read-only display) ── */
+                .fplms-edit-user-container .fplms-view-field {
+                    padding: 11px 15px; background: #f8f9fa;
+                    border: 2px solid #e9ecef; border-radius: 9px;
+                    font-size: 14px; color: #333; min-height: 42px;
+                    display: flex; align-items: center; margin: 0;
+                }
+
+                /* ── Badges ── */
+                .fplms-edit-user-container .fplms-status-badge { display: inline-block; padding: 4px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+                .fplms-edit-user-container .fplms-status-active  { background: #d1fae5; color: #065f46; }
+                .fplms-edit-user-container .fplms-status-inactive { background: #fee2e2; color: #991b1b; }
+                .fplms-edit-user-container .fplms-role-badge { display: inline-block; padding: 4px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; background: #ede9fe; color: #5b21b6; }
+
+                /* ── Action bar ── */
+                .fplms-view-actions {
+                    margin-top: 28px; display: flex; gap: 12px;
+                    padding: 20px 24px; background: #fff;
+                    border-radius: 14px; box-shadow: 0 2px 12px rgba(0,0,0,.07);
+                }
+                .fplms-view-actions a {
+                    padding: 11px 28px; border-radius: 9px;
+                    font-size: 14px; font-weight: 600; cursor: pointer;
+                    display: inline-flex; align-items: center; gap: 8px;
+                    text-decoration: none; transition: all .2s;
+                }
+                .fplms-view-actions .btn-back {
+                    background: #f8f9fa; color: #495057; border: 2px solid #e9ecef;
+                }
+                .fplms-view-actions .btn-back:hover { background: #e9ecef; }
+                .fplms-view-actions .btn-edit {
+                    background: linear-gradient(135deg, var(--clr-primary) 0%, var(--clr-primary-dark) 100%);
+                    color: #fff; border: none;
+                    box-shadow: 0 4px 15px rgba(102,126,234,.4);
+                }
+                .fplms-view-actions .btn-edit:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(102,126,234,.5); }
+                .fplms-view-actions svg { width: 16px; height: 16px; fill: currentColor; }
+
+                @media (max-width: 900px) {
+                    .fplms-edit-user-container .fplms-profile-hero { flex-direction: column; text-align: center; }
+                    .fplms-edit-user-container .fplms-hero-chips { justify-content: center; }
+                    .fplms-edit-user-container .fplms-cards-grid { grid-template-columns: 1fr; }
+                    .fplms-edit-user-container .fplms-form-row { grid-template-columns: 1fr; }
+                }
+            </style>
+
+            <div class="fplms-edit-user-container">
+
+                <!-- Hero -->
+                <div class="fplms-profile-hero">
+                    <div class="fplms-hero-avatar-wrap">
+                        <?php if ( $user_photo_url ) : ?>
+                            <img src="<?php echo esc_url( $user_photo_url ); ?>" class="fplms-hero-avatar" alt="Foto de usuario">
+                        <?php else : ?>
+                            <div class="fplms-hero-avatar-placeholder">
+                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="fplms-hero-info">
+                        <h2 class="fplms-hero-name"><?php echo esc_html( trim( $first_name . ' ' . $last_name ) ); ?></h2>
+                        <div class="fplms-hero-chips">
+                            <span class="fplms-hero-chip"><?php echo esc_html( $user->user_email ); ?></span>
+                            <span class="fplms-hero-chip"><?php echo esc_html( $role_display ); ?></span>
+                            <span class="fplms-hero-chip" style="background:rgba(<?php echo $is_active ? '72,199,142' : '252,129,74'; ?>,.35);">
+                                <?php echo $is_active ? '● Activo' : '● Inactivo'; ?>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="fplms-cards-grid">
+
+                    <!-- Datos personales -->
+                    <div class="fplms-card">
+                        <div class="fplms-card-header">
+                            <div class="fplms-card-header-icon"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg></div>
+                            <div><h3>Datos Personales</h3><p>Nombre y apellido del usuario</p></div>
+                        </div>
+                        <div class="fplms-card-body">
+                            <div class="fplms-form-row">
+                                <div class="fplms-form-group">
+                                    <label>Nombre</label>
+                                    <p class="fplms-view-field"><?php echo esc_html( $first_name ?: '—' ); ?></p>
+                                </div>
+                                <div class="fplms-form-group">
+                                    <label>Apellido</label>
+                                    <p class="fplms-view-field"><?php echo esc_html( $last_name ?: '—' ); ?></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Credenciales -->
+                    <div class="fplms-card">
+                        <div class="fplms-card-header">
+                            <div class="fplms-card-header-icon"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg></div>
+                            <div><h3>Credenciales de Acceso</h3><p>Usuario, email y última conexión</p></div>
+                        </div>
+                        <div class="fplms-card-body">
+                            <div class="fplms-form-group">
+                                <label>IDUsuario</label>
+                                <p class="fplms-view-field"><code style="background:#f0f0f0;padding:3px 8px;border-radius:3px;"><?php echo esc_html( $id_usuario ?: '—' ); ?></code></p>
+                            </div>
+                            <div class="fplms-form-group">
+                                <label>Nombre de usuario</label>
+                                <p class="fplms-view-field"><?php echo esc_html( $user->user_login ); ?></p>
+                            </div>
+                            <div class="fplms-form-group">
+                                <label>Correo electrónico</label>
+                                <p class="fplms-view-field"><?php echo esc_html( $user->user_email ); ?></p>
+                            </div>
+                            <div class="fplms-form-row">
+                                <div class="fplms-form-group">
+                                    <label>Fecha de registro</label>
+                                    <p class="fplms-view-field"><?php echo esc_html( date( 'd/m/Y', strtotime( $user->user_registered ) ) ); ?></p>
+                                </div>
+                                <div class="fplms-form-group">
+                                    <label>Último acceso</label>
+                                    <p class="fplms-view-field"><?php echo esc_html( $last_login ); ?></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Estructura Organizacional -->
+                    <div class="fplms-card">
+                        <div class="fplms-card-header">
+                            <div class="fplms-card-header-icon"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg></div>
+                            <div><h3>Estructura Organizacional</h3><p>Ciudad, empresa, canal, sucursal y cargo</p></div>
+                        </div>
+                        <div class="fplms-card-body">
+                            <div class="fplms-form-row">
+                                <div class="fplms-form-group">
+                                    <label><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                                     Ciudad</label>
+                                    <p class="fplms-view-field"><?php echo esc_html( $city_name ); ?></p>
+                                </div>
+                                <div class="fplms-form-group">
+                                    <label><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>
+                                     Empresa</label>
+                                    <p class="fplms-view-field"><?php echo esc_html( $company_name ); ?></p>
+                                </div>
+                            </div>
+                            <div class="fplms-form-row">
+                                <div class="fplms-form-group">
+                                    <label><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+                                     Canal / Franquicia</label>
+                                    <p class="fplms-view-field"><?php echo esc_html( $channel_name ); ?></p>
+                                </div>
+                                <div class="fplms-form-group">
+                                    <label><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M13 7h-2v2h2V7zm0 4h-2v6h2v-6zm4-9.99L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
+                                     Sucursal</label>
+                                    <p class="fplms-view-field"><?php echo esc_html( $branch_name ); ?></p>
+                                </div>
+                            </div>
+                            <div class="fplms-form-group">
+                                <label><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6h-2.18c.07-.44.18-.88.18-1.33C18 2.1 15.9 0 13.33 0c-1.44 0-2.68.63-3.57 1.62L8 3.5 6.24 1.62C5.35.63 4.1 0 2.67 0 1.1 0-1.1 2.1-1.1 4.67c0 .45.11.89.18 1.33H-1c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h21c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
+                                 Cargo</label>
+                                <p class="fplms-view-field"><?php echo esc_html( $job_role_name ); ?></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Rol y Estado -->
+                    <div class="fplms-card">
+                        <div class="fplms-card-header">
+                            <div class="fplms-card-header-icon"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg></div>
+                            <div><h3>Tipo de Usuario y Estado</h3><p>Rol asignado y estado de acceso</p></div>
+                        </div>
+                        <div class="fplms-card-body">
+                            <div class="fplms-form-group">
+                                <label>Tipo de usuario</label>
+                                <p class="fplms-view-field"><span class="fplms-role-badge"><?php echo esc_html( $role_display ); ?></span></p>
+                            </div>
+                            <div class="fplms-form-group">
+                                <label>Estado</label>
+                                <p class="fplms-view-field">
+                                    <?php if ( $is_active ) : ?>
+                                        <span class="fplms-status-badge fplms-status-active">Activo</span>
+                                    <?php else : ?>
+                                        <span class="fplms-status-badge fplms-status-inactive">Inactivo</span>
+                                    <?php endif; ?>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                </div><!-- .fplms-cards-grid -->
+            </div><!-- .fplms-edit-user-container -->
+        </div><!-- .wrap -->
         <?php
     }
 
@@ -3972,6 +4608,17 @@ class FairPlay_LMS_Users_Controller {
                 wp_safe_redirect(
                     add_query_arg(
                         [ 'page' => 'fplms-users', 'action' => 'create', 'error' => 'incomplete_data' ],
+                        admin_url( 'admin.php' )
+                    )
+                );
+                exit;
+            }
+
+            // Estructura requerida para usuarios no administradores
+            if ( 'administrator' !== $user_role && ( ! $city_id || ! $company_id || ! $channel_id || ! $branch_id || ! $role_id ) ) {
+                wp_safe_redirect(
+                    add_query_arg(
+                        [ 'page' => 'fplms-users', 'action' => 'create', 'error' => 'structure_required' ],
                         admin_url( 'admin.php' )
                     )
                 );
@@ -4160,6 +4807,17 @@ class FairPlay_LMS_Users_Controller {
                 wp_safe_redirect(
                     add_query_arg(
                         [ 'page' => 'fplms-users', 'action' => 'edit', 'user_id' => $user_id, 'error' => 'incomplete_data' ],
+                        admin_url( 'admin.php' )
+                    )
+                );
+                exit;
+            }
+
+            // Estructura requerida para usuarios no administradores
+            if ( 'administrator' !== $user_role && ( ! $city_id || ! $company_id || ! $channel_id || ! $branch_id || ! $role_id ) ) {
+                wp_safe_redirect(
+                    add_query_arg(
+                        [ 'page' => 'fplms-users', 'action' => 'edit', 'user_id' => $user_id, 'error' => 'structure_required' ],
                         admin_url( 'admin.php' )
                     )
                 );
@@ -4632,8 +5290,9 @@ class FairPlay_LMS_Users_Controller {
                             'invalid_id_usuario' => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
                             'id_usuario_exists'  => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
                             'user_exists'        => 'Error al crear el usuario. Verifica que el nombre de usuario o correo no existan.',
+                            'structure_required' => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
                         ];
-                        echo isset( $error_messages[ $error_msg ] ) ? esc_html( $error_messages[ $error_msg ] ) : 'Error al crear el usuario.';
+                        echo isset( $error_messages[ $error_msg ] ) ? esc_html( $error_messages[ $error_msg ] ) : 'Error al crear el usuario';
                         ?>
                     </p>
                 </div>
@@ -4959,7 +5618,7 @@ class FairPlay_LMS_Users_Controller {
                             <div class="fplms-card-body">
                                 <div class="fplms-form-row">
                                     <div class="fplms-form-group">
-                                        <label for="fplms_city">Ciudad</label>
+                                        <label for="fplms_city">Ciudad <span class="required structure-req-badge" style="display:none;">*</span></label>
                                         <select name="fplms_city" id="fplms_city">
                                             <option value="">— Sin asignar —</option>
                                             <?php foreach ( $cities as $id => $name ) : ?>
@@ -4974,7 +5633,7 @@ class FairPlay_LMS_Users_Controller {
                                 </div>
                                 <div class="fplms-form-row">
                                     <div class="fplms-form-group">
-                                        <label for="fplms_channel">Canal / Franquicia</label>
+                                        <label for="fplms_channel">Canal / Franquicia <span class="required structure-req-badge" style="display:none;">*</span></label>
                                         <select name="fplms_channel" id="fplms_channel"><option value="">— Sin asignar —</option></select>
                                     </div>
                                     <div class="fplms-form-group">
@@ -5171,6 +5830,17 @@ class FairPlay_LMS_Users_Controller {
                             this.querySelector('.icon-eye-off').style.display = isHidden ? ''      : 'none';
                         });
                     });
+
+                    // Mostrar/ocultar indicador * requerido en estructura según el rol
+                    const roleSelectCreate = document.getElementById('fplms_user_role');
+                    if (roleSelectCreate) {
+                        roleSelectCreate.addEventListener('change', function() {
+                            var isAdmin = this.value === 'administrator';
+                            document.querySelectorAll('.structure-req-badge').forEach(function(el) {
+                                el.style.display = isAdmin ? 'none' : 'inline';
+                            });
+                        });
+                    }
                 });
             </script>
         </div>
