@@ -303,7 +303,7 @@ class FairPlay_LMS_Onboarding {
         string $company_slug,
         string $from_name
     ): string {
-        $accent = 'eliora' === $company_slug ? '#1a56db' : '#e3342f';
+        $accent = 'eliora' === $company_slug ? '#f6b23a' : '#e3342f';
 
         return <<<HTML
 <!DOCTYPE html>
@@ -860,32 +860,33 @@ HTML;
 .fplms-ob-card { background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,.10); overflow: hidden; }
 .fplms-ob-steps { display: flex; align-items: center; padding: 20px 32px; background: #f7f8fa; border-bottom: 1px solid #e5e7eb; gap: 8px; }
 .fplms-ob-step { display: flex; align-items: center; gap: 8px; color: #9ca3af; font-size: 14px; }
-.fplms-ob-step.active { color: #1a56db; font-weight: 600; }
+.fplms-ob-step.active { color: #f6b23a; font-weight: 600; }
 .fplms-ob-step.done { color: #38a169; font-weight: 600; }
 .fplms-ob-step-num { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: #e5e7eb; font-size: 13px; font-weight: 700; }
-.fplms-ob-step.active .fplms-ob-step-num { background: #1a56db; color: #fff; }
+.fplms-ob-step.active .fplms-ob-step-num { background: #f6b23a; color: #fff; }
 .fplms-ob-step.done .fplms-ob-step-num { background: #38a169; color: #fff; }
 .fplms-ob-step-divider { flex: 1; height: 2px; background: #e5e7eb; min-width: 24px; }
-.fplms-ob-step-divider.active { background: #1a56db; }
+.fplms-ob-step-divider.active { background: #f6b23a; }
 .fplms-ob-body { padding: 32px 40px; }
 .fplms-ob-title { font-size: 22px; font-weight: 700; color: #111827; margin: 0 0 8px; }
 .fplms-ob-subtitle { font-size: 15px; color: #6b7280; margin: 0 0 24px; }
 .fplms-ob-error { background: #fff5f5; border-left: 4px solid #e53e3e; color: #c53030; padding: 12px 16px; border-radius: 4px; font-size: 14px; margin-bottom: 20px; }
 .fplms-ob-terms-box { max-height: 360px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px 24px; background: #fafafa; font-size: 14px; line-height: 1.7; color: #374151; margin-bottom: 24px; }
 .fplms-ob-check-label { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: #374151; cursor: pointer; margin-bottom: 20px; }
-.fplms-ob-check-label input[type="checkbox"] { margin-top: 2px; width: 18px; height: 18px; accent-color: #1a56db; flex-shrink: 0; }
+.fplms-ob-check-label input[type="checkbox"] { margin-top: 2px; width: 18px; height: 18px; accent-color: #f6b23a; flex-shrink: 0; }
 .fplms-ob-actions { display: flex; gap: 12px; }
 .fplms-ob-btn { padding: 12px 28px; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; border: none; text-decoration: none; transition: opacity .2s; }
-.fplms-ob-btn-primary { background: #1a56db; color: #fff; }
+.fplms-ob-btn-primary { background: #f6b23a; color: #fff; }
 .fplms-ob-btn-primary:hover { opacity: .88; }
 .fplms-ob-btn-primary:disabled { background: #9ca3af; cursor: not-allowed; }
 .fplms-ob-reject-form { margin-top: 16px; }
 .fplms-ob-reject-hint { font-size: 13px; color: #9ca3af; }
 .fplms-ob-btn-link { background: none; border: none; padding: 0; font-size: 13px; color: #e53e3e; cursor: pointer; text-decoration: underline; }
+button.fplms-ob-btn-link:hover,.fplms-ob-btn-link:hover {background-color: transparent !important;}
 .fplms-ob-field { margin-bottom: 20px; }
 .fplms-ob-field label { display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 6px; }
 .fplms-ob-input { width: 100%; padding: 10px 44px 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 15px; box-sizing: border-box; outline: none; }
-.fplms-ob-input:focus { border-color: #1a56db; box-shadow: 0 0 0 3px rgba(26,86,219,.12); }
+.fplms-ob-input:focus { border-color: #f6b23a; box-shadow: 0 0 0 3px rgba(246,178,58,.12); }
 .fplms-ob-pass-wrap { position: relative; }
 .fplms-ob-toggle-pass { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: #9ca3af; padding: 0; }
 .fplms-ob-hint { font-size: 13px; color: #9ca3af; margin: -12px 0 20px; }

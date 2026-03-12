@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
@@ -428,7 +428,7 @@ class FairPlay_LMS_Courses_Controller {
     }
 
     /**
-     * Listado de cursos MasterStudy con asignación de profesor.
+     * Listado de cursos MasterStudy — tabla moderna con búsqueda, paginación, acciones masivas y exportación.
      */
     private function render_course_list_view(): void {
 
@@ -437,410 +437,639 @@ class FairPlay_LMS_Courses_Controller {
             return;
         }
 
-        // Paginación
-        $paged = isset( $_GET['paged'] ) ? absint( $_GET['paged'] ) : 1;
-        $per_page = 10;
-        $offset = ( $paged - 1 ) * $per_page;
+        // ── Acción masiva: eliminar cursos ──────────────────────────────────
+        if (
+            isset( $_POST['fplms_courses_action'], $_POST['fplms_courses_nonce'] ) &&
+            'bulk_delete' === sanitize_text_field( wp_unslash( $_POST['fplms_courses_action'] ) ) &&
+            wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['fplms_courses_nonce'] ) ), 'fplms_courses_save' ) &&
+            current_user_can( FairPlay_LMS_Config::CAP_MANAGE_COURSES )
+        ) {
+            $bulk_ids = isset( $_POST['fplms_bulk_course_ids'] )
+                ? array_map( 'absint', (array) wp_unslash( $_POST['fplms_bulk_course_ids'] ) )
+                : [];
+            $deleted = 0;
+            foreach ( $bulk_ids as $bid ) {
+                if ( $bid && FairPlay_LMS_Config::MS_PT_COURSE === get_post_type( $bid ) ) {
+                    wp_delete_post( $bid, true );
+                    ++$deleted;
+                }
+            }
+            wp_safe_redirect( add_query_arg( [ 'page' => 'fplms-courses', 'deleted' => $deleted ], admin_url( 'admin.php' ) ) );
+            exit;
+        }
 
-        $total_courses = wp_count_posts( FairPlay_LMS_Config::MS_PT_COURSE );
-        $total_published = isset( $total_courses->publish ) ? (int) $total_courses->publish : 0;
-        $total_pages = ceil( $total_published / $per_page );
-
-        $courses = get_posts(
-            [
-                'post_type'      => FairPlay_LMS_Config::MS_PT_COURSE,
-                'posts_per_page' => $per_page,
-                'offset'         => $offset,
-                'post_status'    => 'publish',
-                'orderby'        => 'date',
-                'order'          => 'DESC',
-            ]
-        );
-
+        // ── Cargar cursos ────────────────────────────────────────────────────
+        $courses    = get_posts( [
+            'post_type'      => FairPlay_LMS_Config::MS_PT_COURSE,
+            'posts_per_page' => 500,
+            'post_status'    => [ 'publish', 'draft' ],
+            'orderby'        => 'date',
+            'order'          => 'DESC',
+        ] );
         $instructors = $this->get_available_instructors();
-        
-        // Estilos CSS para diseño minimalista
+        $total       = count( $courses );
+        $deleted_n   = isset( $_GET['deleted'] ) ? max( 0, (int) $_GET['deleted'] ) : 0;
         ?>
+
         <style>
-            .fplms-courses-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 20px;
-                padding: 15px 0;
-                border-bottom: 2px solid #2271b1;
-            }
-            .fplms-create-course-btn {
-                display: inline-flex;
-                align-items: center;
-                gap: 8px;
-                background: #2271b1;
-                color: white;
-                padding: 10px 20px;
-                border-radius: 4px;
-                text-decoration: none;
-                font-weight: 600;
-                transition: background 0.2s;
-            }
-            .fplms-create-course-btn:hover {
-                background: #135e96;
-                color: white;
-            }
-            .fplms-actions-compact {
-                display: flex;
-                gap: 6px;
-                flex-wrap: wrap;
-            }
-            .fplms-action-btn {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                width: 36px;
-                height: 36px;
-                padding: 0;
-                border: 1px solid #c3c4c7;
-                border-radius: 4px;
-                background: #fff;
-                color: #2c3338;
-                cursor: pointer;
-                transition: all 0.2s;
-                position: relative;
-                font-size: 16px;
-            }
-            .fplms-action-btn:hover {
-                background: #2271b1;
-                color: white;
-                border-color: #2271b1;
-                transform: translateY(-2px);
-            }
-            .fplms-action-btn .tooltip {
-                visibility: hidden;
-                position: absolute;
-                bottom: 100%;
-                left: 50%;
-                transform: translateX(-50%);
-                background: #1d2327;
-                color: white;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-size: 12px;
-                white-space: nowrap;
-                margin-bottom: 8px;
-                opacity: 0;
-                transition: opacity 0.2s;
-                z-index: 1000;
-            }
-            .fplms-action-btn .tooltip::after {
-                content: '';
-                position: absolute;
-                top: 100%;
-                left: 50%;
-                transform: translateX(-50%);
-                border: 4px solid transparent;
-                border-top-color: #1d2327;
-            }
-            .fplms-action-btn:hover .tooltip {
-                visibility: visible;
-                opacity: 1;
-            }
-            .fplms-edit-btn {
-                background: #f0f0f1;
-            }
-            .fplms-edit-btn:hover {
-                background: #646970;
-                color: white;
-                border-color: #646970;
-            }
-            .fplms-instructor-form {
-                display: flex;
-                gap: 6px;
-                align-items: center;
-            }
-            .fplms-instructor-form select {
-                max-width: 200px;
-                font-size: 13px;
-            }
-            .fplms-instructor-form .button {
-                padding: 4px 12px;
-                height: 32px;
-                font-size: 13px;
-            }
-            .fplms-course-title {
-                font-weight: 600;
-                color: #2271b1;
-            }
-            .fplms-course-id {
-                color: #646970;
-                font-size: 0.9em;
-            }
-            .fplms-structures-tags {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 6px;
-                font-size: 0.85em;
-            }
-            .fplms-structure-tag {
-                display: inline-block;
-                padding: 3px 8px;
-                background: #f0f0f1;
-                border-radius: 3px;
-                color: #2c3338;
-            }
-            .fplms-pagination {
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                gap: 10px;
-                margin-top: 20px;
-                padding: 15px 0;
-            }
-            .fplms-pagination a,
-            .fplms-pagination span {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                min-width: 36px;
-                height: 36px;
-                padding: 0 12px;
-                border: 1px solid #c3c4c7;
-                border-radius: 4px;
-                background: #fff;
-                color: #2c3338;
-                text-decoration: none;
-                transition: all 0.2s;
-            }
-            .fplms-pagination a:hover {
-                background: #2271b1;
-                color: white;
-                border-color: #2271b1;
-            }
-            .fplms-pagination .current {
-                background: #2271b1;
-                color: white;
-                border-color: #2271b1;
-                font-weight: 600;
-            }
-            .fplms-info-box {
-                background: #e7f5fe;
-                border-left: 4px solid #2271b1;
-                padding: 12px 16px;
-                margin-bottom: 20px;
-                border-radius: 4px;
-            }
-            .fplms-info-box p {
-                margin: 0;
-                color: #1d2327;
-            }
-            .fplms-table-minimal {
-                background: white;
-                border: 1px solid #c3c4c7;
-                border-radius: 4px;
-                overflow: hidden;
-            }
-            .fplms-table-minimal thead {
-                background: #f6f7f7;
-            }
-            .fplms-table-minimal th {
-                font-weight: 600;
-                font-size: 13px;
-                color: #1d2327;
-                padding: 12px;
-            }
-            .fplms-table-minimal td {
-                padding: 12px;
-                border-top: 1px solid #f0f0f1;
-                vertical-align: middle;
-            }
-            .fplms-empty-state {
-                text-align: center;
-                padding: 60px 20px;
-            }
-            .fplms-empty-state-icon {
-                font-size: 64px;
-                margin-bottom: 20px;
-                opacity: 0.3;
-            }
-            .fplms-empty-state h3 {
-                color: #646970;
-                margin-bottom: 10px;
-            }
-            .fplms-empty-state p {
-                color: #787c82;
-                margin-bottom: 20px;
+            /* ── Page header ── */
+            .fplms-cl-page-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; flex-wrap:wrap; gap:12px; }
+            .fplms-cl-title-row   { display:flex; align-items:center; gap:12px; margin-bottom:4px; }
+            .fplms-cl-page-icon   { width:42px; height:42px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg,#667eea,#764ba2); box-shadow:0 3px 10px rgba(102,126,234,.4); }
+            .fplms-cl-page-icon svg { width:22px; height:22px; fill:#fff; }
+            .fplms-cl-page-header h2 { font-size:22px; font-weight:700; color:#1f2937; margin:0; }
+            .fplms-cl-page-subtitle  { font-size:13px; color:#6b7280; margin:0; padding-left:54px; }
+
+            /* ── Table card ── */
+            .fplms-table-card-c { background:#fff; border-radius:14px; border:1px solid #e5e7eb; box-shadow:0 1px 8px rgba(0,0,0,.07); overflow:hidden; }
+
+            /* ── Top bar ── */
+            .fplms-topbar-c { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid #f3f4f6; flex-wrap:wrap; gap:10px; }
+            .fplms-topbar-left-c  { display:flex; align-items:center; gap:8px; font-size:14px; color:#6b7280; }
+            .fplms-topbar-right-c { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+            .fplms-entries-sel-c  { padding:5px 8px; border-radius:6px; border:1px solid #e5e7eb; font-size:14px; color:#374151; background:#fff; cursor:pointer; outline:none; }
+            .fplms-entries-sel-c:focus { border-color:#667eea; }
+
+            /* ── Search ── */
+            .fplms-cl-search-wrap  { position:relative; display:flex; align-items:center; }
+            .fplms-cl-search-input { padding:7px 32px 7px 12px; border-radius:8px; border:1px solid #e5e7eb; font-size:14px; color:#374151; background:#fff; outline:none; width:240px; transition:border-color .2s; }
+            .fplms-cl-search-input:focus { border-color:#667eea; box-shadow:0 0 0 3px rgba(102,126,234,.1); }
+            .fplms-cl-search-clear { position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:#9ca3af; font-size:14px; padding:0; display:none; line-height:1; }
+            .fplms-cl-search-clear.visible { display:block; }
+
+            /* ── Download button ── */
+            .fplms-cl-dl-btn { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; font-size:14px; font-weight:500; color:#374151; cursor:pointer; transition:all .2s; text-decoration:none; }
+            .fplms-cl-dl-btn:hover { background:#f9fafb; border-color:#d1d5db; color:#374151; }
+            .fplms-cl-dl-btn svg { width:16px; height:16px; fill:#6b7280; }
+            .fplms-cl-dl-wrap { position:relative; display:inline-flex; }
+            .fplms-cl-dl-dropdown { position:absolute; top:calc(100% + 6px); right:0; background:#fff; border:1px solid #e5e7eb; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,.12); min-width:170px; z-index:200; display:none; overflow:hidden; }
+            .fplms-cl-dl-dropdown.open { display:block; }
+            .fplms-cl-dl-item { display:flex; align-items:center; gap:8px; padding:10px 14px; font-size:14px; color:#374151; cursor:pointer; border:none; background:none; width:100%; text-align:left; }
+            .fplms-cl-dl-item:hover { background:#f9fafb; }
+            .fplms-cl-dl-item svg { width:15px; height:15px; flex-shrink:0; }
+
+            /* ── Bulk bar ── */
+            .fplms-cl-bulk-bar { display:none; align-items:center; gap:12px; padding:11px 18px; border-bottom:1px solid #f3f4f6; background:#fafbff; flex-wrap:wrap; }
+            .fplms-cl-bulk-bar.visible { display:flex; }
+            .fplms-cl-bulk-label  { font-size:14px; color:#6b7280; font-weight:500; white-space:nowrap; }
+            .fplms-cl-bulk-badge  { display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:22px; padding:0 6px; background:#667eea; color:#fff; font-size:12px; font-weight:700; border-radius:11px; }
+            .fplms-cl-bulk-select { padding:7px 12px; border:1px solid #e5e7eb; border-radius:8px; font-size:14px; color:#374151; background:#fff; cursor:pointer; outline:none; }
+            .fplms-cl-bulk-apply  { display:inline-flex; align-items:center; gap:6px; padding:7px 18px; background:#667eea; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; transition:background .2s; }
+            .fplms-cl-bulk-apply:hover { background:#5a6fd6; }
+
+            /* ── Table ── */
+            .fplms-ct-wrapper { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+            .fplms-ct { width:100%; border-collapse:collapse; margin:0; font-size:14px; }
+            .fplms-ct thead th { padding:11px 16px; text-align:left; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; color:#fff; background:#55585b; border-bottom:1px solid #e5e7eb; white-space:nowrap; }
+            .fplms-ct tbody tr { border-bottom:1px solid #f3f4f6; transition:background .12s; }
+            .fplms-ct tbody tr:last-child { border-bottom:none; }
+            .fplms-ct tbody tr:hover { background:#f9fafb; }
+            .fplms-ct td { padding:12px 16px; color:#374151; vertical-align:middle; }
+            .fplms-ct-title { font-weight:600; color:#111827; font-size:14px; line-height:1.4; }
+            .fplms-ct-meta  { font-size:12px; color:#9ca3af; margin-top:2px; }
+            .fplms-ct input[type="checkbox"] { width:16px; height:16px; cursor:pointer; accent-color:#667eea; }
+
+            /* ── Status badges ── */
+            .fplms-cs-badge { display:inline-flex; align-items:center; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap; margin-top:3px; }
+            .fplms-cs-publish { background:#ECFDF3; color:#027A48; }
+            .fplms-cs-draft   { background:#FFF8C5; color:#8a6c00; }
+
+            /* ── Structure tags ── */
+            .fplms-ct-struct-tags { display:flex; flex-wrap:wrap; gap:4px; }
+            .fplms-ct-struct-tag  { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; background:#f3f4f6; border-radius:4px; font-size:12px; color:#374151; white-space:nowrap; }
+            .fplms-ct-struct-tag svg { width:11px; height:11px; fill:#6b7280; flex-shrink:0; }
+            .fplms-ct-struct-free { background:#e7f5fe; color:#1a56db; }
+            .fplms-ct-struct-free svg { fill:#1a56db; }
+
+            /* ── Action icon buttons ── */
+            .fplms-ct-actions { display:flex; align-items:center; gap:2px; justify-content:center; }
+            .fplms-ct-btn { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:6px; border:none; background:transparent; cursor:pointer; transition:all .15s; text-decoration:none; padding:0; position:relative; }
+            .fplms-ct-btn svg { width:17px; height:17px; fill:#9ca3af; transition:fill .15s; }
+            .fplms-ct-btn:hover { background:#f3f4f6; }
+            .fplms-ct-btn.modules:hover svg    { fill:#7c3aed; }
+            .fplms-ct-btn.lessons:hover svg    { fill:#0284c7; }
+            .fplms-ct-btn.structures:hover svg { fill:#0891b2; }
+            .fplms-ct-btn.edit:hover svg       { fill:#2563eb; }
+            .fplms-ct-btn.delete:hover svg     { fill:#dc2626; }
+            .fplms-ct-btn::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 6px); left:50%; transform:translateX(-50%); background:#1f2937; color:#fff; font-size:11px; white-space:nowrap; padding:4px 8px; border-radius:5px; pointer-events:none; opacity:0; transition:opacity .15s; z-index:99; }
+            .fplms-ct-btn:hover::after { opacity:1; }
+
+            /* ── Assign instructor form ── */
+            .fplms-ct-inst-form { display:flex; gap:5px; align-items:center; }
+            .fplms-ct-inst-form select { max-width:160px; font-size:12px; padding:4px 6px; border:1px solid #d1d5db; border-radius:6px; }
+            .fplms-ct-save-btn { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; background:#667eea; border:none; border-radius:6px; cursor:pointer; flex-shrink:0; transition:background .2s; }
+            .fplms-ct-save-btn:hover { background:#5a6fd6; }
+            .fplms-ct-save-btn svg { width:16px; height:16px; fill:#fff; }
+
+            /* ── Pagination ── */
+            .fplms-cl-pag-wrap { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-top:1px solid #f3f4f6; flex-wrap:wrap; gap:8px; }
+            .fplms-cl-pag-info { font-size:13px; color:#6b7280; }
+            .fplms-cl-pag-controls { display:flex; align-items:center; gap:4px; }
+            .fplms-cl-pag-btn { min-width:36px; height:34px; padding:0 10px; border:1px solid #e5e7eb; background:#fff; color:#374151; font-size:13px; border-radius:6px; cursor:pointer; transition:all .15s; display:inline-flex; align-items:center; justify-content:center; }
+            .fplms-cl-pag-btn:hover:not(:disabled) { background:#f3f4f6; border-color:#d1d5db; }
+            .fplms-cl-pag-btn.active { background:#667eea; color:#fff; border-color:#667eea; font-weight:600; }
+            .fplms-cl-pag-btn:disabled { color:#d1d5db; cursor:not-allowed; }
+
+            /* ── Notice ── */
+            .fplms-cl-notice { display:flex; align-items:center; gap:10px; padding:12px 18px; border-radius:10px; margin-bottom:16px; background:#ECFDF3; border:1px solid #6ee7b7; color:#065f46; font-size:14px; }
+            .fplms-cl-notice svg { width:18px; height:18px; fill:#027A48; flex-shrink:0; }
+
+            /* ── Delete modal ── */
+            .fplms-cl-modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:100000; align-items:center; justify-content:center; }
+            .fplms-cl-modal-overlay.active { display:flex; }
+            .fplms-cl-modal { background:#fff; border-radius:14px; box-shadow:0 8px 40px rgba(0,0,0,.2); max-width:460px; width:100%; overflow:hidden; }
+            .fplms-cl-modal-header { padding:18px 22px; border-bottom:1px solid #fee2e2; background:#fef2f2; display:flex; align-items:center; gap:10px; }
+            .fplms-cl-modal-header svg { width:22px; height:22px; fill:#dc2626; flex-shrink:0; }
+            .fplms-cl-modal-header h3 { margin:0; font-size:16px; font-weight:700; color:#7f1d1d; }
+            .fplms-cl-modal-body { padding:22px; color:#374151; font-size:14px; }
+            .fplms-cl-modal-course { padding:10px 14px; background:#f9fafb; border-radius:8px; border-left:3px solid #dc2626; font-weight:600; color:#111827; margin:12px 0; }
+            .fplms-cl-modal-footer { display:flex; gap:10px; justify-content:flex-end; padding:14px 22px; border-top:1px solid #f3f4f6; background:#f9fafb; }
+            .fplms-cl-modal-cancel  { padding:8px 20px; background:#fff; color:#374151; border:1px solid #e5e7eb; border-radius:8px; font-size:14px; font-weight:500; cursor:pointer; transition:all .2s; }
+            .fplms-cl-modal-cancel:hover { background:#f3f4f6; }
+            .fplms-cl-modal-confirm { padding:8px 20px; background:#dc2626; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; transition:background .2s; }
+            .fplms-cl-modal-confirm:hover { background:#b91c1c; }
+
+            @media (max-width:900px) {
+                .fplms-ct { min-width:860px; }
+                .fplms-topbar-c { flex-direction:column; align-items:flex-start; }
+                .fplms-cl-search-input { width:100%; }
+                .fplms-topbar-right-c { width:100%; }
             }
         </style>
 
-        <div class="fplms-courses-header">
-            <div>
-                <h2 style="margin: 0;">📚 Cursos MasterStudy</h2>
-                <p style="margin: 5px 0 0 0; color: #646970;">
-                    <?php echo esc_html( $total_published ); ?> curso<?php echo $total_published !== 1 ? 's' : ''; ?> encontrado<?php echo $total_published !== 1 ? 's' : ''; ?>
-                </p>
-            </div>
-            <a href="<?php echo esc_url( admin_url( 'post-new.php?post_type=' . FairPlay_LMS_Config::MS_PT_COURSE ) ); ?>" class="fplms-create-course-btn">
-                <span style="font-size: 18px;">➕</span>
-                <span>Crear Nuevo Curso</span>
-            </a>
-        </div>
+        <div class="fplms-course-list-wrapper">
 
-        <?php if ( empty( $courses ) ) : ?>
-            <div class="fplms-empty-state">
-                <div class="fplms-empty-state-icon">📚</div>
-                <h3>No hay cursos creados todavía</h3>
-                <p>Crea tu primer curso para comenzar a organizar tu contenido educativo.</p>
-                <a href="<?php echo esc_url( admin_url( 'post-new.php?post_type=' . FairPlay_LMS_Config::MS_PT_COURSE ) ); ?>" class="button button-primary button-hero">
-                    ➕ Crear Primer Curso
+            <?php if ( $deleted_n > 0 ) : ?>
+            <div class="fplms-cl-notice">
+                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 13.17l7.59-7.59L19 8l-9 9z"/></svg>
+                <span><?php echo esc_html( $deleted_n ); ?> curso(s) eliminado(s) correctamente.</span>
+            </div>
+            <?php endif; ?>
+
+            <!-- Page header -->
+            <div class="fplms-cl-page-header">
+                <div>
+                    <div class="fplms-cl-title-row">
+                        <div class="fplms-cl-page-icon">
+                            <svg viewBox="0 0 24 24"><path d="M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-.85V5zm0 13.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z"/></svg>
+                        </div>
+                        <h2>Gestión de Cursos</h2>
+                    </div>
+                    <p class="fplms-cl-page-subtitle"><?php echo esc_html( $total ); ?> curso<?php echo 1 !== $total ? 's' : ''; ?> en total</p>
+                </div>
+                <a href="<?php echo esc_url( admin_url( 'post-new.php?post_type=' . FairPlay_LMS_Config::MS_PT_COURSE ) ); ?>" class="fplms-cl-dl-btn" style="text-decoration:none;color:#374151;">
+                    <svg viewBox="0 0 24 24" style="fill:#667eea;"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                    Crear Nuevo Curso
                 </a>
             </div>
-        <?php else : ?>
-            <div class="fplms-info-box">
-                <p><strong>💡 Consejo:</strong> Usa los iconos de acción para gestionar cada curso. Puedes administrar módulos, lecciones, estructuras y editar el contenido.</p>
-            </div>
 
-            <table class="widefat striped fplms-table-minimal">
-                <thead>
-                    <tr>
-                        <th style="width: 30%;">Curso</th>
-                        <th style="width: 15%;">Profesor</th>
-                        <th style="width: 25%;">Estructuras</th>
-                        <th style="width: 15%;">Asignar Profesor</th>
-                        <th style="width: 15%;">Acciones</th>
-                    </tr>
-                </thead>
-                <tbody>
-                <?php foreach ( $courses as $course ) : ?>
-                    <?php
-                    $modules_url = add_query_arg(
-                        [
-                            'page'      => 'fplms-courses',
-                            'view'      => 'modules',
-                            'course_id' => $course->ID,
-                        ],
-                        admin_url( 'admin.php' )
-                    );
+            <!-- Table card -->
+            <div class="fplms-table-card-c">
 
-                    $lessons_url = add_query_arg(
-                        [
-                            'page'      => 'fplms-courses',
-                            'view'      => 'lessons',
-                            'course_id' => $course->ID,
-                        ],
-                        admin_url( 'admin.php' )
-                    );
-
-                    $structures_url = add_query_arg(
-                        [
-                            'page'      => 'fplms-courses',
-                            'view'      => 'structures',
-                            'course_id' => $course->ID,
-                        ],
-                        admin_url( 'admin.php' )
-                    );
-
-                    // Obtener instructor del curso con fallbacks
-                    $teacher_id = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
-                    
-                    // Fallback: Intentar otros meta keys que MasterStudy podría usar
-                    if ( ! $teacher_id ) {
-                        // Algunas versiones de MasterStudy usan 'instructor_id'
-                        $teacher_id = (int) get_post_meta( $course->ID, 'instructor_id', true );
-                    }
-                    
-                    if ( ! $teacher_id ) {
-                        // Intentar con el autor del post
-                        $teacher_id = (int) $course->post_author;
-                    }
-                    
-                    $teacher_name = $teacher_id ? get_the_author_meta( 'display_name', $teacher_id ) : '';
-                    if ( ! $teacher_name ) {
-                        $teacher_name = '— Sin asignar —';
-                    }
-
-                    // Obtener estructuras del curso
-                    $course_structures = $this->get_course_structures( $course->ID );
-                    ?>
-                    <tr>
-                        <td>
-                            <div class="fplms-course-title"><?php echo esc_html( get_the_title( $course ) ); ?></div>
-                            <div class="fplms-course-id">ID: <?php echo esc_html( $course->ID ); ?></div>
-                        </td>
-                        <td><?php echo esc_html( $teacher_name ); ?></td>
-                        <td>
-                            <div class="fplms-structures-tags">
-                                <?php echo wp_kses_post( $this->format_course_structures_compact( $course_structures ) ); ?>
+                <!-- TOP BAR -->
+                <div class="fplms-topbar-c">
+                    <div class="fplms-topbar-left-c">
+                        Mostrar
+                        <select id="fplms-cl-per-page" class="fplms-entries-sel-c">
+                            <option value="10">10</option>
+                            <option value="20" selected>20</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
+                        entradas
+                    </div>
+                    <div class="fplms-topbar-right-c">
+                        <div class="fplms-cl-search-wrap">
+                            <input type="text" id="fplms-cl-search" class="fplms-cl-search-input" placeholder="Buscar por título, ID, docente...">
+                            <button type="button" class="fplms-cl-search-clear" id="fplms-cl-search-clear">&#x2715;</button>
+                        </div>
+                        <div class="fplms-cl-dl-wrap" id="fplms-cl-dl-wrap">
+                            <button type="button" class="fplms-cl-dl-btn" onclick="fplmsClToggleDl(event)">
+                                <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                                Descargar
+                                <svg viewBox="0 0 24 24" style="width:12px;height:12px;margin-left:2px;fill:#6b7280;"><path d="M7 10l5 5 5-5z"/></svg>
+                            </button>
+                            <div class="fplms-cl-dl-dropdown" id="fplms-cl-dl-dropdown">
+                                <button type="button" class="fplms-cl-dl-item" onclick="fplmsClExportXLS()">
+                                    <svg viewBox="0 0 24 24" style="fill:#217346;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zM7 17l2-3-2-3h1.7l1.3 2 1.3-2H13l-2 3 2 3h-1.7L10 18l-1.3 2H7z"/></svg>
+                                    Excel (.xls)
+                                </button>
+                                <button type="button" class="fplms-cl-dl-item" onclick="fplmsClExportPDF()">
+                                    <svg viewBox="0 0 24 24" style="fill:#e53e3e;"><path d="M20 2H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8.5 7.5c0 .83-.67 1.5-1.5 1.5H9v2H7.5V7H10c.83 0 1.5.67 1.5 1.5v1zm5 2c0 .83-.67 1.5-1.5 1.5h-2.5V7H15c.83 0 1.5.67 1.5 1.5v3zm4-3H19v1h1.5V11H19v2h-1.5V7h3v1.5zM9 9.5h1v-1H9v1zM13 11h1V8.5h-1V11z"/></svg>
+                                    PDF
+                                </button>
                             </div>
-                        </td>
-                        <td>
-                            <form method="post" class="fplms-instructor-form">
-                                <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
-                                <input type="hidden" name="fplms_courses_action" value="assign_instructor">
-                                <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course->ID ); ?>">
-
-                                <select name="fplms_instructor_id">
-                                    <option value="0">— Sin profesor —</option>
-                                    <?php foreach ( $instructors as $user ) : ?>
-                                        <option value="<?php echo esc_attr( $user->ID ); ?>" <?php selected( $teacher_id, $user->ID ); ?>>
-                                            <?php echo esc_html( $user->display_name ); ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-
-                                <button type="submit" class="button button-primary button-small">💾</button>
-                            </form>
-                        </td>
-                        <td>
-                            <div class="fplms-actions-compact">
-                                <a href="<?php echo esc_url( $modules_url ); ?>" class="fplms-action-btn" title="Módulos">
-                                    📚
-                                    <span class="tooltip">Módulos</span>
-                                </a>
-                                <a href="<?php echo esc_url( $lessons_url ); ?>" class="fplms-action-btn" title="Lecciones">
-                                    📖
-                                    <span class="tooltip">Lecciones</span>
-                                </a>
-                                <a href="<?php echo esc_url( $structures_url ); ?>" class="fplms-action-btn" title="Estructuras">
-                                    🏢
-                                    <span class="tooltip">Estructuras</span>
-                                </a>
-                                <a href="<?php echo esc_url( get_edit_post_link( $course->ID ) ); ?>" class="fplms-action-btn fplms-edit-btn" title="Editar">
-                                    ✏️
-                                    <span class="tooltip">Editar Curso</span>
-                                </a>
-                            </div>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
-
-            <?php if ( $total_pages > 1 ) : ?>
-                <div class="fplms-pagination">
-                    <?php if ( $paged > 1 ) : ?>
-                        <a href="<?php echo esc_url( add_query_arg( 'paged', $paged - 1 ) ); ?>">
-                            ← Anterior
-                        </a>
-                    <?php endif; ?>
-
-                    <?php for ( $i = 1; $i <= $total_pages; $i++ ) : ?>
-                        <?php if ( $i === $paged ) : ?>
-                            <span class="current"><?php echo esc_html( $i ); ?></span>
-                        <?php else : ?>
-                            <a href="<?php echo esc_url( add_query_arg( 'paged', $i ) ); ?>">
-                                <?php echo esc_html( $i ); ?>
-                            </a>
-                        <?php endif; ?>
-                    <?php endfor; ?>
-
-                    <?php if ( $paged < $total_pages ) : ?>
-                        <a href="<?php echo esc_url( add_query_arg( 'paged', $paged + 1 ) ); ?>">
-                            Siguiente →
-                        </a>
-                    <?php endif; ?>
+                        </div>
+                    </div>
                 </div>
-            <?php endif; ?>
-        <?php endif; ?>
+
+                <!-- BULK ACTIONS BAR (hidden until checkboxes selected) -->
+                <div class="fplms-cl-bulk-bar" id="fplms-cl-bulk-bar">
+                    <span class="fplms-cl-bulk-label">Acciones masivas</span>
+                    <span class="fplms-cl-bulk-badge" id="fplms-cl-bulk-count">0</span>
+                    seleccionados
+                    <select class="fplms-cl-bulk-select" id="fplms-cl-bulk-select">
+                        <option value="">— Seleccionar acción —</option>
+                        <option value="bulk_delete">Eliminar</option>
+                    </select>
+                    <button type="button" class="fplms-cl-bulk-apply" onclick="fplmsClApplyBulk()">Aplicar</button>
+                </div>
+
+                <!-- TABLE FORM (wraps table for bulk checkbox submission) -->
+                <form method="post" id="fplms-cl-bulk-form" action="<?php echo esc_url( admin_url( 'admin.php?page=fplms-courses' ) ); ?>">
+                    <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                    <input type="hidden" name="fplms_courses_action" id="fplms-cl-bulk-action-input" value="">
+
+                    <div class="fplms-ct-wrapper">
+                        <table class="fplms-ct" id="fplms-cl-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:36px;padding-left:18px;"><input type="checkbox" id="fplms-cl-select-all"></th>
+                                    <th>Curso</th>
+                                    <th>Docente</th>
+                                    <th>Fecha</th>
+                                    <th>Estructuras</th>
+                                    <th style="width:215px;">Asignar Docente</th>
+                                    <th style="text-align:center;width:145px;">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            <?php if ( empty( $courses ) ) : ?>
+                                <tr>
+                                    <td colspan="7" style="text-align:center;padding:52px;color:#9ca3af;">
+                                        <svg viewBox="0 0 24 24" style="width:44px;height:44px;fill:#e5e7eb;display:block;margin:0 auto 14px;"><path d="M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-.85V5z"/></svg>
+                                        No hay cursos disponibles todavía.
+                                    </td>
+                                </tr>
+                            <?php else : ?>
+                                <?php foreach ( $courses as $course ) :
+                                    $modules_url    = add_query_arg( [ 'page' => 'fplms-courses', 'view' => 'modules',    'course_id' => $course->ID ], admin_url( 'admin.php' ) );
+                                    $lessons_url    = add_query_arg( [ 'page' => 'fplms-courses', 'view' => 'lessons',    'course_id' => $course->ID ], admin_url( 'admin.php' ) );
+                                    $structures_url = add_query_arg( [ 'page' => 'fplms-courses', 'view' => 'structures', 'course_id' => $course->ID ], admin_url( 'admin.php' ) );
+                                    $edit_url       = get_edit_post_link( $course->ID );
+
+                                    $teacher_id = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
+                                    if ( ! $teacher_id ) {
+                                        $teacher_id = (int) get_post_meta( $course->ID, 'instructor_id', true );
+                                    }
+                                    $teacher_name = $teacher_id ? get_the_author_meta( 'display_name', $teacher_id ) : '';
+
+                                    $course_structures = $this->get_course_structures( $course->ID );
+                                    $fecha             = date_i18n( 'd/m/Y', strtotime( $course->post_date ) );
+                                    $status_label      = 'publish' === $course->post_status ? 'Publicado' : 'Borrador';
+                                    $status_class      = 'publish' === $course->post_status ? 'fplms-cs-publish' : 'fplms-cs-draft';
+                                    $search_str        = strtolower( get_the_title( $course ) . ' ' . $course->ID . ' ' . $teacher_name );
+                                ?>
+                                <tr class="fplms-cl-row"
+                                    data-course-id="<?php echo esc_attr( $course->ID ); ?>"
+                                    data-search="<?php echo esc_attr( $search_str ); ?>">
+                                    <td style="padding-left:18px;">
+                                        <input type="checkbox" name="fplms_bulk_course_ids[]" value="<?php echo esc_attr( $course->ID ); ?>" class="fplms-cl-cb">
+                                    </td>
+                                    <td>
+                                        <div class="fplms-ct-title"><?php echo esc_html( get_the_title( $course ) ); ?></div>
+                                        <div class="fplms-ct-meta">ID: <?php echo esc_html( $course->ID ); ?></div>
+                                        <span class="fplms-cs-badge <?php echo esc_attr( $status_class ); ?>"><?php echo esc_html( $status_label ); ?></span>
+                                    </td>
+                                    <td>
+                                        <div style="font-weight:500;color:#1f2937;"><?php echo esc_html( $teacher_name ?: '— Sin asignar —' ); ?></div>
+                                    </td>
+                                    <td><?php echo esc_html( $fecha ); ?></td>
+                                    <td>
+                                        <div class="fplms-ct-struct-tags">
+                                            <?php echo $this->format_course_structures_compact( $course_structures ); // phpcs:ignore -- HTML with SVG ?>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <form method="post" class="fplms-ct-inst-form" action="<?php echo esc_url( admin_url( 'admin.php?page=fplms-courses' ) ); ?>">
+                                            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                                            <input type="hidden" name="fplms_courses_action" value="assign_instructor">
+                                            <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course->ID ); ?>">
+                                            <select name="fplms_instructor_id">
+                                                <option value="0">— Sin docente —</option>
+                                                <?php foreach ( $instructors as $inst ) : ?>
+                                                    <option value="<?php echo esc_attr( $inst->ID ); ?>" <?php selected( $teacher_id, $inst->ID ); ?>>
+                                                        <?php echo esc_html( $inst->display_name ); ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                            <button type="submit" class="fplms-ct-save-btn" title="Guardar docente">
+                                                <svg viewBox="0 0 24 24"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+                                            </button>
+                                        </form>
+                                    </td>
+                                    <td>
+                                        <div class="fplms-ct-actions">
+                                            <a href="<?php echo esc_url( $modules_url ); ?>" class="fplms-ct-btn modules" data-tip="Módulos">
+                                                <svg viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
+                                            </a>
+                                            <a href="<?php echo esc_url( $lessons_url ); ?>" class="fplms-ct-btn lessons" data-tip="Lecciones">
+                                                <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+                                            </a>
+                                            <a href="<?php echo esc_url( $structures_url ); ?>" class="fplms-ct-btn structures" data-tip="Estructuras">
+                                                <svg viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+                                            </a>
+                                            <a href="<?php echo esc_url( $edit_url ); ?>" class="fplms-ct-btn edit" data-tip="Editar">
+                                                <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                                            </a>
+                                            <button type="button" class="fplms-ct-btn delete" data-tip="Eliminar"
+                                                    onclick="fplmsClShowDeleteModal(<?php echo (int) $course->ID; ?>, '<?php echo esc_js( get_the_title( $course ) ); ?>')">
+                                                <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </form>
+
+                <!-- PAGINATION -->
+                <div id="fplms-cl-pagination"></div>
+
+            </div><!-- .fplms-table-card-c -->
+        </div><!-- .fplms-course-list-wrapper -->
+
+        <!-- DELETE CONFIRM MODAL -->
+        <div id="fplms-cl-delete-modal" class="fplms-cl-modal-overlay">
+            <div class="fplms-cl-modal">
+                <div class="fplms-cl-modal-header">
+                    <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                    <h3>Eliminar curso</h3>
+                </div>
+                <div class="fplms-cl-modal-body">
+                    <p><strong>Advertencia:</strong> Esta acción es <strong style="color:#dc2626;">permanente</strong> y no se puede deshacer.</p>
+                    <div class="fplms-cl-modal-course" id="fplms-cl-delete-name"></div>
+                    <p style="color:#4b5563;">Se eliminará el curso y todos sus datos asociados.</p>
+                </div>
+                <div class="fplms-cl-modal-footer">
+                    <button type="button" class="fplms-cl-modal-cancel" onclick="fplmsClCloseDeleteModal()">Cancelar</button>
+                    <button type="button" class="fplms-cl-modal-confirm" onclick="fplmsClConfirmDelete()">Eliminar permanentemente</button>
+                </div>
+            </div>
+        </div>
+
+        <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            var allRows      = Array.from(document.querySelectorAll('.fplms-cl-row'));
+            var filteredRows = allRows.slice();
+            var currentPage  = 1;
+            var perPage      = 20;
+
+            // ── Search ──────────────────────────────────────────────────────
+            var searchInput = document.getElementById('fplms-cl-search');
+            var clearBtn    = document.getElementById('fplms-cl-search-clear');
+
+            searchInput.addEventListener('input', function() {
+                var q = this.value.trim().toLowerCase();
+                filteredRows = q
+                    ? allRows.filter(function(r) { return r.dataset.search.indexOf(q) !== -1; })
+                    : allRows.slice();
+                clearBtn.classList.toggle('visible', !!this.value);
+                currentPage = 1;
+                renderPagination();
+                updateBulkBar();
+            });
+
+            clearBtn.addEventListener('click', function() {
+                searchInput.value = '';
+                this.classList.remove('visible');
+                filteredRows = allRows.slice();
+                currentPage  = 1;
+                renderPagination();
+            });
+
+            // ── Per-page selector ────────────────────────────────────────────
+            document.getElementById('fplms-cl-per-page').addEventListener('change', function() {
+                perPage     = parseInt(this.value) || 20;
+                currentPage = 1;
+                renderPagination();
+            });
+
+            // ── Select all checkbox ──────────────────────────────────────────
+            var selectAll = document.getElementById('fplms-cl-select-all');
+            selectAll.addEventListener('change', function() {
+                var visible = filteredRows.slice((currentPage - 1) * perPage, currentPage * perPage);
+                visible.forEach(function(r) {
+                    var cb = r.querySelector('.fplms-cl-cb');
+                    if (cb) cb.checked = selectAll.checked;
+                });
+                updateBulkBar();
+            });
+
+            document.addEventListener('change', function(e) {
+                if (e.target.classList.contains('fplms-cl-cb')) updateBulkBar();
+            });
+
+            function updateBulkBar() {
+                var count = document.querySelectorAll('.fplms-cl-cb:checked').length;
+                document.getElementById('fplms-cl-bulk-count').textContent = count;
+                document.getElementById('fplms-cl-bulk-bar').classList.toggle('visible', count > 0);
+            }
+
+            // ── Pagination ───────────────────────────────────────────────────
+            function renderPagination() {
+                var container  = document.getElementById('fplms-cl-pagination');
+                var total      = filteredRows.length;
+                var totalPages = Math.ceil(total / perPage) || 1;
+                if (currentPage > totalPages) currentPage = totalPages;
+
+                allRows.forEach(function(r) { r.style.display = 'none'; });
+                var start = (currentPage - 1) * perPage;
+                var end   = start + perPage;
+                filteredRows.slice(start, end).forEach(function(r) { r.style.display = ''; });
+
+                if (total === 0) {
+                    container.innerHTML = '<div class="fplms-cl-pag-wrap"><span class="fplms-cl-pag-info">No se encontraron cursos.</span></div>';
+                    return;
+                }
+
+                var from = start + 1;
+                var to   = Math.min(end, total);
+                var info = '<span class="fplms-cl-pag-info">Mostrando ' + from + ' a ' + to + ' de ' + total + ' entradas</span>';
+
+                var btns = '';
+                btns += '<button class="fplms-cl-pag-btn" ' + (currentPage === 1 ? 'disabled' : '') + ' onclick="fplmsClPage(' + (currentPage - 1) + ')">← Anterior</button>';
+
+                var maxBtns = 5;
+                var sp = Math.max(1, currentPage - 2);
+                var ep = Math.min(totalPages, sp + maxBtns - 1);
+                if (ep - sp < maxBtns - 1) sp = Math.max(1, ep - maxBtns + 1);
+
+                if (sp > 1) {
+                    btns += '<button class="fplms-cl-pag-btn" onclick="fplmsClPage(1)">1</button>';
+                    if (sp > 2) btns += '<span style="padding:0 4px;color:#9ca3af;">…</span>';
+                }
+                for (var i = sp; i <= ep; i++) {
+                    btns += '<button class="fplms-cl-pag-btn' + (i === currentPage ? ' active' : '') + '" onclick="fplmsClPage(' + i + ')">' + i + '</button>';
+                }
+                if (ep < totalPages) {
+                    if (ep < totalPages - 1) btns += '<span style="padding:0 4px;color:#9ca3af;">…</span>';
+                    btns += '<button class="fplms-cl-pag-btn" onclick="fplmsClPage(' + totalPages + ')">' + totalPages + '</button>';
+                }
+                btns += '<button class="fplms-cl-pag-btn" ' + (currentPage >= totalPages ? 'disabled' : '') + ' onclick="fplmsClPage(' + (currentPage + 1) + ')">Siguiente →</button>';
+
+                container.innerHTML = '<div class="fplms-cl-pag-wrap">' + info + '<div class="fplms-cl-pag-controls">' + btns + '</div></div>';
+            }
+
+            window.fplmsClPage = function(page) {
+                var totalPages = Math.ceil(filteredRows.length / perPage) || 1;
+                if (page < 1 || page > totalPages) return;
+                currentPage = page;
+                renderPagination();
+                var wrap = document.querySelector('.fplms-ct-wrapper');
+                if (wrap) wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            };
+
+            // ── Init ─────────────────────────────────────────────────────────
+            renderPagination();
+
+            // expose filtered rows for export
+            window._fplmsClRows = function() {
+                return filteredRows;
+            };
+        });
+
+        // ── Download dropdown ────────────────────────────────────────────────
+        window.fplmsClToggleDl = function(e) {
+            e.stopPropagation();
+            document.getElementById('fplms-cl-dl-dropdown').classList.toggle('open');
+        };
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('#fplms-cl-dl-wrap')) {
+                var dd = document.getElementById('fplms-cl-dl-dropdown');
+                if (dd) dd.classList.remove('open');
+            }
+        });
+
+        // ── Export helpers ───────────────────────────────────────────────────
+        function fplmsClGetExportRows() {
+            var checked = document.querySelectorAll('.fplms-cl-cb:checked');
+            if (checked.length > 0) {
+                return Array.from(checked).map(function(cb) { return cb.closest('tr.fplms-cl-row'); }).filter(Boolean);
+            }
+            return Array.from(document.querySelectorAll('.fplms-cl-row')).filter(function(r) { return r.style.display !== 'none'; });
+        }
+
+        function fplmsClExtractRow(row) {
+            var cells = row.querySelectorAll('td');
+            if (cells.length < 6) return null;
+            return {
+                title:   (cells[1].querySelector('.fplms-ct-title')  || { textContent: '' }).textContent.trim(),
+                id:      (cells[1].querySelector('.fplms-ct-meta')   || { textContent: '' }).textContent.trim(),
+                status:  (cells[1].querySelector('.fplms-cs-badge')  || { textContent: '' }).textContent.trim(),
+                docente: cells[2].textContent.trim(),
+                fecha:   cells[3].textContent.trim(),
+                structs: cells[4].textContent.trim().replace(/\s+/g, ' ')
+            };
+        }
+
+        window.fplmsClExportXLS = function() {
+            var rows = fplmsClGetExportRows();
+            var hdrs = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha', 'Estructuras'];
+            var t = '<table border="1" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;">';
+            t += '<thead><tr>' + hdrs.map(function(h) {
+                return '<th style="background:#667eea;color:#fff;padding:8px 12px;font-weight:bold;">' + h + '</th>';
+            }).join('') + '</tr></thead><tbody>';
+            rows.forEach(function(row) {
+                var d = fplmsClExtractRow(row);
+                if (!d) return;
+                var vals = [d.title, d.id, d.status, d.docente, d.fecha, d.structs];
+                t += '<tr>' + vals.map(function(v) {
+                    return '<td style="padding:6px 10px;">' + v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td>';
+                }).join('') + '</tr>';
+            });
+            t += '</tbody></table>';
+            var blob = new Blob(['<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' + t + '</body></html>'], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'cursos.xls';
+            a.click();
+            URL.revokeObjectURL(a.href);
+            document.getElementById('fplms-cl-dl-dropdown').classList.remove('open');
+        };
+
+        window.fplmsClExportPDF = function() {
+            var rows    = fplmsClGetExportRows();
+            var hdrs    = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha', 'Estructuras'];
+            var checked = document.querySelectorAll('.fplms-cl-cb:checked').length;
+            var label   = checked > 0 ? checked + ' seleccionados' : rows.length + ' cursos';
+            var t = '<table><thead><tr>' + hdrs.map(function(h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>';
+            rows.forEach(function(row) {
+                var d = fplmsClExtractRow(row);
+                if (!d) return;
+                var vals = [d.title, d.id, d.status, d.docente, d.fecha, d.structs];
+                t += '<tr>' + vals.map(function(v) {
+                    return '<td>' + v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td>';
+                }).join('') + '</tr>';
+            });
+            t += '</tbody></table>';
+            var win = window.open('', '_blank', 'width=960,height=700');
+            win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Cursos</title><style>'
+                + 'body{font-family:Arial,sans-serif;font-size:12px;margin:24px;color:#1f2937;}'
+                + 'h2{font-size:16px;margin-bottom:14px;}'
+                + 'p.meta{font-size:11px;color:#6b7280;margin-bottom:16px;}'
+                + 'table{width:100%;border-collapse:collapse;}'
+                + 'th{background:#667eea;color:#fff;padding:8px 10px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.5px;}'
+                + 'td{padding:7px 10px;border-bottom:1px solid #e5e7eb;}'
+                + 'tr:nth-child(even) td{background:#f9fafb;}'
+                + '.btn{margin-top:18px;padding:9px 22px;background:#667eea;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;}'
+                + '@media print{.btn{display:none;}}'
+                + '</style></head><body>'
+                + '<h2>Cursos</h2><p class="meta">' + label + ' &mdash; ' + new Date().toLocaleDateString('es-ES') + '</p>'
+                + t
+                + '<br><button class="btn" onclick="window.print()">Imprimir / Guardar como PDF</button>'
+                + '</body></html>');
+            win.document.close();
+            document.getElementById('fplms-cl-dl-dropdown').classList.remove('open');
+        };
+
+        // ── Bulk action ──────────────────────────────────────────────────────
+        window.fplmsClApplyBulk = function() {
+            var action = document.getElementById('fplms-cl-bulk-select').value;
+            if (!action) { alert('Selecciona una acción.'); return; }
+            var count = document.querySelectorAll('.fplms-cl-cb:checked').length;
+            if (!count) { alert('Selecciona al menos un curso.'); return; }
+            if (action === 'bulk_delete') {
+                if (!confirm('¿Eliminar permanentemente ' + count + ' curso(s)? Esta acción no se puede deshacer.')) return;
+                document.getElementById('fplms-cl-bulk-action-input').value = 'bulk_delete';
+                document.getElementById('fplms-cl-bulk-form').submit();
+            }
+        };
+
+        // ── Individual delete modal ──────────────────────────────────────────
+        var _fplmsClDelId = null;
+
+        window.fplmsClShowDeleteModal = function(courseId, courseTitle) {
+            _fplmsClDelId = courseId;
+            document.getElementById('fplms-cl-delete-name').textContent = courseTitle;
+            document.getElementById('fplms-cl-delete-modal').classList.add('active');
+        };
+        window.fplmsClCloseDeleteModal = function() {
+            document.getElementById('fplms-cl-delete-modal').classList.remove('active');
+            _fplmsClDelId = null;
+        };
+        window.fplmsClConfirmDelete = function() {
+            if (!_fplmsClDelId) return;
+            document.querySelectorAll('.fplms-cl-cb').forEach(function(cb) {
+                cb.checked = parseInt(cb.value) === _fplmsClDelId;
+            });
+            document.getElementById('fplms-cl-bulk-action-input').value = 'bulk_delete';
+            document.getElementById('fplms-cl-delete-modal').classList.remove('active');
+            document.getElementById('fplms-cl-bulk-form').submit();
+        };
+        document.addEventListener('click', function(e) {
+            if (e.target.id === 'fplms-cl-delete-modal') fplmsClCloseDeleteModal();
+        });
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') fplmsClCloseDeleteModal();
+        });
+        </script>
         <?php
     }
+
 
     /**
      * Vista de gestión de módulos/secciones y lecciones del curriculum MasterStudy.
@@ -1865,57 +2094,60 @@ class FairPlay_LMS_Courses_Controller {
      * @return string HTML formateado para mostrar.
      */
     private function format_course_structures_compact( array $structures ): string {
+        // SVG icons (inline, 11×11).
+        $svg_city    = '<svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:#6b7280;flex-shrink:0;"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>';
+        $svg_company = '<svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:#6b7280;flex-shrink:0;"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>';
+        $svg_channel = '<svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:#6b7280;flex-shrink:0;"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>';
+        $svg_branch  = '<svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:#6b7280;flex-shrink:0;"><path d="M13 7h-2v2h2V7zm0 4h-2v2h2v-2zm4 0h-2v2h2v-2zM3 3v18h18V3H3zm16 16H5V5h14v14zM9 7H7v2h2V7zm0 4H7v2h2v-2z"/></svg>';
+        $svg_role    = '<svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:#6b7280;flex-shrink:0;"><path d="M20 6h-2.18c.07-.44.18-.88.18-1 0-2.21-1.79-4-4-4s-4 1.79-4 4c0 .12.11.56.18 1H8c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h12c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-6-3c1.1 0 2 .9 2 2 0 .12-.11.56-.18 1h-3.64C12.11 5.56 12 5.12 12 5c0-1.1.9-2 2-2zm6 17H8V8h2v1c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V8h2v12z"/></svg>';
+
         $tags = [];
 
         // Ciudades
         if ( ! empty( $structures['cities'] ) ) {
-            $city_names = $this->get_term_names_by_ids( $structures['cities'] );
-            foreach ( $city_names as $name ) {
-                $tags[] = '<span class="fplms-structure-tag">📍 ' . esc_html( $name ) . '</span>';
+            foreach ( $this->get_term_names_by_ids( $structures['cities'] ) as $name ) {
+                $tags[] = '<span class="fplms-ct-struct-tag">' . $svg_city . esc_html( $name ) . '</span>';
             }
         }
 
         // Empresas
         if ( ! empty( $structures['companies'] ) ) {
-            $company_names = $this->get_term_names_by_ids( $structures['companies'] );
-            foreach ( $company_names as $name ) {
-                $tags[] = '<span class="fplms-structure-tag">🏢 ' . esc_html( $name ) . '</span>';
+            foreach ( $this->get_term_names_by_ids( $structures['companies'] ) as $name ) {
+                $tags[] = '<span class="fplms-ct-struct-tag">' . $svg_company . esc_html( $name ) . '</span>';
             }
         }
 
         // Canales
         if ( ! empty( $structures['channels'] ) ) {
-            $channel_names = $this->get_term_names_by_ids( $structures['channels'] );
-            foreach ( $channel_names as $name ) {
-                $tags[] = '<span class="fplms-structure-tag">🏪 ' . esc_html( $name ) . '</span>';
+            foreach ( $this->get_term_names_by_ids( $structures['channels'] ) as $name ) {
+                $tags[] = '<span class="fplms-ct-struct-tag">' . $svg_channel . esc_html( $name ) . '</span>';
             }
         }
 
         // Sucursales
         if ( ! empty( $structures['branches'] ) ) {
-            $branch_names = $this->get_term_names_by_ids( $structures['branches'] );
-            foreach ( $branch_names as $name ) {
-                $tags[] = '<span class="fplms-structure-tag">🏢 ' . esc_html( $name ) . '</span>';
+            foreach ( $this->get_term_names_by_ids( $structures['branches'] ) as $name ) {
+                $tags[] = '<span class="fplms-ct-struct-tag">' . $svg_branch . esc_html( $name ) . '</span>';
             }
         }
 
         // Cargos
         if ( ! empty( $structures['roles'] ) ) {
-            $role_names = $this->get_term_names_by_ids( $structures['roles'] );
-            foreach ( $role_names as $name ) {
-                $tags[] = '<span class="fplms-structure-tag">👔 ' . esc_html( $name ) . '</span>';
+            foreach ( $this->get_term_names_by_ids( $structures['roles'] ) as $name ) {
+                $tags[] = '<span class="fplms-ct-struct-tag">' . $svg_role . esc_html( $name ) . '</span>';
             }
         }
 
         if ( empty( $tags ) ) {
-            return '<span class="fplms-structure-tag" style="background: #e7f5fe; color: #2271b1;">🌐 Sin restricción</span>';
+            $svg_globe = '<svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:#1a56db;flex-shrink:0;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
+            return '<span class="fplms-ct-struct-tag fplms-ct-struct-free">' . $svg_globe . 'Sin restricción</span>';
         }
 
-        // Limitar a 3 tags + "y X más" si hay muchos
+        // Limitar a 3 tags + "+X más" si hay muchos.
         if ( count( $tags ) > 3 ) {
             $remaining = count( $tags ) - 3;
-            $tags = array_slice( $tags, 0, 3 );
-            $tags[] = '<span class="fplms-structure-tag" style="background: #f0f0f1;">+' . $remaining . ' más</span>';
+            $tags      = array_slice( $tags, 0, 3 );
+            $tags[]    = '<span class="fplms-ct-struct-tag" style="background:#f0f0f1;color:#6b7280;">+' . $remaining . ' más</span>';
         }
 
         return implode( '', $tags );

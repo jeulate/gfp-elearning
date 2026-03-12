@@ -2320,7 +2320,7 @@ class FairPlay_LMS_Users_Controller {
                 <style>.fplms-create-user-container { --clr-primary: #667eea; --clr-primary-dark: #764ba2; }</style>
 
                 <div class="fplms-create-user-container fplms-edit-user-container">
-                    <form method="post" id="form-crear-usuario" enctype="multipart/form-data">
+                    <form method="post" id="form-crear-usuario" enctype="multipart/form-data" novalidate>
                         <?php wp_nonce_field( 'fplms_new_user_save', 'fplms_new_user_nonce' ); ?>
                         <input type="hidden" name="fplms_new_user_action" value="create_user">
                         <input type="file" id="fplms_user_photo" name="fplms_user_photo" accept="image/*">
@@ -4135,6 +4135,12 @@ class FairPlay_LMS_Users_Controller {
                             document.querySelectorAll('.structure-req-badge').forEach(function(el) {
                                 el.style.display = isAdmin ? 'none' : 'inline';
                             });
+                            ['fplms_city','fplms_company','fplms_channel','fplms_branch','fplms_job_role'].forEach(function(id) {
+                                var sel = document.getElementById(id);
+                                if (sel) {
+                                    if (isAdmin) { sel.removeAttribute('required'); } else { sel.setAttribute('required', ''); }
+                                }
+                            });
                         }
                         roleSelectEdit.addEventListener('change', toggleStructureRequired);
                         toggleStructureRequired(); // Estado inicial según el rol actual
@@ -4314,6 +4320,70 @@ class FairPlay_LMS_Users_Controller {
                         }
                     });
                 }
+
+                // ── Validación con modal para el formulario de creación ──
+                var createForm = document.getElementById('form-crear-usuario');
+                if (createForm) {
+                    createForm.addEventListener('submit', function(e) {
+                        e.preventDefault();
+                        var missing = [];
+
+                        var basicFields = [
+                            { id: 'fplms_first_name',  label: 'Nombre' },
+                            { id: 'fplms_last_name',   label: 'Apellido' },
+                            { id: 'fplms_id_usuario',  label: 'IDUsuario' },
+                            { id: 'fplms_user_login',  label: 'Nombre de usuario' },
+                            { id: 'fplms_user_email',  label: 'Correo electrónico' },
+                            { id: 'fplms_user_pass',   label: 'Contraseña' },
+                            { id: 'fplms_user_role',   label: 'Tipo de usuario' },
+                        ];
+                        basicFields.forEach(function(f) {
+                            var el = document.getElementById(f.id);
+                            if (!el || !el.value.trim()) missing.push(f.label);
+                        });
+
+                        var roleEl  = document.getElementById('fplms_user_role');
+                        var roleVal = roleEl ? roleEl.value : '';
+                        if (roleVal && roleVal !== 'administrator') {
+                            var structFields = [
+                                { id: 'fplms_city',     label: 'Ciudad' },
+                                { id: 'fplms_company',  label: 'Empresa' },
+                                { id: 'fplms_channel',  label: 'Canal / Franquicia' },
+                                { id: 'fplms_branch',   label: 'Sucursal' },
+                                { id: 'fplms_job_role', label: 'Cargo' },
+                            ];
+                            structFields.forEach(function(f) {
+                                var el = document.getElementById(f.id);
+                                if (!el || !el.value) missing.push(f.label);
+                            });
+                        }
+
+                        if (missing.length > 0) {
+                            var listItems = missing.map(function(m) {
+                                return '<li style="padding:5px 0;display:flex;align-items:center;gap:8px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="#e53e3e"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>' + m + '</li>';
+                            }).join('');
+                            var modalHTML = '<div id="fplms-create-validation-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100001;display:flex;align-items:center;justify-content:center;">'
+                                + '<div style="background:#fff;border-radius:14px;width:100%;max-width:460px;box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden;">'
+                                + '<div style="background:linear-gradient(135deg,#e53e3e,#c53030);padding:20px 24px;display:flex;align-items:center;gap:12px;">'
+                                + '<svg width="26" height="26" viewBox="0 0 24 24" fill="#fff"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
+                                + '<h3 style="margin:0;color:#fff;font-size:17px;">Campos requeridos incompletos</h3></div>'
+                                + '<div style="padding:22px 24px;">'
+                                + '<p style="margin:0 0 14px;color:#555;font-size:14px;">Por favor completa los siguientes campos antes de continuar:</p>'
+                                + '<ul style="margin:0;padding:0 0 0 4px;list-style:none;color:#2d3748;font-size:14px;font-weight:500;">' + listItems + '</ul>'
+                                + '</div>'
+                                + '<div style="padding:14px 24px 20px;display:flex;justify-content:flex-end;border-top:1px solid #e2e8f0;">'
+                                + '<button type="button" onclick="document.getElementById(\'fplms-create-validation-modal\').remove()" style="padding:9px 28px;background:#e53e3e;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;">Entendido</button>'
+                                + '</div></div></div>';
+                            // Eliminar modal previo si existe
+                            var prev = document.getElementById('fplms-create-validation-modal');
+                            if (prev) prev.remove();
+                            document.body.insertAdjacentHTML('beforeend', modalHTML);
+                            return;
+                        }
+
+                        createForm.submit();
+                    });
+                }
             </script>
         </div>
         <?php
@@ -4377,6 +4447,22 @@ class FairPlay_LMS_Users_Controller {
 
         $last_login_ts = get_user_meta( $user_id, 'last_login', true );
         $last_login    = $last_login_ts ? date( 'd/m/Y H:i', (int) $last_login_ts ) : '—';
+
+        // T&C
+        $ob_status       = get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ONBOARDING_STATUS, true );
+        $terms_ts        = (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_TERMS_ACCEPTED, true );
+        $terms_ip        = get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_TERMS_IP, true );
+        $terms_company   = get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_TERMS_COMPANY, true );
+        if ( $terms_ts ) {
+            $tz_bolivia = new DateTimeZone( 'America/La_Paz' ); // UTC-4, sin horario de verano
+            $dt_terms   = new DateTime( '@' . $terms_ts );       // UTC desde Unix timestamp
+            $dt_terms->setTimezone( $tz_bolivia );
+            $terms_date = $dt_terms->format( 'd/m/Y' );
+            $terms_time = $dt_terms->format( 'H:i:s' );
+        } else {
+            $terms_date = '';
+            $terms_time = '';
+        }
         ?>
         <div class="wrap">
             <h1>👁️ Información de: <?php echo esc_html( trim( $first_name . ' ' . $last_name ) ); ?></h1>
@@ -4648,6 +4734,71 @@ class FairPlay_LMS_Users_Controller {
                                     <?php endif; ?>
                                 </p>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- T&C Aceptados -->
+                    <div class="fplms-card">
+                        <div class="fplms-card-header" style="background:#f0fdf4;border-bottom-color:#bbf7d0;">
+                            <div class="fplms-card-header-icon" style="background:linear-gradient(135deg,#16a34a,#15803d);">
+                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M14 2H6C4.9 2 4 2.9 4 4v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zm-2 8l-3-3 1.41-1.41L10 14.17l4.59-4.58L16 11l-6 6z"/></svg>
+                            </div>
+                            <div>
+                                <h3>T&amp;C Aceptados</h3>
+                                <p>El usuario aceptó los Términos y Condiciones</p>
+                            </div>
+                        </div>
+                        <div class="fplms-card-body">
+                            <?php if ( 'completed' === $ob_status && $terms_ts ) : ?>
+                                <div class="fplms-form-row">
+                                    <div class="fplms-form-group">
+                                        <label style="color:#15803d;">
+                                            <svg viewBox="0 0 24 24" width="16" height="16" style="fill:#15803d;"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+                                            Fecha de aceptación
+                                        </label>
+                                        <p class="fplms-view-field" style="font-weight:600;color:#166534;"><?php echo esc_html( $terms_date ); ?></p>
+                                    </div>
+                                    <div class="fplms-form-group">
+                                        <label style="color:#15803d;">
+                                            <svg viewBox="0 0 24 24" width="16" height="16" style="fill:#15803d;"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+                                            Hora de aceptación
+                                        </label>
+                                        <p class="fplms-view-field" style="font-weight:600;color:#166534;"><?php echo esc_html( $terms_time ); ?></p>
+                                    </div>
+                                </div>
+                                <div class="fplms-form-group">
+                                    <label style="color:#15803d;">
+                                        <svg viewBox="0 0 24 24" width="16" height="16" style="fill:#15803d;"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                                        Dirección IP
+                                    </label>
+                                    <p class="fplms-view-field">
+                                        <code style="background:#dcfce7;color:#166534;padding:4px 10px;border-radius:6px;font-size:13px;"><?php echo esc_html( $terms_ip ?: '—' ); ?></code>
+                                    </p>
+                                </div>
+                                <?php if ( $terms_company ) : ?>
+                                <div class="fplms-form-group" style="margin-bottom:0;">
+                                    <label style="color:#15803d;">
+                                        <svg viewBox="0 0 24 24" width="16" height="16" style="fill:#15803d;"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>
+                                        Empresa del contrato
+                                    </label>
+                                    <p class="fplms-view-field"><?php echo esc_html( ucfirst( $terms_company ) ); ?></p>
+                                </div>
+                                <?php endif; ?>
+                                <div style="margin-top:16px;padding:10px 14px;background:#dcfce7;border-radius:8px;border-left:4px solid #16a34a;display:flex;align-items:center;gap:10px;">
+                                    <svg viewBox="0 0 24 24" width="18" height="18" style="fill:#16a34a;flex-shrink:0;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/></svg>
+                                    <span style="font-size:13px;color:#166534;font-weight:600;">T&amp;C aceptados correctamente</span>
+                                </div>
+                            <?php elseif ( 'rejected' === $ob_status ) : ?>
+                                <div style="padding:14px;background:#fef2f2;border-radius:8px;border-left:4px solid #ef4444;display:flex;align-items:center;gap:10px;">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" style="fill:#ef4444;flex-shrink:0;"><path d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm5 13.59L15.59 17 12 13.41 8.41 17 7 15.59 10.59 12 7 8.41 8.41 7 12 10.59 15.59 7 17 8.41 13.41 12 17 15.59z"/></svg>
+                                    <span style="font-size:13px;color:#991b1b;font-weight:600;">El usuario rechazó los T&amp;C</span>
+                                </div>
+                            <?php else : ?>
+                                <div style="padding:14px;background:#fffbeb;border-radius:8px;border-left:4px solid #f59e0b;display:flex;align-items:center;gap:10px;">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" style="fill:#f59e0b;flex-shrink:0;"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+                                    <span style="font-size:13px;color:#92400e;font-weight:600;">Pendiente — el usuario aún no ha aceptado los T&amp;C</span>
+                                </div>
+                            <?php endif; ?>
                         </div>
                     </div>
 
