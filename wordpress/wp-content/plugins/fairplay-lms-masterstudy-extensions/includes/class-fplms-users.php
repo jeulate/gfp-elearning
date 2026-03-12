@@ -210,6 +210,33 @@ class FairPlay_LMS_Users_Controller {
                 ],
             ] );
         }
+
+        // Bloquear si el onboarding está pendiente o fue rechazado
+        $ob_status = get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_ONBOARDING_STATUS, true );
+        if ( 'pending' === $ob_status ) {
+            wp_send_json( [
+                'status' => 'error',
+                'errors' => [
+                    [
+                        'id'    => 'wrong_password',
+                        'field' => 'user_password',
+                        'text'  => 'Debes activar tu cuenta primero. Revisa tu correo electrónico y sigue el enlace de activación.',
+                    ],
+                ],
+            ] );
+        }
+        if ( 'rejected' === $ob_status ) {
+            wp_send_json( [
+                'status' => 'error',
+                'errors' => [
+                    [
+                        'id'    => 'wrong_password',
+                        'field' => 'user_password',
+                        'text'  => 'No puedes acceder porque rechazaste los términos y condiciones. Contacta al administrador.',
+                    ],
+                ],
+            ] );
+        }
         // Usuario activo: retornamos sin hacer nada → MasterStudy continúa normalmente
     }
 
@@ -236,6 +263,23 @@ class FairPlay_LMS_Users_Controller {
             return new WP_Error(
                 'fplms_user_inactive',
                 __( 'Tu cuenta ha sido desactivada. Contacta al administrador para reactivarla.', 'fairplay-lms' )
+            );
+        }
+
+        // Bloquear si el onboarding está pendiente o rechazado
+        $ob_status = get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_ONBOARDING_STATUS, true );
+        if ( 'pending' === $ob_status ) {
+            set_transient( 'fplms_blocked_' . md5( $this->get_client_ip() ), 1, 30 );
+            return new WP_Error(
+                'fplms_onboarding_pending',
+                __( 'Debes activar tu cuenta primero. Revisa tu correo electrónico y sigue el enlace de activación.', 'fairplay-lms' )
+            );
+        }
+        if ( 'rejected' === $ob_status ) {
+            set_transient( 'fplms_blocked_' . md5( $this->get_client_ip() ), 1, 30 );
+            return new WP_Error(
+                'fplms_onboarding_rejected',
+                __( 'No puedes acceder porque rechazaste los términos y condiciones. Contacta al administrador.', 'fairplay-lms' )
             );
         }
 
@@ -1976,6 +2020,9 @@ class FairPlay_LMS_Users_Controller {
                             // Obtener estado del usuario
                             $user_status = get_user_meta( $user->ID, 'fplms_user_status', true );
                             $is_active = empty( $user_status ) || $user_status === 'active';
+
+                            // Estado de onboarding
+                            $ob_status = get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_ONBOARDING_STATUS, true );
                             
                             // Obtener rol del usuario
                             $user_roles = $user->roles;
@@ -2017,6 +2064,11 @@ class FairPlay_LMS_Users_Controller {
                                     <?php else : ?>
                                         <span class="fplms-status-badge fplms-status-inactive">Inactivo</span>
                                     <?php endif; ?>
+                                    <?php if ( 'pending' === $ob_status ) : ?>
+                                        <span class="fplms-status-badge" style="background:#fff8e1;color:#b7791f;border:1px solid #f6c90e;font-size:11px;margin-top:3px;display:block;">Pendiente activación</span>
+                                    <?php elseif ( 'rejected' === $ob_status ) : ?>
+                                        <span class="fplms-status-badge" style="background:#fff5f5;color:#c53030;border:1px solid #fc8181;font-size:11px;margin-top:3px;display:block;">T&C rechazados</span>
+                                    <?php endif; ?>
                                 </td>
                                 <td style="text-align: center;">
                                     <span class="fplms-role-badge"><?php echo esc_html( $role_name ?: '—' ); ?></span>
@@ -2046,6 +2098,16 @@ class FairPlay_LMS_Users_Controller {
                                                 onclick="fplmsShowActionModal('delete', <?php echo $user->ID; ?>, '<?php echo esc_js( $full_name ); ?>', '<?php echo esc_js( $user->user_email ); ?>')">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                                         </button>
+                                        <?php if ( 'completed' !== $ob_status ) : ?>
+                                            <button type="button"
+                                                    class="fplms-action-icon-btn fplms-resend-welcome"
+                                                    title="<?php echo 'rejected' === $ob_status ? 'Resolicitar aceptación de T&amp;C' : 'Reenviar email de activación'; ?>"
+                                                    data-user-id="<?php echo esc_attr( $user->ID ); ?>"
+                                                    data-nonce="<?php echo esc_attr( wp_create_nonce( 'fplms_resend_welcome' ) ); ?>"
+                                                    style="color:#1a56db;">
+                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg>
+                                            </button>
+                                        <?php endif; ?>
                                     </div>
                                 </td>
                             </tr>
@@ -3199,6 +3261,36 @@ class FairPlay_LMS_Users_Controller {
                     if (e.key === 'Escape') {
                         fplmsCloseActionModal();
                     }
+                });
+
+                // ── Reenviar email de bienvenida / activación ──────────────
+                document.addEventListener('click', function(e) {
+                    var btn = e.target.closest('.fplms-resend-welcome');
+                    if (!btn) return;
+                    e.preventDefault();
+                    var userId = btn.dataset.userId;
+                    var nonce  = btn.dataset.nonce;
+                    if (!confirm('¿Reenviar el email de activación a este usuario?')) return;
+
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+
+                    var fd = new FormData();
+                    fd.append('action',  'fplms_resend_welcome');
+                    fd.append('nonce',   nonce);
+                    fd.append('user_id', userId);
+
+                    fetch(ajaxurl, { method: 'POST', body: fd })
+                        .then(function(r){ return r.json(); })
+                        .then(function(data) {
+                            if (data.success) {
+                                alert('✓ ' + data.data.message);
+                            } else {
+                                alert('✗ ' + (data.data ? data.data.message : 'Error al reenviar.'));
+                            }
+                        })
+                        .catch(function(){ alert('Error de conexión.'); })
+                        .finally(function(){ btn.disabled = false; btn.style.opacity = '1'; });
                 });
             </script>
             </div>
@@ -4729,6 +4821,9 @@ class FairPlay_LMS_Users_Controller {
                     'role_id'    => $role_id,
                 ]
             );
+
+            // Disparar hook de onboarding: envía email de bienvenida con T&C
+            do_action( 'fplms_user_created', $user_id );
 
             wp_safe_redirect(
                 add_query_arg(

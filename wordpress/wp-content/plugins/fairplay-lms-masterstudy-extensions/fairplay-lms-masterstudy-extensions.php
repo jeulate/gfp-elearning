@@ -3,7 +3,7 @@
  * Plugin Name: FairPlay LMS – MasterStudy Extensions
  * Plugin URI:  https://www.linkedin.com/in/jaeulate/
  * Description: Extensiones del panel admin, estructuras, usuarios y cursos para la plataforma eLearning con MasterStudy.
- * Version:     1.8.8
+ * Version:     1.9.0
  * Author:      Insoftline / Juan Eulate
  */
 
@@ -27,6 +27,7 @@ require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-course-display.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-reports.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-audit-logger.php';
 require_once FPLMS_PLUGIN_DIR . 'admin/class-fplms-audit-admin.php';
+require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-onboarding.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-pages.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-menu.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-plugin.php';

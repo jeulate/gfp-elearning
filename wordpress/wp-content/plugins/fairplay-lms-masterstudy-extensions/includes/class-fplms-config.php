@@ -62,6 +62,17 @@ class FairPlay_LMS_Config {
     // Opción para matriz de privilegios
     public const OPTION_CAP_MATRIX = 'fplms_capability_matrix';
 
+    // Onboarding / Términos y Condiciones
+    public const USER_META_ONBOARDING_STATUS = 'fplms_onboarding_status'; // 'pending' | 'completed' | 'rejected'
+    public const USER_META_TERMS_ACCEPTED     = 'fplms_terms_accepted';   // Unix timestamp de aceptación
+    public const USER_META_TERMS_IP           = 'fplms_terms_ip';         // IP al momento de aceptar
+    public const USER_META_TERMS_COMPANY      = 'fplms_terms_company';    // 'eliora' | 'fairplay' (empresa del contrato aceptado)
+    public const OPTION_TERMS_ELIORA          = 'fplms_terms_content_eliora';   // HTML del contrato Eliora
+    public const OPTION_TERMS_FAIRPLAY        = 'fplms_terms_content_fairplay'; // HTML del contrato FairPlay
+    public const OPTION_EMAIL_ELIORA          = 'fplms_email_from_eliora';      // From email Eliora
+    public const OPTION_EMAIL_FAIRPLAY        = 'fplms_email_from_fairplay';    // From email FairPlay
+    public const OPTION_ONBOARDING_PAGE_ID    = 'fplms_onboarding_page_id';     // ID de la página WP con shortcode
+
     // Config MasterStudy – centralizamos aquí para facilitar cambios futuros
     public const MS_ROLE_INSTRUCTOR     = 'stm_lms_instructor';
     public const MS_PT_COURSE           = 'stm-courses';

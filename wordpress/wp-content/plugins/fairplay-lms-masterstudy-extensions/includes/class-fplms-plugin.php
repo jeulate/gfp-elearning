@@ -60,6 +60,11 @@ class FairPlay_LMS_Plugin {
      */
     private $audit_admin;
 
+    /**
+     * @var FairPlay_LMS_Onboarding
+     */
+    private $onboarding;
+
     public function __construct() {
 
         $this->structures     = new FairPlay_LMS_Structures_Controller();
@@ -72,6 +77,7 @@ class FairPlay_LMS_Plugin {
         $this->course_display = new FairPlay_LMS_Course_Display();
         $this->audit_logger   = new FairPlay_LMS_Audit_Logger();
         $this->audit_admin    = new FairPlay_LMS_Audit_Admin();
+        $this->onboarding     = new FairPlay_LMS_Onboarding();
         $this->menu           = new FairPlay_LMS_Admin_Menu(
             $this->pages,
             $this->structures,
@@ -213,6 +219,14 @@ class FairPlay_LMS_Plugin {
         add_action( 'delete_user', [ $this->users, 'handle_user_soft_delete' ], 5, 3 );
         add_action( 'admin_post_fplms_reactivate_user', [ $this->audit_admin, 'handle_user_reactivation' ] );
         add_action( 'admin_post_fplms_permanently_delete_user', [ $this->audit_admin, 'handle_user_permanent_deletion' ] );
+
+        // Onboarding: Términos y Condiciones + email de bienvenida
+        add_action( 'admin_menu',  [ $this->onboarding, 'register_admin_menu' ] );
+        add_action( 'admin_init',  [ $this->onboarding, 'handle_terms_form' ] );
+        add_action( 'init',        [ $this->onboarding, 'register_shortcode' ] );
+        add_action( 'wp_ajax_fplms_resend_welcome', [ $this->onboarding, 'ajax_resend_welcome_email' ] );
+        // Enviar email al crear usuario desde el panel FairPlay LMS
+        add_action( 'fplms_user_created', [ $this->onboarding, 'send_welcome_email' ], 10, 1 );
     }
 
     /**
