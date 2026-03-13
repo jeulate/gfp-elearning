@@ -4463,6 +4463,55 @@ class FairPlay_LMS_Users_Controller {
             $terms_date = '';
             $terms_time = '';
         }
+
+        // Cursos en los que está inscrito el usuario
+        // Consulta directa a usermeta (evita check_ajax_referer de STM_LMS_User::get_user_courses)
+        $user_courses_data = [];
+        global $wpdb;
+        $meta_rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT meta_key, meta_value FROM {$wpdb->usermeta}
+                 WHERE user_id = %d AND meta_key REGEXP '^stm_lms_course_[0-9]+$'",
+                $user_id
+            )
+        );
+        foreach ( $meta_rows as $row ) {
+            if ( ! preg_match( '/^stm_lms_course_(\d+)$/', $row->meta_key, $m ) ) {
+                continue;
+            }
+            $cid   = (int) $m[1];
+            $cpost = get_post( $cid );
+            if ( ! $cpost || FairPlay_LMS_Config::MS_PT_COURSE !== $cpost->post_type ) {
+                continue;
+            }
+            $prog_data = maybe_unserialize( $row->meta_value );
+            $percent   = 0.0;
+            $status    = '';
+            if ( is_array( $prog_data ) ) {
+                $percent = isset( $prog_data['progress'] ) ? (float) $prog_data['progress']
+                         : ( isset( $prog_data['percentage'] ) ? (float) $prog_data['percentage'] : 0.0 );
+                $status  = strtolower( (string) ( $prog_data['status'] ?? '' ) );
+            }
+            if ( 'completed' === $status || $percent >= 99.9 ) {
+                $cs_label = 'Completado'; $cs_color = '#16a34a'; $cs_bg = '#dcfce7';
+            } elseif ( in_array( $status, [ 'failed', 'failed_quiz', 'not_passed' ], true ) ) {
+                $cs_label = 'No aprobado'; $cs_color = '#dc2626'; $cs_bg = '#fee2e2';
+            } elseif ( $percent > 0 ) {
+                $cs_label = 'En progreso'; $cs_color = '#d97706'; $cs_bg = '#fef3c7';
+            } else {
+                $cs_label = 'Sin iniciar'; $cs_color = '#6b7280'; $cs_bg = '#f3f4f6';
+            }
+            $user_courses_data[] = [
+                'id'       => $cid,
+                'title'    => get_the_title( $cpost ),
+                'thumb'    => get_the_post_thumbnail_url( $cpost, 'thumbnail' ),
+                'url'      => get_edit_post_link( $cid ),
+                'percent'  => $percent,
+                'cs_label' => $cs_label,
+                'cs_color' => $cs_color,
+                'cs_bg'    => $cs_bg,
+            ];
+        }
         ?>
         <div class="wrap">
             <h1>👁️ Información de: <?php echo esc_html( trim( $first_name . ' ' . $last_name ) ); ?></h1>
@@ -4587,11 +4636,80 @@ class FairPlay_LMS_Users_Controller {
                 .fplms-view-actions .btn-edit:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(102,126,234,.5); }
                 .fplms-view-actions svg { width: 16px; height: 16px; fill: currentColor; }
 
+                /* ── Courses section ── */
+                .fplms-edit-user-container .fplms-user-courses-card {
+                    background: #fff; border-radius: 14px;
+                    box-shadow: 0 2px 12px rgba(0,0,0,.07); overflow: hidden;
+                    margin-top: 22px;
+                }
+                .fplms-edit-user-container .fplms-user-courses-card .fplms-card-header {
+                    padding: 18px 22px; background: #fafbff;
+                    border-bottom: 1px solid #edf0fb;
+                    display: flex; align-items: center; gap: 12px;
+                }
+                .fplms-edit-user-container .fplms-courses-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+                    gap: 16px; padding: 22px;
+                }
+                .fplms-edit-user-container .fplms-course-item {
+                    border: 1.5px solid #edf0fb; border-radius: 12px; overflow: hidden;
+                    transition: transform .2s, box-shadow .2s; background: #fff;
+                }
+                .fplms-edit-user-container .fplms-course-item:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,.10); }
+                .fplms-edit-user-container .fplms-course-thumb {
+                    width: 100%; height: 120px; object-fit: cover; display: block;
+                }
+                .fplms-edit-user-container .fplms-course-thumb-placeholder {
+                    width: 100%; height: 120px; display: flex; align-items: center; justify-content: center;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                }
+                .fplms-edit-user-container .fplms-course-thumb-placeholder svg { width: 38px; height: 38px; fill: rgba(255,255,255,.8); }
+                .fplms-edit-user-container .fplms-course-info { padding: 12px 14px; }
+                .fplms-edit-user-container .fplms-course-title {
+                    font-size: 13px; font-weight: 600; color: #2d3748;
+                    margin: 0 0 8px; line-height: 1.4;
+                    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+                }
+                .fplms-edit-user-container .fplms-course-badge {
+                    display: inline-block; padding: 3px 10px; border-radius: 20px;
+                    font-size: 11px; font-weight: 600; margin-bottom: 8px;
+                }
+                .fplms-edit-user-container .fplms-course-progress-bar-wrap {
+                    height: 5px; background: #e9ecef; border-radius: 99px; overflow: hidden;
+                }
+                .fplms-edit-user-container .fplms-course-progress-bar {
+                    height: 100%; border-radius: 99px;
+                    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+                    transition: width .4s;
+                }
+                .fplms-edit-user-container .fplms-course-progress-pct {
+                    font-size: 11px; color: #6b7280; margin-top: 4px; text-align: right;
+                }
+                .fplms-edit-user-container .fplms-course-link {
+                    display: block; font-size: 11px; color: var(--clr-primary);
+                    margin-top: 8px; text-decoration: none; font-weight: 500;
+                }
+                .fplms-edit-user-container .fplms-course-link:hover { text-decoration: underline; }
+                .fplms-edit-user-container .fplms-courses-empty {
+                    padding: 40px 22px; text-align: center; color: #9ca3af;
+                }
+                .fplms-edit-user-container .fplms-courses-empty svg { width: 48px; height: 48px; fill: #d1d5db; margin-bottom: 12px; display: block; margin-inline: auto; }
+                .fplms-edit-user-container .fplms-courses-count-chip {
+                    margin-left: auto; background: rgba(102,126,234,.12);
+                    color: var(--clr-primary); font-size: 12px; font-weight: 700;
+                    border-radius: 20px; padding: 3px 12px;
+                }
+
                 @media (max-width: 900px) {
                     .fplms-edit-user-container .fplms-profile-hero { flex-direction: column; text-align: center; }
                     .fplms-edit-user-container .fplms-hero-chips { justify-content: center; }
                     .fplms-edit-user-container .fplms-cards-grid { grid-template-columns: 1fr; }
                     .fplms-edit-user-container .fplms-form-row { grid-template-columns: 1fr; }
+                    .fplms-edit-user-container .fplms-courses-grid { grid-template-columns: 1fr 1fr; }
+                }
+                @media (max-width: 600px) {
+                    .fplms-edit-user-container .fplms-courses-grid { grid-template-columns: 1fr; }
                 }
             </style>
 
@@ -4803,6 +4921,53 @@ class FairPlay_LMS_Users_Controller {
                     </div>
 
                 </div><!-- .fplms-cards-grid -->
+
+                <!-- Cursos inscritos -->
+                <div class="fplms-user-courses-card">
+                    <div class="fplms-card-header">
+                        <div class="fplms-card-header-icon" style="background:linear-gradient(135deg,#f59e0b,#d97706);">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3zm6.82 6L12 12.72 5.18 9 12 5.28 18.82 9zM17 15.99l-5 2.73-5-2.73v-3.72L12 15l5-2.73v3.72z"/></svg>
+                        </div>
+                        <div><h3>Cursos Asignados</h3><p>Cursos en los que se encuentra inscrito el usuario</p></div>
+                        <span class="fplms-courses-count-chip"><?php echo count( $user_courses_data ); ?> curso<?php echo count( $user_courses_data ) !== 1 ? 's' : ''; ?></span>
+                    </div>
+
+                    <?php if ( empty( $user_courses_data ) ) : ?>
+                        <div class="fplms-courses-empty">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3zm6.82 6L12 12.72 5.18 9 12 5.28 18.82 9zM17 15.99l-5 2.73-5-2.73v-3.72L12 15l5-2.73v3.72z"/></svg>
+                            <p style="font-size:14px;font-weight:600;color:#6b7280;margin:0 0 4px;">Sin cursos asignados</p>
+                            <p style="font-size:13px;margin:0;">Este usuario aún no está inscrito en ningún curso.</p>
+                        </div>
+                    <?php else : ?>
+                        <div class="fplms-courses-grid">
+                            <?php foreach ( $user_courses_data as $uc ) : ?>
+                                <div class="fplms-course-item">
+                                    <?php if ( ! empty( $uc['thumb'] ) ) : ?>
+                                        <img src="<?php echo esc_url( $uc['thumb'] ); ?>" class="fplms-course-thumb" alt="<?php echo esc_attr( $uc['title'] ); ?>">
+                                    <?php else : ?>
+                                        <div class="fplms-course-thumb-placeholder">
+                                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3zm6.82 6L12 12.72 5.18 9 12 5.28 18.82 9zM17 15.99l-5 2.73-5-2.73v-3.72L12 15l5-2.73v3.72z"/></svg>
+                                        </div>
+                                    <?php endif; ?>
+                                    <div class="fplms-course-info">
+                                        <p class="fplms-course-title"><?php echo esc_html( $uc['title'] ); ?></p>
+                                        <span class="fplms-course-badge" style="background:<?php echo esc_attr( $uc['cs_bg'] ); ?>;color:<?php echo esc_attr( $uc['cs_color'] ); ?>;">
+                                            <?php echo esc_html( $uc['cs_label'] ); ?>
+                                        </span>
+                                        <div class="fplms-course-progress-bar-wrap">
+                                            <div class="fplms-course-progress-bar" style="width:<?php echo esc_attr( min( 100, round( $uc['percent'] ) ) ); ?>%;"></div>
+                                        </div>
+                                        <p class="fplms-course-progress-pct"><?php echo esc_html( round( $uc['percent'] ) ); ?>% completado</p>
+                                        <?php if ( $uc['url'] ) : ?>
+                                            <a href="<?php echo esc_url( $uc['url'] ); ?>" class="fplms-course-link" target="_blank">Ver curso en admin →</a>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div><!-- .fplms-user-courses-card -->
+
             </div><!-- .fplms-edit-user-container -->
         </div><!-- .wrap -->
         <?php

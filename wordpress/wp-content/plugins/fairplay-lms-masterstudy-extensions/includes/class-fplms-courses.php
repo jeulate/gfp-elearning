@@ -2806,6 +2806,15 @@ class FairPlay_LMS_Courses_Controller {
         // Aplicar lógica de cascada: si se selecciona un nivel superior, automáticamente se incluyen todos los inferiores
         $cascaded_structures = $this->apply_cascade_logic( $cities, $companies, $channels, $branches, $roles );
 
+        // Capturar estructuras anteriores ANTES de guardar
+        $old_structures = [
+            'cities'    => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
+            'companies' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ),
+            'channels'  => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
+            'branches'  => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
+            'roles'     => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
+        ];
+
         // Guardar estructuras
         update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, $cascaded_structures['cities'] );
         update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, $cascaded_structures['companies'] );
@@ -2813,8 +2822,16 @@ class FairPlay_LMS_Courses_Controller {
         update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, $cascaded_structures['branches'] );
         update_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, $cascaded_structures['roles'] );
 
-        // Enviar notificaciones por correo a los usuarios afectados
-        $this->send_course_assignment_notifications( $course_id, $cascaded_structures );
+        // Auto-matricular usuarios que coincidan con las estructuras asignadas
+        $this->auto_enroll_users_for_course( $course_id, $cascaded_structures );
+
+        // Enviar notificaciones: solo a usuarios nuevos (o a todos si es primera asignación)
+        $is_first_assignment = empty( array_filter( $old_structures ) );
+        if ( $is_first_assignment ) {
+            $this->send_course_assignment_notifications( $course_id, $cascaded_structures );
+        } else {
+            $this->send_course_update_notifications( $course_id, $cascaded_structures, $old_structures );
+        }
     }
 
     /**
@@ -4364,23 +4381,45 @@ class FairPlay_LMS_Courses_Controller {
             if ( ! $update ) {
                 // Nuevo curso publicado - enviar notificaciones a todos
                 $this->send_course_assignment_notifications( $post_id, $cascaded_structures );
-            } else {
-                // Curso actualizado - verificar si las estructuras cambiaron
-                // Para evitar duplicar correos, solo notificar a nuevos usuarios
-                $old_structures = [
-                    'cities'    => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
-                    'companies' => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ),
-                    'channels'  => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
-                    'branches'  => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
-                    'roles'     => (array) get_post_meta( $post_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
-                ];
-                
-                $structures_changed = $this->structures_have_changed( $old_structures, $cascaded_structures );
-                
-                if ( $structures_changed ) {
-                    // Las estructuras cambiaron - enviar notificaciones solo a nuevos usuarios
-                    $this->send_course_update_notifications( $post_id, $cascaded_structures, $old_structures );
-                }
+            } elseif ( $structures_changed ) {
+                // Curso actualizado - enviar solo a usuarios nuevos
+                $this->send_course_update_notifications( $post_id, $cascaded_structures, $old_structures );
+            }
+
+            // Auto-matricular a todos los usuarios que coincidan con las estructuras
+            $this->auto_enroll_users_for_course( $post_id, $cascaded_structures );
+        }
+    }
+
+    /**
+     * Auto-matricula en MasterStudy a los usuarios que coincidan con las estructuras del curso.
+     * Solo actúa si el curso está publicado. No elimina matrículas existentes.
+     *
+     * @param int   $course_id  ID del curso.
+     * @param array $structures Estructuras asignadas al curso.
+     */
+    private function auto_enroll_users_for_course( int $course_id, array $structures ): void {
+        if ( 'publish' !== get_post_status( $course_id ) ) {
+            return;
+        }
+
+        $users = $this->get_users_by_structures( $structures );
+        if ( empty( $users ) ) {
+            return;
+        }
+
+        $meta_key     = 'stm_lms_course_' . $course_id;
+        $enroll_value = [
+            'progress'   => 0,
+            'status'     => '',
+            'lessons'    => [],
+            'start_time' => time(),
+        ];
+
+        foreach ( $users as $user_id ) {
+            $existing = get_user_meta( (int) $user_id, $meta_key, true );
+            if ( empty( $existing ) ) {
+                update_user_meta( (int) $user_id, $meta_key, $enroll_value );
             }
         }
     }

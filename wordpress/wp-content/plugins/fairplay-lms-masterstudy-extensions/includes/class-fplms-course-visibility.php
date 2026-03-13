@@ -156,8 +156,12 @@ class FairPlay_LMS_Course_Visibility_Service {
             // Si el usuario tiene esta estructura asignada
             if ( isset( $user_structures[ $user_key ] ) && ! empty( $course_structures[ $course_key ] ) ) {
 
+                // Normalizar a int para evitar fallos por comparación estricta int vs string
+                $user_val    = (int) $user_structures[ $user_key ];
+                $course_vals = array_map( 'intval', (array) $course_structures[ $course_key ] );
+
                 // Verificar si la estructura del usuario está en la lista del curso
-                if ( in_array( $user_structures[ $user_key ], $course_structures[ $course_key ], true ) ) {
+                if ( in_array( $user_val, $course_vals, true ) ) {
                     return true;
                 }
             }
