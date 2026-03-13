@@ -435,7 +435,14 @@ class FairPlay_LMS_Courses_Controller {
                 if ( $has_any ) {
                     ++$had_structures;
                 }
+                $course_title_for_log = get_the_title( $bid );
                 wp_delete_post( $bid, true );
+                $this->logger->log_action(
+                    'course_deleted',
+                    'course',
+                    $bid,
+                    $course_title_for_log
+                );
                 ++$deleted;
             }
             wp_safe_redirect(
@@ -956,7 +963,8 @@ class FairPlay_LMS_Courses_Controller {
                                     <th style="width:36px;padding-left:18px;"><input type="checkbox" id="fplms-cl-select-all"></th>
                                     <th>Curso</th>
                                     <th>Docente</th>
-                                    <th>Fecha</th>
+                                    <th>Creación</th>
+                                    <th>Modificación</th>
                                     <th>Estructuras</th>
                                     <th style="width:215px;">Asignar Docente</th>
                                     <th style="text-align:center;width:145px;">Acciones</th>
@@ -975,9 +983,8 @@ class FairPlay_LMS_Courses_Controller {
                                     $modules_url    = add_query_arg( [ 'page' => 'fplms-courses', 'view' => 'modules',    'course_id' => $course->ID ], admin_url( 'admin.php' ) );
                                     $lessons_url    = add_query_arg( [ 'page' => 'fplms-courses', 'view' => 'lessons',    'course_id' => $course->ID ], admin_url( 'admin.php' ) );
                                     $structures_url = add_query_arg( [ 'page' => 'fplms-courses', 'view' => 'structures', 'course_id' => $course->ID ], admin_url( 'admin.php' ) );
-                                    // Construir URL de edición directamente para evitar que MasterStudy filtre el enlace
-                                    // según autoría — los admins deben poder editar cualquier curso.
-                                    $edit_url       = admin_url( 'post.php?post=' . $course->ID . '&action=edit' );
+                                    // URL del editor visual de MasterStudy en el frontend
+                                    $edit_url       = home_url( '/user-account/edit-course/' . $course->ID );
 
                                     $teacher_id = (int) get_post_meta( $course->ID, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
                                     if ( ! $teacher_id ) {
@@ -987,6 +994,7 @@ class FairPlay_LMS_Courses_Controller {
 
                                     $course_structures = $this->get_course_structures( $course->ID );
                                     $fecha             = date_i18n( 'd/m/Y', strtotime( $course->post_date ) );
+                                    $modificado        = date_i18n( 'd/m/Y H:i', strtotime( $course->post_modified ) );
                                     $is_active         = 'publish' === $course->post_status;
                                     $status_label      = $is_active ? 'Publicado' : 'Borrador';
                                     $status_class      = $is_active ? 'fplms-cs-publish' : 'fplms-cs-draft';
@@ -1003,7 +1011,7 @@ class FairPlay_LMS_Courses_Controller {
                                     </td>
                                     <td>
                                         <div class="fplms-ct-title">
-                                            <a href="<?php echo esc_url( admin_url( 'post.php?post=' . $course->ID . '&action=edit' ) ); ?>" style="color:inherit;text-decoration:none;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'"><?php echo esc_html( get_the_title( $course ) ); ?></a>
+                                            <a href="<?php echo esc_url( $edit_url ); ?>" style="color:inherit;text-decoration:none;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'"><?php echo esc_html( get_the_title( $course ) ); ?></a>
                                         </div>
                                         <div class="fplms-ct-meta">ID: <?php echo esc_html( $course->ID ); ?></div>
                                         <span class="fplms-cs-badge <?php echo esc_attr( $status_class ); ?>"><?php echo esc_html( $status_label ); ?></span>
@@ -1012,6 +1020,9 @@ class FairPlay_LMS_Courses_Controller {
                                         <div style="font-weight:500;color:#1f2937;"><?php echo esc_html( $teacher_name ?: '— Sin asignar —' ); ?></div>
                                     </td>
                                     <td><?php echo esc_html( $fecha ); ?></td>
+                                    <td>
+                                        <span style="color:#1f2937;font-size:13px;white-space:nowrap;"><?php echo esc_html( $modificado ); ?></span>
+                                    </td>
                                     <td>
                                         <div class="fplms-ct-struct-tags">
                                             <?php echo $this->format_course_structures_compact( $course_structures ); // phpcs:ignore -- HTML with SVG ?>
@@ -2084,9 +2095,6 @@ class FairPlay_LMS_Courses_Controller {
 
         $back_url = add_query_arg( [ 'page' => 'fplms-courses' ], admin_url( 'admin.php' ) );
 
-        echo '<p><a href="' . esc_url( $back_url ) . '">&larr; Volver al listado de cursos</a></p>';
-        echo '<h2>Estructuras para: ' . esc_html( get_the_title( $course ) ) . ' (ID ' . esc_html( $course->ID ) . ')</h2>';
-
         // Obtener estructuras actuales del curso
         $current_structures = $this->get_course_structures( $course_id );
 
@@ -2131,253 +2139,530 @@ class FairPlay_LMS_Courses_Controller {
             }
         }
         
+        // Thumbnail and status
+        $thumb_url  = get_the_post_thumbnail_url( $course_id, 'thumbnail' );
+        $is_active  = 'publish' === $course->post_status;
+        $status_lbl = $is_active ? 'Activo' : 'Inactivo';
+        $created    = date_i18n( 'd/m/Y', strtotime( $course->post_date ) );
+        // Count assigned structures
+        $total_assigned = count( $current_structures['cities'] )
+            + count( $current_structures['companies'] )
+            + count( $current_structures['channels'] )
+            + count( $current_structures['branches'] )
+            + count( $current_structures['roles'] );
         ?>
         <style>
-            .fplms-cascade-info {
-                background: #e7f3ff;
-                border-left: 4px solid #2271b1;
-                padding: 15px;
-                margin: 20px 0;
-                border-radius: 4px;
+            /* ── Course Structures Redesign ── */
+            .fplms-cs-container { --clr-primary:#667eea; --clr-primary-dark:#764ba2; }
+
+            /* Hero */
+            .fplms-cs-hero {
+                background: linear-gradient(135deg,var(--clr-primary) 0%,var(--clr-primary-dark) 100%);
+                border-radius:16px; padding:32px 36px; margin-bottom:24px;
+                display:flex; align-items:center; gap:24px;
+                position:relative; overflow:hidden;
+                box-shadow: 0 8px 30px rgba(102,126,234,.35);
             }
-            .fplms-cascade-info strong {
-                color: #135e96;
+            .fplms-cs-hero::after {
+                content:''; position:absolute; right:-50px; top:-50px;
+                width:240px; height:240px; border-radius:50%;
+                background:rgba(255,255,255,.1);
             }
-            .fplms-structure-container {
-                min-height: 60px;
-                padding: 10px;
-                background: #f9f9f9;
-                border: 1px solid #ddd;
-                border-radius: 4px;
+            .fplms-cs-hero-thumb {
+                width:88px; height:88px; border-radius:14px; flex-shrink:0;
+                object-fit:cover; box-shadow:0 4px 16px rgba(0,0,0,.3);
+                border:3px solid rgba(255,255,255,.35); position:relative;z-index:1;
             }
-            .fplms-structure-container label {
-                display: block;
-                padding: 6px 10px;
-                margin: 3px 0;
-                background: #fff;
-                border-radius: 3px;
-                cursor: pointer;
-                transition: background 0.2s;
+            .fplms-cs-hero-thumb-placeholder {
+                width:88px; height:88px; border-radius:14px; flex-shrink:0;
+                background:rgba(255,255,255,.2); display:flex; align-items:center;
+                justify-content:center; position:relative; z-index:1;
             }
-            .fplms-structure-container label:hover {
-                background: #e7f3ff;
+            .fplms-cs-hero-thumb-placeholder svg { width:44px;height:44px;fill:rgba(255,255,255,.8); }
+            .fplms-cs-hero-info { flex:1; color:#fff; position:relative; z-index:1; }
+            .fplms-cs-hero-title { font-size:22px; font-weight:700; margin:0 0 6px; color:#fff; line-height:1.3; }
+            .fplms-cs-hero-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+            .fplms-cs-hero-chip {
+                display:inline-flex; align-items:center; gap:5px;
+                background:rgba(255,255,255,.2); backdrop-filter:blur(8px);
+                border-radius:20px; padding:4px 12px; font-size:12px; color:#fff;
             }
-            .fplms-structure-container input[type="checkbox"] {
-                margin-right: 8px;
-                vertical-align: middle;
+            .fplms-cs-hero-chip svg { width:12px;height:12px;fill:#fff; }
+            .fplms-cs-hero-chip--green { background:rgba(72,199,142,.35); }
+            .fplms-cs-hero-chip--yellow { background:rgba(241,196,15,.35); }
+            .fplms-cs-hero-back {
+                display:inline-flex; align-items:center; gap:6px;
+                background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.3);
+                border-radius:9px; padding:8px 16px; color:#fff; font-size:13px; font-weight:600;
+                text-decoration:none; transition:all .2s; position:relative; z-index:1; flex-shrink:0;
             }
-            .fplms-loading {
-                color: #999;
-                font-style: italic;
-                padding: 10px;
+            .fplms-cs-hero-back:hover { background:rgba(255,255,255,.28); color:#fff; }
+            .fplms-cs-hero-back svg { width:14px;height:14px;fill:#fff; }
+
+            /* Cards grid */
+            .fplms-cs-cards-grid {
+                display:grid;
+                grid-template-columns: repeat(auto-fit, minmax(320px,1fr));
+                gap:20px; margin-bottom:20px;
             }
-            .fplms-empty-state {
-                color: #666;
-                font-style: italic;
-                padding: 10px;
+            .fplms-cs-card {
+                background:#fff; border-radius:14px;
+                box-shadow:0 2px 12px rgba(0,0,0,.07); overflow:hidden;
+                transition:transform .2s, box-shadow .2s;
+            }
+            .fplms-cs-card:hover { transform:translateY(-2px); box-shadow:0 6px 22px rgba(0,0,0,.10); }
+            .fplms-cs-card-header {
+                padding:16px 20px; background:#fafbff;
+                border-bottom:1px solid #edf0fb;
+                display:flex; align-items:center; gap:12px;
+            }
+            .fplms-cs-card-icon {
+                width:36px; height:36px; border-radius:10px;
+                display:flex; align-items:center; justify-content:center;
+                box-shadow:0 3px 10px rgba(0,0,0,.18); flex-shrink:0;
+            }
+            .fplms-cs-card-icon svg { width:18px;height:18px;fill:#fff; }
+            .fplms-cs-card-header h3 { margin:0; font-size:14px; font-weight:600; color:#2d3748; }
+            .fplms-cs-card-header p  { margin:2px 0 0; font-size:11px; color:#6c757d; }
+            .fplms-cs-card-badge {
+                margin-left:auto; background:#edf0fb; color:#667eea;
+                border-radius:20px; padding:2px 10px; font-size:11px; font-weight:700;
+                white-space:nowrap;
+            }
+            .fplms-cs-card-body { padding:18px 20px; }
+
+            /* Checkbox items */
+            .fplms-cs-check-list { display:flex; flex-direction:column; gap:4px; max-height:240px; overflow-y:auto; }
+            .fplms-cs-check-list::-webkit-scrollbar { width:4px; }
+            .fplms-cs-check-list::-webkit-scrollbar-thumb { background:#d1d5db; border-radius:4px; }
+            .fplms-cs-check-item {
+                display:flex; align-items:center; gap:10px;
+                padding:8px 12px; border-radius:8px;
+                cursor:pointer; transition:background .15s;
+                border:1.5px solid transparent;
+            }
+            .fplms-cs-check-item:hover { background:#f5f7ff; border-color:#edf0fb; }
+            .fplms-cs-check-item input[type="checkbox"] {
+                width:16px; height:16px; cursor:pointer; flex-shrink:0;
+                accent-color: var(--clr-primary);
+            }
+            .fplms-cs-check-item span { font-size:13px; color:#374151; line-height:1.3; }
+            .fplms-cs-empty-state {
+                padding:16px 12px; text-align:center;
+                color:#9ca3af; font-size:13px; font-style:italic;
+            }
+            .fplms-cs-empty-state svg { display:block;margin:0 auto 6px;width:28px;height:28px;fill:#d1d5db; }
+            .fplms-cs-loading {
+                padding:16px 12px; text-align:center; color:#9ca3af; font-size:13px;
+                display:flex; align-items:center; justify-content:center; gap:8px;
+            }
+
+            /* Card select-all row */
+            .fplms-cs-card-toolbar {
+                display:flex; align-items:center; justify-content:space-between;
+                margin-bottom:10px; padding-bottom:8px;
+                border-bottom:1px solid #f0f0f0;
+            }
+            .fplms-cs-card-toolbar-btns { display:flex; gap:6px; }
+            .fplms-cs-toolbar-btn {
+                font-size:11px; font-weight:600; color:#667eea; background:none;
+                border:none; padding:2px 6px; cursor:pointer; border-radius:4px;
+                transition:background .15s;
+            }
+            .fplms-cs-toolbar-btn:hover { background:#f0f2ff; }
+            .fplms-cs-toolbar-count { font-size:11px; color:#9ca3af; }
+
+            /* Info banner */
+            .fplms-cs-info-banner {
+                background:#eef2ff; border:1px solid #c7d2fe;
+                border-radius:12px; padding:14px 18px; margin-bottom:20px;
+                display:flex; align-items:flex-start; gap:12px;
+            }
+            .fplms-cs-info-banner svg { width:18px;height:18px;fill:#667eea;flex-shrink:0;margin-top:1px; }
+            .fplms-cs-info-banner p { margin:0; font-size:13px; color:#3730a3; line-height:1.5; }
+            .fplms-cs-info-banner strong { color:#312e81; }
+
+            /* Form actions */
+            .fplms-cs-form-actions {
+                display:flex; gap:12px; justify-content:flex-end;
+                padding:20px 24px; background:#fff; border-radius:14px;
+                box-shadow:0 2px 12px rgba(0,0,0,.07);
+            }
+            .fplms-cs-btn {
+                padding:11px 24px; border:none; border-radius:9px;
+                font-size:14px; font-weight:600; cursor:pointer;
+                display:inline-flex; align-items:center; gap:8px; transition:all .2s;
+            }
+            .fplms-cs-btn-primary {
+                background:linear-gradient(135deg,var(--clr-primary) 0%,var(--clr-primary-dark) 100%);
+                color:#fff; box-shadow:0 4px 15px rgba(102,126,234,.4);
+            }
+            .fplms-cs-btn-primary:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(102,126,234,.5); color:#fff; }
+            .fplms-cs-btn-secondary {
+                background:#f8f9fa; color:#495057; border:2px solid #e9ecef;
+                text-decoration:none;
+            }
+            .fplms-cs-btn-secondary:hover { background:#e9ecef; color:#495057; }
+            .fplms-cs-btn svg { width:15px;height:15px;fill:currentColor; }
+
+            @media(max-width:900px){
+                .fplms-cs-hero { flex-direction:column; text-align:center; }
+                .fplms-cs-hero-chips { justify-content:center; }
+                .fplms-cs-cards-grid { grid-template-columns:1fr; }
             }
         </style>
         
-        <div class="fplms-cascade-info">
-            <h3 style="margin-top:0;display:flex;align-items:center;gap:8px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="#135e96"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg> Asignación Inteligente en Cascada</h3>
-            <p><strong>Cómo funciona:</strong></p>
-            <ul style="margin-left:20px;list-style:none;padding:0;">
-                <li style="margin:5px 0;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#e53935"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg> <strong>Selecciona Ciudad(es)</strong> → Se cargan automáticamente todas las empresas, canales, sucursales y cargos de esas ciudades</li>
-                <li style="margin:5px 0;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#1565c0"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg> <strong>Selecciona Empresa(s)</strong> → Se cargan automáticamente todos los canales, sucursales y cargos de esas empresas</li>
-                <li style="margin:5px 0;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#0277bd"><path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg> <strong>Selecciona Canal(es)</strong> → Se cargan automáticamente todas las sucursales y cargos de esos canales</li>
-                <li style="margin:5px 0;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#558b2f"><path d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg> <strong>Selecciona Sucursal(es)</strong> → Se cargan automáticamente todos los cargos de esas sucursales</li>
-            </ul>
-            <p><strong><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" style="vertical-align:middle;fill:#2e7d32"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/></svg> Puedes seleccionar una o más opciones en cada nivel.</strong> Las opciones cargadas se pre-seleccionan automáticamente, pero puedes desmarcar las que no necesites.</p>
-        </div>
 
-        <form method="post" id="fplms-structures-form">
-            <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
-            <input type="hidden" name="fplms_courses_action" value="assign_structures">
-            <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+        <div class="fplms-cs-container">
 
-            <table class="form-table">
-                <tr>
-                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#e53935"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg> Ciudades</label></th>
-                    <td>
-                        <div class="fplms-structure-container" id="fplms-cities-container">
-                            <?php if ( ! empty( $cities ) ) : ?>
-                                <?php foreach ( $cities as $term_id => $term_name ) : ?>
-                                    <label>
-                                        <input type="checkbox" 
-                                               name="fplms_course_cities[]" 
-                                               class="fplms-cascade-checkbox"
-                                               data-level="cities"
-                                               value="<?php echo esc_attr( $term_id ); ?>" 
-                                               <?php checked( in_array( $term_id, $current_structures['cities'], true ) ); ?>>
-                                        <?php echo esc_html( $term_name ); ?>
-                                    </label>
-                                <?php endforeach; ?>
-                            <?php else : ?>
-                                <p class="fplms-empty-state">No hay ciudades disponibles.</p>
-                            <?php endif; ?>
+            <!-- ── Hero ── -->
+            <div class="fplms-cs-hero">
+                <?php if ( $thumb_url ) : ?>
+                    <img src="<?php echo esc_url( $thumb_url ); ?>" alt="" class="fplms-cs-hero-thumb">
+                <?php else : ?>
+                    <div class="fplms-cs-hero-thumb-placeholder">
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zm-7-6.5c0 1.38-1.12 2.5-2.5 2.5S9 13.88 9 12.5 10.12 10 11.5 10s2.5 1.12 2.5 2.5zM5 17h14v-.5c0-2.12-4.22-3.5-7-3.5s-7 1.38-7 3.5V17z"/></svg>
+                    </div>
+                <?php endif; ?>
+                <div class="fplms-cs-hero-info">
+                    <div class="fplms-cs-hero-title"><?php echo esc_html( get_the_title( $course ) ); ?></div>
+                    <div class="fplms-cs-hero-chips">
+                        <span class="fplms-cs-hero-chip">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+                            ID <?php echo esc_html( $course_id ); ?>
+                        </span>
+                        <span class="fplms-cs-hero-chip">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                            Creado <?php echo esc_html( $created ); ?>
+                        </span>
+                        <span class="fplms-cs-hero-chip <?php echo $is_active ? 'fplms-cs-hero-chip--green' : 'fplms-cs-hero-chip--yellow'; ?>">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><?php echo $is_active ? '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z"/>' : '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>'; ?></svg>
+                            <?php echo esc_html( $status_lbl ); ?>
+                        </span>
+                        <?php if ( $total_assigned > 0 ) : ?>
+                        <span class="fplms-cs-hero-chip">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M14 6l-1-2H5v17h2v-7h5l1 2h7V6h-6zm4 8h-4l-1-2H7V6h5l1 2h5v6z"/></svg>
+                            <?php echo esc_html( $total_assigned ); ?> estructuras asignadas
+                        </span>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <a href="<?php echo esc_url( $back_url ); ?>" class="fplms-cs-hero-back">
+                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    Volver a Cursos
+                </a>
+            </div>
+
+            <!-- ── Info Banner ── -->
+            <div class="fplms-cs-info-banner">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                <p><strong>Asignación en Cascada:</strong> Seleccionando una Ciudad se cargan automáticamente Empresas → Canales → Sucursales → Cargos. Puedes marcar o desmarcar opciones en cada nivel de forma independiente antes de guardar.</p>
+            </div>
+
+            <!-- ── Form ── -->
+            <form method="post" id="fplms-structures-form">
+                <?php wp_nonce_field( 'fplms_courses_save', 'fplms_courses_nonce' ); ?>
+                <input type="hidden" name="fplms_courses_action" value="assign_structures">
+                <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course_id ); ?>">
+
+                <div class="fplms-cs-cards-grid">
+
+                    <!-- Ciudad -->
+                    <div class="fplms-cs-card">
+                        <div class="fplms-cs-card-header">
+                            <div class="fplms-cs-card-icon" style="background:linear-gradient(135deg,#ef4444,#b91c1c);">
+                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                            </div>
+                            <div>
+                                <h3>Ciudades</h3>
+                                <p>Selecciona las ciudades para este curso</p>
+                            </div>
+                            <span class="fplms-cs-card-badge" id="fplms-cs-badge-cities"><?php echo esc_html( count( array_filter( array_keys( $cities ), fn($id) => in_array( $id, $current_structures['cities'], true ) ) ) ); ?> sel.</span>
                         </div>
-                    </td>
-                </tr>
-
-                <tr>
-                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#1565c0"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg> Empresas</label></th>
-                    <td>
-                        <div class="fplms-structure-container" id="fplms-companies-container">
-                            <?php if ( ! empty( $companies ) ) : ?>
-                                <?php foreach ( $companies as $term_id => $term_name ) : ?>
-                                    <label>
-                                        <input type="checkbox" 
-                                               name="fplms_course_companies[]" 
-                                               class="fplms-cascade-checkbox"
-                                               data-level="companies"
-                                               value="<?php echo esc_attr( $term_id ); ?>" 
-                                               <?php checked( in_array( $term_id, $current_structures['companies'], true ) ); ?>>
-                                        <?php echo esc_html( $term_name ); ?>
-                                    </label>
-                                <?php endforeach; ?>
-                            <?php else : ?>
-                                <p class="fplms-empty-state">Selecciona una ciudad primero para cargar empresas.</p>
-                            <?php endif; ?>
+                        <div class="fplms-cs-card-body">
+                            <div class="fplms-cs-card-toolbar">
+                                <div class="fplms-cs-card-toolbar-btns">
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="select-all" data-target="fplms-cities-container">Seleccionar todo</button>
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="deselect-all" data-target="fplms-cities-container">Limpiar</button>
+                                </div>
+                                <span class="fplms-cs-toolbar-count" id="fplms-cs-count-cities"><?php echo esc_html( count( $cities ) ); ?> disponibles</span>
+                            </div>
+                            <div class="fplms-cs-check-list fplms-structure-container" id="fplms-cities-container">
+                                <?php if ( ! empty( $cities ) ) : ?>
+                                    <?php foreach ( $cities as $term_id => $term_name ) : ?>
+                                        <label class="fplms-cs-check-item">
+                                            <input type="checkbox"
+                                                   name="fplms_course_cities[]"
+                                                   class="fplms-cascade-checkbox"
+                                                   data-level="cities"
+                                                   value="<?php echo esc_attr( $term_id ); ?>"
+                                                   <?php checked( in_array( $term_id, $current_structures['cities'], true ) ); ?>>
+                                            <span><?php echo esc_html( $term_name ); ?></span>
+                                        </label>
+                                    <?php endforeach; ?>
+                                <?php else : ?>
+                                    <div class="fplms-cs-empty-state">
+                                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                                        No hay ciudades disponibles.
+                                    </div>
+                                <?php endif; ?>
+                            </div>
                         </div>
-                    </td>
-                </tr>
+                    </div>
 
-                <tr>
-                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#0277bd"><path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg> Canales / Franquicias</label></th>
-                    <td>
-                        <div class="fplms-structure-container" id="fplms-channels-container">
-                            <?php if ( ! empty( $channels ) ) : ?>
-                                <?php foreach ( $channels as $term_id => $term_name ) : ?>
-                                    <label>
-                                        <input type="checkbox" 
-                                               name="fplms_course_channels[]" 
-                                               class="fplms-cascade-checkbox"
-                                               data-level="channels"
-                                               value="<?php echo esc_attr( $term_id ); ?>" 
-                                               <?php checked( in_array( $term_id, $current_structures['channels'], true ) ); ?>>
-                                        <?php echo esc_html( $term_name ); ?>
-                                    </label>
-                                <?php endforeach; ?>
-                            <?php else : ?>
-                                <p class="fplms-empty-state">Selecciona una empresa primero para cargar canales.</p>
-                            <?php endif; ?>
+                    <!-- Empresas -->
+                    <div class="fplms-cs-card">
+                        <div class="fplms-cs-card-header">
+                            <div class="fplms-cs-card-icon" style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);">
+                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>
+                            </div>
+                            <div>
+                                <h3>Empresas</h3>
+                                <p>Se carga al seleccionar ciudad(es)</p>
+                            </div>
+                            <span class="fplms-cs-card-badge" id="fplms-cs-badge-companies"><?php echo esc_html( count( array_filter( array_keys( $companies ), fn($id) => in_array( $id, $current_structures['companies'], true ) ) ) ); ?> sel.</span>
                         </div>
-                    </td>
-                </tr>
-
-                <tr>
-                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#558b2f"><path d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg> Sucursales</label></th>
-                    <td>
-                        <div class="fplms-structure-container" id="fplms-branches-container">
-                            <?php if ( ! empty( $branches ) ) : ?>
-                                <?php foreach ( $branches as $term_id => $term_name ) : ?>
-                                    <label>
-                                        <input type="checkbox" 
-                                               name="fplms_course_branches[]" 
-                                               class="fplms-cascade-checkbox"
-                                               data-level="branches"
-                                               value="<?php echo esc_attr( $term_id ); ?>" 
-                                               <?php checked( in_array( $term_id, $current_structures['branches'], true ) ); ?>>
-                                        <?php echo esc_html( $term_name ); ?>
-                                    </label>
-                                <?php endforeach; ?>
-                            <?php else : ?>
-                                <p class="fplms-empty-state">Selecciona un canal primero para cargar sucursales.</p>
-                            <?php endif; ?>
+                        <div class="fplms-cs-card-body">
+                            <div class="fplms-cs-card-toolbar">
+                                <div class="fplms-cs-card-toolbar-btns">
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="select-all" data-target="fplms-companies-container">Seleccionar todo</button>
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="deselect-all" data-target="fplms-companies-container">Limpiar</button>
+                                </div>
+                                <span class="fplms-cs-toolbar-count" id="fplms-cs-count-companies"><?php echo esc_html( count( $companies ) ); ?> disponibles</span>
+                            </div>
+                            <div class="fplms-cs-check-list fplms-structure-container" id="fplms-companies-container">
+                                <?php if ( ! empty( $companies ) ) : ?>
+                                    <?php foreach ( $companies as $term_id => $term_name ) : ?>
+                                        <label class="fplms-cs-check-item">
+                                            <input type="checkbox"
+                                                   name="fplms_course_companies[]"
+                                                   class="fplms-cascade-checkbox"
+                                                   data-level="companies"
+                                                   value="<?php echo esc_attr( $term_id ); ?>"
+                                                   <?php checked( in_array( $term_id, $current_structures['companies'], true ) ); ?>>
+                                            <span><?php echo esc_html( $term_name ); ?></span>
+                                        </label>
+                                    <?php endforeach; ?>
+                                <?php else : ?>
+                                    <div class="fplms-cs-empty-state">
+                                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>
+                                        Selecciona una ciudad para cargar empresas.
+                                    </div>
+                                <?php endif; ?>
+                            </div>
                         </div>
-                    </td>
-                </tr>
+                    </div>
 
-                <tr>
-                    <th scope="row"><label><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#6a1b9a"><path d="M20 6h-2.18c.07-.44.18-.88.18-1.35C18 2.53 16.5 1 14.65 1c-1.07 0-2.02.5-2.65 1.28L12 2.93l-.5-.65C10.87 1.5 9.96 1 8.85 1 7 1 5.5 2.53 5.5 4.65c0 .47.11.9.18 1.35H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-5.36-3c.98 0 1.86.83 1.86 1.65-.01.45-.1.9-.3 1.35h-3.12c-.2-.45-.3-.9-.3-1.35 0-.82.88-1.65 1.86-1.65zM8.85 3c.98 0 1.86.83 1.86 1.65 0 .45-.1.9-.3 1.35H7.29c-.2-.45-.3-.9-.3-1.35C6.99 3.83 7.87 3 8.85 3zM20 20H4V8h4v1c0 .55.45 1 1 1s1-.45 1-1V8h4v1c0 .55.45 1 1 1s1-.45 1-1V8h4v12z"/></svg> Cargos</label></th>
-                    <td>
-                        <div class="fplms-structure-container" id="fplms-roles-container">
-                            <?php if ( ! empty( $roles ) ) : ?>
-                                <?php foreach ( $roles as $term_id => $term_name ) : ?>
-                                    <label>
-                                        <input type="checkbox" 
-                                               name="fplms_course_roles[]" 
-                                               class="fplms-cascade-checkbox"
-                                               data-level="roles"
-                                               value="<?php echo esc_attr( $term_id ); ?>" 
-                                               <?php checked( in_array( $term_id, $current_structures['roles'], true ) ); ?>>
-                                        <?php echo esc_html( $term_name ); ?>
-                                    </label>
-                                <?php endforeach; ?>
-                            <?php else : ?>
-                                <p class="fplms-empty-state">Selecciona una sucursal primero para cargar cargos.</p>
-                            <?php endif; ?>
+                    <!-- Canales -->
+                    <div class="fplms-cs-card">
+                        <div class="fplms-cs-card-header">
+                            <div class="fplms-cs-card-icon" style="background:linear-gradient(135deg,#06b6d4,#0e7490);">
+                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>
+                            </div>
+                            <div>
+                                <h3>Canales / Franquicias</h3>
+                                <p>Se carga al seleccionar empresa(s)</p>
+                            </div>
+                            <span class="fplms-cs-card-badge" id="fplms-cs-badge-channels"><?php echo esc_html( count( array_filter( array_keys( $channels ), fn($id) => in_array( $id, $current_structures['channels'], true ) ) ) ); ?> sel.</span>
                         </div>
-                    </td>
-                </tr>
-            </table>
+                        <div class="fplms-cs-card-body">
+                            <div class="fplms-cs-card-toolbar">
+                                <div class="fplms-cs-card-toolbar-btns">
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="select-all" data-target="fplms-channels-container">Seleccionar todo</button>
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="deselect-all" data-target="fplms-channels-container">Limpiar</button>
+                                </div>
+                                <span class="fplms-cs-toolbar-count" id="fplms-cs-count-channels"><?php echo esc_html( count( $channels ) ); ?> disponibles</span>
+                            </div>
+                            <div class="fplms-cs-check-list fplms-structure-container" id="fplms-channels-container">
+                                <?php if ( ! empty( $channels ) ) : ?>
+                                    <?php foreach ( $channels as $term_id => $term_name ) : ?>
+                                        <label class="fplms-cs-check-item">
+                                            <input type="checkbox"
+                                                   name="fplms_course_channels[]"
+                                                   class="fplms-cascade-checkbox"
+                                                   data-level="channels"
+                                                   value="<?php echo esc_attr( $term_id ); ?>"
+                                                   <?php checked( in_array( $term_id, $current_structures['channels'], true ) ); ?>>
+                                            <span><?php echo esc_html( $term_name ); ?></span>
+                                        </label>
+                                    <?php endforeach; ?>
+                                <?php else : ?>
+                                    <div class="fplms-cs-empty-state">
+                                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>
+                                        Selecciona una empresa para cargar canales.
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
 
-            <p class="submit">
-                <button type="submit" class="button button-primary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:currentColor"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg> Guardar estructuras y notificar usuarios</button>
-            </p>
-        </form>
-        
+                    <!-- Sucursales -->
+                    <div class="fplms-cs-card">
+                        <div class="fplms-cs-card-header">
+                            <div class="fplms-cs-card-icon" style="background:linear-gradient(135deg,#22c55e,#15803d);">
+                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg>
+                            </div>
+                            <div>
+                                <h3>Sucursales</h3>
+                                <p>Se carga al seleccionar canal(es)</p>
+                            </div>
+                            <span class="fplms-cs-card-badge" id="fplms-cs-badge-branches"><?php echo esc_html( count( array_filter( array_keys( $branches ), fn($id) => in_array( $id, $current_structures['branches'], true ) ) ) ); ?> sel.</span>
+                        </div>
+                        <div class="fplms-cs-card-body">
+                            <div class="fplms-cs-card-toolbar">
+                                <div class="fplms-cs-card-toolbar-btns">
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="select-all" data-target="fplms-branches-container">Seleccionar todo</button>
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="deselect-all" data-target="fplms-branches-container">Limpiar</button>
+                                </div>
+                                <span class="fplms-cs-toolbar-count" id="fplms-cs-count-branches"><?php echo esc_html( count( $branches ) ); ?> disponibles</span>
+                            </div>
+                            <div class="fplms-cs-check-list fplms-structure-container" id="fplms-branches-container">
+                                <?php if ( ! empty( $branches ) ) : ?>
+                                    <?php foreach ( $branches as $term_id => $term_name ) : ?>
+                                        <label class="fplms-cs-check-item">
+                                            <input type="checkbox"
+                                                   name="fplms_course_branches[]"
+                                                   class="fplms-cascade-checkbox"
+                                                   data-level="branches"
+                                                   value="<?php echo esc_attr( $term_id ); ?>"
+                                                   <?php checked( in_array( $term_id, $current_structures['branches'], true ) ); ?>>
+                                            <span><?php echo esc_html( $term_name ); ?></span>
+                                        </label>
+                                    <?php endforeach; ?>
+                                <?php else : ?>
+                                    <div class="fplms-cs-empty-state">
+                                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M15 11V5l-3-3-3 3v2H3v14h18V11h-6zm-8 8H5v-2h2v2zm0-4H5v-2h2v2zm0-4H5V9h2v2zm6 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm0-4h-2V5h2v2zm6 12h-2v-2h2v2zm0-4h-2v-2h2v2z"/></svg>
+                                        Selecciona un canal para cargar sucursales.
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Cargos -->
+                    <div class="fplms-cs-card">
+                        <div class="fplms-cs-card-header">
+                            <div class="fplms-cs-card-icon" style="background:linear-gradient(135deg,#a855f7,#7e22ce);">
+                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6h-2.18c.07-.44.18-.88.18-1.35C18 2.53 16.5 1 14.65 1c-1.07 0-2.02.5-2.65 1.28L12 2.93l-.5-.65C10.87 1.5 9.96 1 8.85 1 7 1 5.5 2.53 5.5 4.65c0 .47.11.9.18 1.35H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-5.36-3c.98 0 1.86.83 1.86 1.65-.01.45-.1.9-.3 1.35h-3.12c-.2-.45-.3-.9-.3-1.35 0-.82.88-1.65 1.86-1.65zM8.85 3c.98 0 1.86.83 1.86 1.65 0 .45-.1.9-.3 1.35H7.29c-.2-.45-.3-.9-.3-1.35C6.99 3.83 7.87 3 8.85 3zM20 20H4V8h4v1c0 .55.45 1 1 1s1-.45 1-1V8h4v1c0 .55.45 1 1 1s1-.45 1-1V8h4v12z"/></svg>
+                            </div>
+                            <div>
+                                <h3>Cargos</h3>
+                                <p>Se carga al seleccionar sucursal(es)</p>
+                            </div>
+                            <span class="fplms-cs-card-badge" id="fplms-cs-badge-roles"><?php echo esc_html( count( array_filter( array_keys( $roles ), fn($id) => in_array( $id, $current_structures['roles'], true ) ) ) ); ?> sel.</span>
+                        </div>
+                        <div class="fplms-cs-card-body">
+                            <div class="fplms-cs-card-toolbar">
+                                <div class="fplms-cs-card-toolbar-btns">
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="select-all" data-target="fplms-roles-container">Seleccionar todo</button>
+                                    <button type="button" class="fplms-cs-toolbar-btn" data-action="deselect-all" data-target="fplms-roles-container">Limpiar</button>
+                                </div>
+                                <span class="fplms-cs-toolbar-count" id="fplms-cs-count-roles"><?php echo esc_html( count( $roles ) ); ?> disponibles</span>
+                            </div>
+                            <div class="fplms-cs-check-list fplms-structure-container" id="fplms-roles-container">
+                                <?php if ( ! empty( $roles ) ) : ?>
+                                    <?php foreach ( $roles as $term_id => $term_name ) : ?>
+                                        <label class="fplms-cs-check-item">
+                                            <input type="checkbox"
+                                                   name="fplms_course_roles[]"
+                                                   class="fplms-cascade-checkbox"
+                                                   data-level="roles"
+                                                   value="<?php echo esc_attr( $term_id ); ?>"
+                                                   <?php checked( in_array( $term_id, $current_structures['roles'], true ) ); ?>>
+                                            <span><?php echo esc_html( $term_name ); ?></span>
+                                        </label>
+                                    <?php endforeach; ?>
+                                <?php else : ?>
+                                    <div class="fplms-cs-empty-state">
+                                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6h-2.18c.07-.44.18-.88.18-1.35C18 2.53 16.5 1 14.65 1c-1.07 0-2.02.5-2.65 1.28L12 2.93l-.5-.65C10.87 1.5 9.96 1 8.85 1 7 1 5.5 2.53 5.5 4.65c0 .47.11.9.18 1.35H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-5.36-3c.98 0 1.86.83 1.86 1.65-.01.45-.1.9-.3 1.35h-3.12c-.2-.45-.3-.9-.3-1.35 0-.82.88-1.65 1.86-1.65zM8.85 3c.98 0 1.86.83 1.86 1.65 0 .45-.1.9-.3 1.35H7.29c-.2-.45-.3-.9-.3-1.35C6.99 3.83 7.87 3 8.85 3zM20 20H4V8h4v1c0 .55.45 1 1 1s1-.45 1-1V8h4v1c0 .55.45 1 1 1s1-.45 1-1V8h4v12z"/></svg>
+                                        Selecciona una sucursal para cargar cargos.
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+
+                </div><!-- /.fplms-cs-cards-grid -->
+
+                <!-- ── Form Actions ── -->
+                <div class="fplms-cs-form-actions">
+                    <a href="<?php echo esc_url( $back_url ); ?>" class="fplms-cs-btn fplms-cs-btn-secondary">
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                        Cancelar
+                    </a>
+                    <button type="submit" class="fplms-cs-btn fplms-cs-btn-primary">
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+                        Guardar y Notificar Usuarios
+                    </button>
+                </div>
+
+            </form>
+        </div><!-- /.fplms-cs-container -->
+
         <script>
         jQuery(document).ready(function($) {
-            /**
-             * Sistema de Cascada Dinámica para Asignación de Estructuras
-             * Este script maneja la carga automática de estructuras relacionadas
-             * cuando el usuario selecciona elementos de nivel superior
-             */
-            
+
             const ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
             const cascadeNonce = '<?php echo esc_js( wp_create_nonce( 'fplms_cascade' ) ); ?>';
-            
-            // Contenedores de cada nivel
+
             const containers = {
-                cities: $('#fplms-cities-container'),
+                cities:    $('#fplms-cities-container'),
                 companies: $('#fplms-companies-container'),
-                channels: $('#fplms-channels-container'),
-                branches: $('#fplms-branches-container'),
-                roles: $('#fplms-roles-container')
+                channels:  $('#fplms-channels-container'),
+                branches:  $('#fplms-branches-container'),
+                roles:     $('#fplms-roles-container')
             };
-            
-            // Mapeo de niveles y sus descendientes
+
             const levelHierarchy = {
-                cities: ['companies', 'channels', 'branches', 'roles'],
+                cities:    ['companies', 'channels', 'branches', 'roles'],
                 companies: ['channels', 'branches', 'roles'],
-                channels: ['branches', 'roles'],
-                branches: ['roles']
+                channels:  ['branches', 'roles'],
+                branches:  ['roles']
             };
-            
-            /**
-             * Maneja el cambio en checkboxes de un nivel específico
-             */
+
+            // ── Toolbar: Select all / Deselect all ──
+            $(document).on('click', '.fplms-cs-toolbar-btn', function() {
+                const action = $(this).data('action');
+                const targetId = $(this).data('target');
+                const $container = $('#' + targetId);
+                $container.find('input[type="checkbox"]').prop('checked', action === 'select-all');
+                updateBadge($container.attr('id').replace('fplms-', '').replace('-container', ''));
+            });
+
+            // ── Update badge counts ──
+            function updateBadge(level) {
+                const $container = containers[level];
+                if (!$container) return;
+                const total = $container.find('input[type="checkbox"]').length;
+                const checked = $container.find('input[type="checkbox"]:checked').length;
+                $('#fplms-cs-badge-' + level).text(checked + ' sel.');
+                $('#fplms-cs-count-' + level).text(total + ' disponibles');
+            }
+
+            // Initialize badges
+            Object.keys(containers).forEach(function(level) {
+                updateBadge(level);
+            });
+
             function handleLevelChange(level) {
-                const $checkboxes = containers[level].find('input[type="checkbox"]');
                 const selectedIds = [];
-                
-                $checkboxes.each(function() {
-                    if ($(this).is(':checked')) {
-                        selectedIds.push($(this).val());
-                    }
+                containers[level].find('input[type="checkbox"]:checked').each(function() {
+                    selectedIds.push($(this).val());
                 });
-                
+                updateBadge(level);
                 if (selectedIds.length === 0) {
-                    // Si no hay selección, limpiar niveles descendientes
                     clearDescendantLevels(level);
                     return;
                 }
-                
-                // Cargar estructuras en cascada
                 loadCascadeStructures(level, selectedIds);
             }
-            
-            /**
-             * Carga estructuras en cascada mediante AJAX
-             */
+
             function loadCascadeStructures(level, selectedIds) {
-                // Mostrar indicador de carga en descendientes
                 const descendants = levelHierarchy[level] || [];
-                descendants.forEach(function(descendantLevel) {
-                    containers[descendantLevel].html('<p class="fplms-loading"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:#999"><path d="M6 2v6l2 2-2 2v6h12v-6l-2-2 2-2V2H6zm10 14.5V18H8v-1.5l2-2V12h4v2.5l2 2zm-5-6.5-2-2V4h6v4l-2 2h-2z"/></svg> Cargando...</p>');
+                descendants.forEach(function(dl) {
+                    containers[dl].html('<div class="fplms-cs-loading"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" style="fill:#9ca3af"><path d="M6 2v6l2 2-2 2v6h12v-6l-2-2 2-2V2H6zm10 14.5V18H8v-1.5l2-2V12h4v2.5l2 2zm-5-6.5-2-2V4h6v4l-2 2h-2z"/></svg> Cargando...</div>');
                 });
-                
+
                 $.ajax({
                     url: ajaxUrl,
                     type: 'POST',
@@ -2389,142 +2674,82 @@ class FairPlay_LMS_Courses_Controller {
                     },
                     success: function(response) {
                         if (response.success && response.data) {
-                            // Solo actualizar niveles DESCENDIENTES, no el nivel actual
-                            // Esto permite selección múltiple sin perder las opciones visibles
-                            
                             if (level === 'cities') {
-                                // Desde ciudades: actualizar empresas, canales, sucursales, cargos
                                 updateCheckboxes('companies', response.data.companies);
-                                updateCheckboxes('channels', response.data.channels);
-                                updateCheckboxes('branches', response.data.branches);
-                                updateCheckboxes('roles', response.data.roles);
+                                updateCheckboxes('channels',  response.data.channels);
+                                updateCheckboxes('branches',  response.data.branches);
+                                updateCheckboxes('roles',     response.data.roles);
                             } else if (level === 'companies') {
-                                // Desde empresas: actualizar solo canales, sucursales, cargos
-                                // NO actualizar empresas para permitir selección múltiple
                                 updateCheckboxes('channels', response.data.channels);
                                 updateCheckboxes('branches', response.data.branches);
-                                updateCheckboxes('roles', response.data.roles);
+                                updateCheckboxes('roles',    response.data.roles);
                             } else if (level === 'channels') {
-                                // Desde canales: actualizar solo sucursales y cargos
                                 updateCheckboxes('branches', response.data.branches);
-                                updateCheckboxes('roles', response.data.roles);
+                                updateCheckboxes('roles',    response.data.roles);
                             } else if (level === 'branches') {
-                                // Desde sucursales: actualizar solo cargos
                                 updateCheckboxes('roles', response.data.roles);
                             }
-                        } else {
-                            console.error('Error en respuesta AJAX:', response);
                         }
                     },
-                    error: function(xhr, status, error) {
-                        console.error('Error AJAX:', error);
-                        descendants.forEach(function(descendantLevel) {
-                            containers[descendantLevel].html('<p style="color:red;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="vertical-align:middle;fill:red"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> Error al cargar estructuras.</p>');
+                    error: function() {
+                        descendants.forEach(function(dl) {
+                            containers[dl].html('<div class="fplms-cs-empty-state" style="color:#ef4444;">Error al cargar estructuras.</div>');
                         });
                     }
                 });
             }
-            
-            /**
-             * Actualiza los checkboxes de un nivel específico
-             */
+
             function updateCheckboxes(level, items) {
                 const container = containers[level];
-                
-                if (!container || !items) {
-                    return;
-                }
-                
-                // Limpiar contenedor
+                if (!container || !items) return;
                 container.html('');
-                
-                // Si no hay items, mostrar mensaje
+
                 if (Object.keys(items).length === 0) {
-                    let message = '';
-                    switch(level) {
-                        case 'companies':
-                            message = 'No hay empresas disponibles para las ciudades seleccionadas.';
-                            break;
-                        case 'channels':
-                            message = 'No hay canales disponibles para las empresas seleccionadas.';
-                            break;
-                        case 'branches':
-                            message = 'No hay sucursales disponibles para los canales seleccionados.';
-                            break;
-                        case 'roles':
-                            message = 'No hay cargos disponibles para las sucursales seleccionadas.';
-                            break;
-                    }
-                    container.html('<p class="fplms-empty-state">' + message + '</p>');
+                    const msgs = {
+                        companies: 'No hay empresas para las ciudades seleccionadas.',
+                        channels:  'No hay canales para las empresas seleccionadas.',
+                        branches:  'No hay sucursales para los canales seleccionados.',
+                        roles:     'No hay cargos para las sucursales seleccionadas.'
+                    };
+                    container.html('<div class="fplms-cs-empty-state">' + ( msgs[level] || 'Sin resultados.' ) + '</div>');
+                    updateBadge(level);
                     return;
                 }
-                
-                // Crear checkboxes (pre-seleccionados por defecto)
+
                 Object.entries(items).forEach(function([id, name]) {
-                    const $label = $('<label></label>');
+                    const $label = $('<label class="fplms-cs-check-item"></label>');
                     const $checkbox = $('<input type="checkbox" class="fplms-cascade-checkbox">')
                         .attr('name', 'fplms_course_' + level + '[]')
                         .attr('data-level', level)
                         .attr('value', id)
-                        .prop('checked', true); // Pre-seleccionar
-                    
-                    $label.append($checkbox);
-                    $label.append(' ' + name);
+                        .prop('checked', true);
+                    $label.append($checkbox).append($('<span></span>').text(name));
                     container.append($label);
                 });
-                
-                // Agregar event listeners a los nuevos checkboxes
+
                 container.find('.fplms-cascade-checkbox').on('change', function() {
-                    const currentLevel = $(this).data('level');
-                    handleLevelChange(currentLevel);
+                    handleLevelChange($(this).data('level'));
                 });
+                updateBadge(level);
             }
-            
-            /**
-             * Limpia niveles descendientes cuando se deselecciona todo
-             */
+
             function clearDescendantLevels(fromLevel) {
-                const descendants = levelHierarchy[fromLevel] || [];
-                
-                descendants.forEach(function(descendantLevel) {
-                    let message = '';
-                    switch(descendantLevel) {
-                        case 'companies':
-                            message = 'Selecciona una ciudad primero para cargar empresas.';
-                            break;
-                        case 'channels':
-                            message = 'Selecciona una empresa primero para cargar canales.';
-                            break;
-                        case 'branches':
-                            message = 'Selecciona un canal primero para cargar sucursales.';
-                            break;
-                        case 'roles':
-                            message = 'Selecciona una sucursal primero para cargar cargos.';
-                            break;
-                    }
-                    containers[descendantLevel].html('<p class="fplms-empty-state">' + message + '</p>');
+                const msgs = {
+                    companies: 'Selecciona una ciudad para cargar empresas.',
+                    channels:  'Selecciona una empresa para cargar canales.',
+                    branches:  'Selecciona un canal para cargar sucursales.',
+                    roles:     'Selecciona una sucursal para cargar cargos.'
+                };
+                (levelHierarchy[fromLevel] || []).forEach(function(dl) {
+                    containers[dl].html('<div class="fplms-cs-empty-state">' + ( msgs[dl] || '' ) + '</div>');
+                    updateBadge(dl);
                 });
             }
-            
-            // Event listeners para TODOS los niveles (usando delegación de eventos)
-            // Esto permite que funcione con checkboxes cargados dinámicamente y los ya existentes
-            containers.cities.on('change', '.fplms-cascade-checkbox', function() {
-                handleLevelChange('cities');
-            });
-            
-            containers.companies.on('change', '.fplms-cascade-checkbox', function() {
-                handleLevelChange('companies');
-            });
-            
-            containers.channels.on('change', '.fplms-cascade-checkbox', function() {
-                handleLevelChange('channels');
-            });
-            
-            containers.branches.on('change', '.fplms-cascade-checkbox', function() {
-                handleLevelChange('branches');
-            });
-            
-            // NOTA: No agregamos listener para 'roles' porque es el último nivel (no tiene descendientes)
+
+            containers.cities.on('change',    '.fplms-cascade-checkbox', function() { handleLevelChange('cities'); });
+            containers.companies.on('change',  '.fplms-cascade-checkbox', function() { handleLevelChange('companies'); });
+            containers.channels.on('change',   '.fplms-cascade-checkbox', function() { handleLevelChange('channels'); });
+            containers.branches.on('change',   '.fplms-cascade-checkbox', function() { handleLevelChange('branches'); });
         });
         </script>
         <?php
