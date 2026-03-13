@@ -796,6 +796,17 @@ class FairPlay_LMS_Courses_Controller {
             .fplms-cl-modal-cancel:hover { background:#f3f4f6; }
             .fplms-cl-modal-confirm { padding:8px 20px; background:#dc2626; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; transition:background .2s; }
             .fplms-cl-modal-confirm:hover { background:#b91c1c; }
+            /* Modal header color variants */
+            .fplms-cl-modal-header--red    { border-bottom-color:#fee2e2 !important; background:#fef2f2 !important; }
+            .fplms-cl-modal-header--red svg { fill:#dc2626 !important; } .fplms-cl-modal-header--red h3 { color:#7f1d1d !important; }
+            .fplms-cl-modal-header--green  { border-bottom-color:#bbf7d0 !important; background:#f0fdf4 !important; }
+            .fplms-cl-modal-header--green svg { fill:#16a34a !important; } .fplms-cl-modal-header--green h3 { color:#14532d !important; }
+            .fplms-cl-modal-header--amber  { border-bottom-color:#fde68a !important; background:#fffbeb !important; }
+            .fplms-cl-modal-header--amber svg { fill:#d97706 !important; } .fplms-cl-modal-header--amber h3 { color:#78350f !important; }
+            .fplms-cl-modal-confirm--green { background:#16a34a !important; } .fplms-cl-modal-confirm--green:hover { background:#15803d !important; }
+            .fplms-cl-modal-confirm--amber { background:#d97706 !important; } .fplms-cl-modal-confirm--amber:hover { background:#b45309 !important; }
+            .fplms-cl-modal-course--green  { border-left-color:#16a34a !important; }
+            .fplms-cl-modal-course--amber  { border-left-color:#d97706 !important; }
 
             /* ── Instructor modal (blue variant) ── */
             .fplms-cl-inst-modal-header { padding:18px 22px; border-bottom:1px solid #dbeafe; background:#eff6ff; display:flex; align-items:center; gap:10px; }
@@ -1085,6 +1096,25 @@ class FairPlay_LMS_Courses_Controller {
                 <div class="fplms-cl-modal-footer">
                     <button type="button" class="fplms-cl-modal-cancel" onclick="fplmsClCloseDeleteModal()">Cancelar</button>
                     <button type="button" class="fplms-cl-modal-confirm" onclick="fplmsClConfirmDelete()">Eliminar permanentemente</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- GENERIC ACTION CONFIRM MODAL (delete masivo, activar, desactivar) -->
+        <div id="fplms-cl-confirm-modal" class="fplms-cl-modal-overlay">
+            <div class="fplms-cl-modal">
+                <div id="fplms-cl-confirm-modal-header" class="fplms-cl-modal-header fplms-cl-modal-header--red">
+                    <svg id="fplms-cl-confirm-modal-icon" viewBox="0 0 24 24"></svg>
+                    <h3 id="fplms-cl-confirm-modal-title"></h3>
+                </div>
+                <div class="fplms-cl-modal-body">
+                    <p id="fplms-cl-confirm-modal-body"></p>
+                    <div class="fplms-cl-modal-course" id="fplms-cl-confirm-modal-name"></div>
+                    <p id="fplms-cl-confirm-modal-sub" style="color:#4b5563;"></p>
+                </div>
+                <div class="fplms-cl-modal-footer">
+                    <button type="button" class="fplms-cl-modal-cancel" onclick="fplmsClCloseConfirmModal()">Cancelar</button>
+                    <button type="button" id="fplms-cl-confirm-modal-btn" class="fplms-cl-modal-confirm" onclick="fplmsClExecuteConfirmModal()">Confirmar</button>
                 </div>
             </div>
         </div>
@@ -1384,21 +1414,34 @@ class FairPlay_LMS_Courses_Controller {
 
         // ── Toggle individual course status ─────────────────────────────
         window.fplmsClToggleStatus = function(courseId, newStatus, courseTitle) {
-            var label = 'publish' === newStatus ? 'activar' : 'desactivar';
-            var msg   = 'publish' === newStatus
-                ? '¿Activar el curso "' + courseTitle + '"? Será visible para todos los roles.'
-                : '¿Desactivar el curso "' + courseTitle + '"? Dejará de ser visible para todos los roles excepto el administrador.';
-            if (!confirm(msg)) return;
-            var container = document.getElementById('fplms-cl-bulk-ids');
-            container.innerHTML = '';
-            var inp = document.createElement('input');
-            inp.type = 'hidden'; inp.name = 'fplms_bulk_course_ids[]'; inp.value = courseId;
-            container.appendChild(inp);
-            var nsInp = document.createElement('input');
-            nsInp.type = 'hidden'; nsInp.name = 'fplms_new_status'; nsInp.value = newStatus;
-            container.appendChild(nsInp);
-            document.getElementById('fplms-cl-bulk-action-input').value = 'toggle_course_status';
-            document.getElementById('fplms-cl-bulk-form').submit();
+            var isActivate = 'publish' === newStatus;
+            fplmsClShowConfirmModal({
+                variant : isActivate ? 'green' : 'amber',
+                iconPath: isActivate
+                    ? 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z'
+                    : 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8 0-1.85.63-3.55 1.69-4.9L16.9 18.31C15.55 19.37 13.85 20 12 20zm6.31-3.1L7.1 5.69C8.45 4.63 10.15 4 12 4c4.42 0 8 3.58 8 8 0 1.85-.63 3.55-1.69 4.9z',
+                title   : isActivate ? 'Activar curso' : 'Desactivar curso',
+                bodyText: isActivate
+                    ? '¿Deseas <strong>activar</strong> el siguiente curso?'
+                    : '¿Deseas <strong>desactivar</strong> el siguiente curso?',
+                name    : courseTitle,
+                subText : isActivate
+                    ? 'El curso será <strong>visible</strong> para todos los roles.'
+                    : 'El curso <strong>dejará de ser visible</strong> para todos los roles. Solo el administrador podrá cambiarlo.',
+                btnText : isActivate ? 'Sí, activar' : 'Sí, desactivar',
+                onConfirm: function() {
+                    var container = document.getElementById('fplms-cl-bulk-ids');
+                    container.innerHTML = '';
+                    var inp = document.createElement('input');
+                    inp.type = 'hidden'; inp.name = 'fplms_bulk_course_ids[]'; inp.value = courseId;
+                    container.appendChild(inp);
+                    var nsInp = document.createElement('input');
+                    nsInp.type = 'hidden'; nsInp.name = 'fplms_new_status'; nsInp.value = newStatus;
+                    container.appendChild(nsInp);
+                    document.getElementById('fplms-cl-bulk-action-input').value = 'toggle_course_status';
+                    document.getElementById('fplms-cl-bulk-form').submit();
+                }
+            });
         };
 
         // ── Bulk action ──────────────────────────────────────────────────────
@@ -1408,15 +1451,40 @@ class FairPlay_LMS_Courses_Controller {
             var checked = document.querySelectorAll('.fplms-cl-cb:checked');
             if (!checked.length) { alert('Selecciona al menos un curso.'); return; }
             var ids = Array.from(checked).map(function(cb) { return cb.value; });
+            var n = ids.length;
             if (action === 'bulk_delete') {
-                if (!confirm('¿Eliminar permanentemente ' + ids.length + ' curso(s)? Esta acción no se puede deshacer.')) return;
-                fplmsClSubmitBulk('bulk_delete', ids);
+                fplmsClShowConfirmModal({
+                    variant : 'red',
+                    iconPath: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
+                    title   : 'Eliminar ' + n + ' curso(s)',
+                    bodyText: '<strong>Advertencia:</strong> Esta acción es <strong style="color:#dc2626;">permanente</strong> y no se puede deshacer.',
+                    name    : n + ' curso(s) seleccionado(s)',
+                    subText : 'Se eliminarán el/los curso(s) y todos sus datos asociados.',
+                    btnText : 'Eliminar permanentemente',
+                    onConfirm: function() { fplmsClSubmitBulk('bulk_delete', ids); }
+                });
             } else if (action === 'bulk_activate') {
-                if (!confirm('¿Activar ' + ids.length + ' curso(s)? Serán visibles para todos los roles.')) return;
-                fplmsClSubmitBulk('bulk_activate', ids);
+                fplmsClShowConfirmModal({
+                    variant : 'green',
+                    iconPath: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z',
+                    title   : 'Activar ' + n + ' curso(s)',
+                    bodyText: '¿Deseas <strong>activar</strong> los cursos seleccionados?',
+                    name    : n + ' curso(s) seleccionado(s)',
+                    subText : 'Los cursos serán <strong>visibles</strong> para todos los roles.',
+                    btnText : 'Sí, activar',
+                    onConfirm: function() { fplmsClSubmitBulk('bulk_activate', ids); }
+                });
             } else if (action === 'bulk_deactivate') {
-                if (!confirm('¿Desactivar ' + ids.length + ' curso(s)? No serán visibles para ningún rol fuera del administrador.')) return;
-                fplmsClSubmitBulk('bulk_deactivate', ids);
+                fplmsClShowConfirmModal({
+                    variant : 'amber',
+                    iconPath: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8 0-1.85.63-3.55 1.69-4.9L16.9 18.31C15.55 19.37 13.85 20 12 20zm6.31-3.1L7.1 5.69C8.45 4.63 10.15 4 12 4c4.42 0 8 3.58 8 8 0 1.85-.63 3.55-1.69 4.9z',
+                    title   : 'Desactivar ' + n + ' curso(s)',
+                    bodyText: '¿Deseas <strong>desactivar</strong> los cursos seleccionados?',
+                    name    : n + ' curso(s) seleccionado(s)',
+                    subText : 'Los cursos <strong>dejarán de ser visibles</strong> para todos los roles. Solo el administrador podrá cambiarlos.',
+                    btnText : 'Sí, desactivar',
+                    onConfirm: function() { fplmsClSubmitBulk('bulk_deactivate', ids); }
+                });
             }
         };
 
@@ -1437,11 +1505,44 @@ class FairPlay_LMS_Courses_Controller {
             document.getElementById('fplms-cl-delete-modal').classList.remove('active');
             fplmsClSubmitBulk('bulk_delete', [String(_fplmsClDelId)]);
         };
+        // ── Generic action confirm modal ──────────────────────────────────────
+        var _fplmsClConfirmCb = null;
+        window.fplmsClShowConfirmModal = function(opts) {
+            var header = document.getElementById('fplms-cl-confirm-modal-header');
+            header.className = 'fplms-cl-modal-header fplms-cl-modal-header--' + opts.variant;
+            document.getElementById('fplms-cl-confirm-modal-icon').innerHTML = '<path d="' + opts.iconPath + '"/>';
+            document.getElementById('fplms-cl-confirm-modal-title').textContent = opts.title;
+            document.getElementById('fplms-cl-confirm-modal-body').innerHTML   = opts.bodyText || '';
+            var nameEl = document.getElementById('fplms-cl-confirm-modal-name');
+            nameEl.textContent = opts.name || '';
+            nameEl.style.display = opts.name ? '' : 'none';
+            nameEl.className = 'fplms-cl-modal-course' + (opts.variant !== 'red' ? ' fplms-cl-modal-course--' + opts.variant : '');
+            var subEl = document.getElementById('fplms-cl-confirm-modal-sub');
+            subEl.innerHTML = opts.subText || '';
+            subEl.style.display = opts.subText ? '' : 'none';
+            var btn = document.getElementById('fplms-cl-confirm-modal-btn');
+            btn.textContent = opts.btnText || 'Confirmar';
+            btn.className = 'fplms-cl-modal-confirm' + (opts.variant !== 'red' ? ' fplms-cl-modal-confirm--' + opts.variant : '');
+            _fplmsClConfirmCb = opts.onConfirm || null;
+            document.getElementById('fplms-cl-confirm-modal').classList.add('active');
+        };
+        window.fplmsClCloseConfirmModal = function() {
+            document.getElementById('fplms-cl-confirm-modal').classList.remove('active');
+            _fplmsClConfirmCb = null;
+        };
+        window.fplmsClExecuteConfirmModal = function() {
+            document.getElementById('fplms-cl-confirm-modal').classList.remove('active');
+            var cb = _fplmsClConfirmCb;
+            _fplmsClConfirmCb = null;
+            if (cb) cb();
+        };
+
         document.addEventListener('click', function(e) {
-            if (e.target.id === 'fplms-cl-delete-modal') fplmsClCloseDeleteModal();
+            if (e.target.id === 'fplms-cl-delete-modal')  fplmsClCloseDeleteModal();
+            if (e.target.id === 'fplms-cl-confirm-modal') fplmsClCloseConfirmModal();
         });
         document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') { fplmsClCloseDeleteModal(); fplmsClCloseInstructorModal(); }
+            if (e.key === 'Escape') { fplmsClCloseDeleteModal(); fplmsClCloseInstructorModal(); fplmsClCloseConfirmModal(); }
         });
 
         // ── Instructor assign modal ──────────────────────────────────────────

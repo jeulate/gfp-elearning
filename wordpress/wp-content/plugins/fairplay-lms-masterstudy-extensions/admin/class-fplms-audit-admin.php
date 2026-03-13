@@ -43,7 +43,7 @@ class FairPlay_LMS_Audit_Admin {
 		add_submenu_page(
 			'fplms-dashboard',
 			'Bitácora de Auditoría',
-			'📋 Bitácora',
+			'Bitácora',
 			'manage_options',
 			'fairplay-lms-audit',
 			[ $this, 'render_audit_page' ]
