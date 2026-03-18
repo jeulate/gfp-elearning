@@ -36,6 +36,9 @@ class FairPlay_LMS_Course_Display {
         
         // Modificar la información del curso en shortcodes y listados
         add_filter( 'stm_lms_archive_card_meta', [ $this, 'modify_course_card_meta' ], 10, 2 );
+
+        // Ocultar botón de descarga de PDF hasta llegar a la última página
+        add_action( 'wp_footer', [ $this, 'inject_pdf_download_lock_script' ] );
     }
 
     /**
@@ -77,8 +80,10 @@ class FairPlay_LMS_Course_Display {
      * Agrega CSS personalizado para ocultar elementos no deseados.
      */
     public function add_custom_css(): void {
-        // Solo aplicar en páginas de cursos
-        if ( ! is_singular( FairPlay_LMS_Config::MS_PT_COURSE ) && ! is_post_type_archive( FairPlay_LMS_Config::MS_PT_COURSE ) ) {
+        // Solo aplicar en páginas de cursos y lecciones
+        if ( ! is_singular( FairPlay_LMS_Config::MS_PT_COURSE )
+            && ! is_singular( FairPlay_LMS_Config::MS_PT_LESSON )
+            && ! is_post_type_archive( FairPlay_LMS_Config::MS_PT_COURSE ) ) {
             return;
         }
 
@@ -115,6 +120,19 @@ class FairPlay_LMS_Course_Display {
                 display: none !important;
             }
 
+            /* Ocultar botón de descarga de PDF hasta llegar a la última página */
+            .masterstudy-toolbar__download-btn {
+                opacity: 0.3 !important;
+                pointer-events: none !important;
+                cursor: not-allowed !important;
+                position: relative;
+            }
+            .masterstudy-toolbar__download-btn.fplms-pdf-unlocked {
+                opacity: 1 !important;
+                pointer-events: auto !important;
+                cursor: pointer !important;
+            }
+
             /* Estilo para la sección de estructuras */
             .fplms-course-structures {
                 animation: fadeIn 0.3s ease-in;
@@ -139,6 +157,75 @@ class FairPlay_LMS_Course_Display {
                 margin-right: 5px;
             }
         </style>
+        <?php
+    }
+
+    /**
+     * Inyecta el JS que desbloquea el botón de descarga del PDF al llegar a la última página.
+     * Detecta el visor PDF de MasterStudy (Chakra UI) observando el texto del contador de páginas.
+     */
+    public function inject_pdf_download_lock_script(): void {
+        if ( ! is_user_logged_in() ) {
+            return;
+        }
+        // Solo en páginas de lección con PDF
+        if ( ! is_singular( FairPlay_LMS_Config::MS_PT_LESSON ) ) {
+            return;
+        }
+        ?>
+        <script>
+        (function() {
+            var _unlocked = false;
+
+            function checkAndUnlock() {
+                // Página actual: <input id="toolbar__pages-input" value="X">
+                var inputEl = document.getElementById( 'toolbar__pages-input' );
+                // Total páginas: <span class="masterstudy-toolbar__total_pages">N</span>
+                var totalEl = document.querySelector( '.masterstudy-toolbar__total_pages' );
+
+                if ( ! inputEl || ! totalEl ) return;
+
+                var current = parseInt( inputEl.value, 10 );
+                var total   = parseInt( totalEl.textContent.trim(), 10 );
+
+                if ( ! current || ! total || total < 1 ) return;
+
+                var btn = document.querySelector( '.masterstudy-toolbar__download-btn' );
+                if ( ! btn ) return;
+
+                if ( current >= total ) {
+                    if ( ! _unlocked ) {
+                        btn.classList.add( 'fplms-pdf-unlocked' );
+                        btn.removeAttribute( 'title' );
+                        _unlocked = true;
+                    }
+                }
+                // Una vez desbloqueado no se vuelve a bloquear
+            }
+
+            function startObserver() {
+                var footer = document.querySelector( '.masterstudy-pdf-container__footer' );
+                if ( ! footer ) {
+                    setTimeout( startObserver, 600 );
+                    return;
+                }
+                checkAndUnlock();
+                // Observar cambios en el input y en el span de total
+                new MutationObserver( checkAndUnlock ).observe(
+                    footer,
+                    { childList: true, subtree: true, attributes: true, attributeFilter: ['value'], characterData: true }
+                );
+                // El input cambia su .value via JS (no atributo), usar polling liviano
+                setInterval( checkAndUnlock, 500 );
+            }
+
+            if ( document.readyState === 'loading' ) {
+                document.addEventListener( 'DOMContentLoaded', startObserver );
+            } else {
+                startObserver();
+            }
+        })();
+        </script>
         <?php
     }
 

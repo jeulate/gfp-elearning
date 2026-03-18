@@ -996,7 +996,7 @@ class FairPlay_LMS_Courses_Controller {
                                     $fecha             = date_i18n( 'd/m/Y', strtotime( $course->post_date ) );
                                     $modificado        = date_i18n( 'd/m/Y H:i', strtotime( $course->post_modified ) );
                                     $is_active         = 'publish' === $course->post_status;
-                                    $status_label      = $is_active ? 'Publicado' : 'Borrador';
+                                    $status_label      = $is_active ? 'Publicado' : 'Inactivo';
                                     $status_class      = $is_active ? 'fplms-cs-publish' : 'fplms-cs-draft';
                                     $search_str        = strtolower( get_the_title( $course ) . ' ' . $course->ID . ' ' . $teacher_name );
                                 ?>
@@ -1339,18 +1339,19 @@ class FairPlay_LMS_Courses_Controller {
             var cells = row.querySelectorAll('td');
             if (cells.length < 6) return null;
             return {
-                title:   (cells[1].querySelector('.fplms-ct-title')  || { textContent: '' }).textContent.trim(),
-                id:      (cells[1].querySelector('.fplms-ct-meta')   || { textContent: '' }).textContent.trim(),
-                status:  (cells[1].querySelector('.fplms-cs-badge')  || { textContent: '' }).textContent.trim(),
-                docente: cells[2].textContent.trim(),
-                fecha:   cells[3].textContent.trim(),
-                structs: cells[4].textContent.trim().replace(/\s+/g, ' ')
+                title:      (cells[1].querySelector('.fplms-ct-title')  || { textContent: '' }).textContent.trim(),
+                id:         (cells[1].querySelector('.fplms-ct-meta')   || { textContent: '' }).textContent.trim(),
+                status:     (cells[1].querySelector('.fplms-cs-badge')  || { textContent: '' }).textContent.trim(),
+                docente:    cells[2].textContent.trim(),
+                fecha:      cells[3].textContent.trim(),
+                modificado: cells[4].textContent.trim(),
+                structs:    cells[5].textContent.trim().replace(/\s+/g, ' ')
             };
         }
 
         window.fplmsClExportXLS = function() {
             var rows = fplmsClGetExportRows();
-            var hdrs = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha', 'Estructuras'];
+            var hdrs = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha', 'Última modificación', 'Estructuras'];
             var t = '<table border="1" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;">';
             t += '<thead><tr>' + hdrs.map(function(h) {
                 return '<th style="background:#667eea;color:#fff;padding:8px 12px;font-weight:bold;">' + h + '</th>';
@@ -1358,7 +1359,7 @@ class FairPlay_LMS_Courses_Controller {
             rows.forEach(function(row) {
                 var d = fplmsClExtractRow(row);
                 if (!d) return;
-                var vals = [d.title, d.id, d.status, d.docente, d.fecha, d.structs];
+                var vals = [d.title, d.id, d.status, d.docente, d.fecha, d.modificado, d.structs];
                 t += '<tr>' + vals.map(function(v) {
                     return '<td style="padding:6px 10px;">' + v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td>';
                 }).join('') + '</tr>';
@@ -1375,14 +1376,14 @@ class FairPlay_LMS_Courses_Controller {
 
         window.fplmsClExportPDF = function() {
             var rows    = fplmsClGetExportRows();
-            var hdrs    = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha', 'Estructuras'];
+            var hdrs    = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha', 'Última modificación', 'Estructuras'];
             var checked = document.querySelectorAll('.fplms-cl-cb:checked').length;
             var label   = checked > 0 ? checked + ' seleccionados' : rows.length + ' cursos';
             var t = '<table><thead><tr>' + hdrs.map(function(h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>';
             rows.forEach(function(row) {
                 var d = fplmsClExtractRow(row);
                 if (!d) return;
-                var vals = [d.title, d.id, d.status, d.docente, d.fecha, d.structs];
+                var vals = [d.title, d.id, d.status, d.docente, d.fecha, d.modificado, d.structs];
                 t += '<tr>' + vals.map(function(v) {
                     return '<td>' + v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td>';
                 }).join('') + '</tr>';
