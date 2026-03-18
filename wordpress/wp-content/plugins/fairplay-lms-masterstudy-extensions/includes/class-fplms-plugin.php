@@ -157,8 +157,12 @@ class FairPlay_LMS_Plugin {
         // Exportaciones / informes
         add_action( 'admin_init', [ $this->reports, 'handle_export' ] );
 
-        // Filtrado de cursos por visibilidad de estructura
-        add_filter( 'stm_lms_get_user_courses', [ $this->visibility, 'filter_courses_array' ], 10, 1 );
+        // Auto-enrolar usuario en cursos al crear o actualizar su estructura
+        add_action( 'fplms_user_created',          [ $this->courses, 'auto_enroll_user_in_matching_courses' ] );
+        add_action( 'fplms_user_structures_saved', [ $this->courses, 'auto_enroll_user_in_matching_courses' ] );
+
+        // Filtrado de cursos matriculados por visibilidad de estructura (respuesta AJAX)
+        add_filter( 'stm_lms_get_user_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
         add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
 
         // Filtrado de cursos por estructura en pre_get_posts (frontend + admin instructores)
@@ -166,6 +170,11 @@ class FairPlay_LMS_Plugin {
 
         // Auto-asignar estructura del instructor al crear un curso nuevo
         add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this, 'auto_assign_instructor_structure_to_course' ], 1, 3 );
+
+        // Restricción de categorías para instructores: solo pueden ver/usar las de su canal
+        add_action( 'pre_get_terms',                                    [ $this, 'restrict_course_categories_for_instructor' ] );
+        add_filter( 'rest_' . FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY . '_query', [ $this, 'restrict_categories_rest_query' ], 10, 2 );
+        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE,   [ $this, 'enforce_instructor_category_on_save' ], 8, 3 );
 
         // Visualización de cursos en frontend (estructuras, ocultar ratings/estudiantes)
         $this->course_display->register_hooks();
@@ -478,6 +487,14 @@ class FairPlay_LMS_Plugin {
         }
 
         $visible = $this->visibility->get_visible_courses_for_user( $user_id );
+
+        // Si MasterStudy ya puso un post__in (cursos matriculados del usuario),
+        // hacemos la intersección para no sobreescribir su filtro de matrícula.
+        $existing = array_filter( (array) $query->get( 'post__in' ) );
+        if ( ! empty( $existing ) ) {
+            $visible = array_values( array_intersect( $existing, $visible ) );
+        }
+
         $query->set( 'post__in', ! empty( $visible ) ? $visible : [ 0 ] );
     }
 
@@ -522,6 +539,157 @@ class FairPlay_LMS_Plugin {
                 update_post_meta( $post_id, $course_meta, [ $val ] );
             }
         }
+    }
+
+    /**
+     * Filtra la REST query de la taxonomía de categorías de cursos para instructores.
+     * Aplica la misma restricción que restrict_course_categories_for_instructor pero
+     * sobre el endpoint REST `/wp-json/wp/v2/stm_lms_course_taxonomy` que usa el
+     * Vue Course Builder del frontend.
+     *
+     * @param array           $args    Argumentos preparados para WP_Term_Query.
+     * @param WP_REST_Request $request La petición REST.
+     * @return array
+     */
+    public function restrict_categories_rest_query( array $args, WP_REST_Request $request ): array {
+        if ( current_user_can( 'manage_options' ) ) {
+            return $args;
+        }
+
+        $user = wp_get_current_user();
+        if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $user->roles, true ) ) {
+            return $args;
+        }
+
+        $channel_id = (int) get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_CHANNEL, true );
+        if ( ! $channel_id ) {
+            $args['include'] = [ 0 ];
+            return $args;
+        }
+
+        $root_cat_id = (int) get_term_meta( $channel_id, 'fplms_linked_category_id', true );
+        if ( ! $root_cat_id ) {
+            $args['include'] = [ 0 ];
+            return $args;
+        }
+
+        $allowed  = [ $root_cat_id ];
+        $children = get_term_children( $root_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+        if ( ! is_wp_error( $children ) ) {
+            $allowed = array_merge( $allowed, $children );
+        }
+
+        $args['include'] = $allowed;
+        return $args;
+    }
+
+    /**
+     * Restringe la lista de categorías de cursos (stm_lms_course_taxonomy) para que
+     * los instructores solo vean las categorías vinculadas a su canal y sus subcategorías.
+     *
+     * Se activa via el hook 'pre_get_terms'.
+     *
+     * @param WP_Term_Query $query Objeto de consulta de términos.
+     */
+    public function restrict_course_categories_for_instructor( WP_Term_Query $query ): void {
+        if ( current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        $taxonomies = (array) ( $query->query_vars['taxonomy'] ?? [] );
+        if ( ! in_array( FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY, $taxonomies, true ) ) {
+            return;
+        }
+
+        $user = wp_get_current_user();
+        if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $user->roles, true ) ) {
+            return;
+        }
+
+        $channel_id = (int) get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_CHANNEL, true );
+        if ( ! $channel_id ) {
+            // Sin canal asignado: no mostrar ninguna categoría
+            $query->query_vars['include'] = [ 0 ];
+            return;
+        }
+
+        $root_cat_id = (int) get_term_meta( $channel_id, 'fplms_linked_category_id', true );
+        if ( ! $root_cat_id ) {
+            $query->query_vars['include'] = [ 0 ];
+            return;
+        }
+
+        $allowed  = [ $root_cat_id ];
+        $children = get_term_children( $root_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+        if ( ! is_wp_error( $children ) ) {
+            $allowed = array_merge( $allowed, $children );
+        }
+
+        $query->query_vars['include'] = $allowed;
+    }
+
+    /**
+     * Al guardar un curso, si el usuario es instructor y ha asignado una categoría
+     * que no pertenece a su canal, la reemplaza por la categoría raíz de su canal.
+     *
+     * Es la contraparte backend de restrict_course_categories_for_instructor.
+     *
+     * @param int     $post_id ID del post.
+     * @param WP_Post $post    Objeto post.
+     * @param bool    $update  True si es actualización.
+     */
+    public function enforce_instructor_category_on_save( int $post_id, WP_Post $post, bool $update ): void {
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+            return;
+        }
+        if ( current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        $current_user = wp_get_current_user();
+        if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $current_user->roles, true ) ) {
+            return;
+        }
+
+        $channel_id = (int) get_user_meta( $current_user->ID, FairPlay_LMS_Config::USER_META_CHANNEL, true );
+        if ( ! $channel_id ) {
+            return;
+        }
+
+        $root_cat_id = (int) get_term_meta( $channel_id, 'fplms_linked_category_id', true );
+        if ( ! $root_cat_id ) {
+            return;
+        }
+
+        // Categorías permitidas: la raíz del canal + todas sus subcategorías
+        $allowed  = [ $root_cat_id ];
+        $children = get_term_children( $root_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+        if ( ! is_wp_error( $children ) ) {
+            $allowed = array_merge( $allowed, $children );
+        }
+
+        $assigned = wp_get_post_terms( $post_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY, [ 'fields' => 'ids' ] );
+        if ( is_wp_error( $assigned ) || empty( $assigned ) ) {
+            return;
+        }
+
+        $valid = array_values(
+            array_filter( $assigned, fn( $t ) => in_array( (int) $t, $allowed, true ) )
+        );
+
+        if ( count( $valid ) === count( $assigned ) ) {
+            return; // Todo correcto, no hay nada que corregir
+        }
+
+        // Hay términos no permitidos: mantener solo los válidos, o forzar la raíz
+        if ( empty( $valid ) ) {
+            $valid = [ $root_cat_id ];
+        }
+
+        // Evitar recursar en sync_categories_to_structures mientras corregimos
+        remove_action( 'set_object_terms', [ $this->courses, 'sync_categories_to_structures' ], 10 );
+        wp_set_post_terms( $post_id, $valid, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+        add_action( 'set_object_terms', [ $this->courses, 'sync_categories_to_structures' ], 10, 6 );
     }
 
     /**

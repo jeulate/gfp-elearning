@@ -146,6 +146,9 @@ class FairPlay_LMS_Users_Controller {
                 }
             }
         }
+
+        // Notificar que las estructuras del usuario fueron guardadas → auto-enrolar en cursos
+        do_action( 'fplms_user_structures_saved', $user_id );
     }
 
     /**
@@ -5359,6 +5362,9 @@ class FairPlay_LMS_Users_Controller {
             } else {
                 delete_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ROLE );
             }
+
+            // Notificar que las estructuras fueron actualizadas → auto-enrolar en nuevos cursos
+            do_action( 'fplms_user_structures_saved', $user_id );
 
             // Preparar datos nuevos para la bitácora
             $new_data = [

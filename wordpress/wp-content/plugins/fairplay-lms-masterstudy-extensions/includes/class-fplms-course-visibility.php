@@ -104,12 +104,15 @@ class FairPlay_LMS_Course_Visibility_Service {
      */
     private function get_course_structures( int $course_id ): array {
 
+        // array_filter elimina strings vacíos / ceros que WordPress devuelve cuando
+        // el meta nunca fue guardado: get_post_meta() → '' → (array)'' = [''] ≠ []
+        // Sin este filtro, [''] se interpreta como restricción real y bloquea todo.
         return [
-            'cities'    => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ),
-            'companies' => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ),
-            'channels'  => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ),
-            'branches'  => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ),
-            'roles'     => (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ),
+            'cities'    => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ) ) ),
+            'companies' => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ) ) ),
+            'channels'  => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ) ) ),
+            'branches'  => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ) ) ),
+            'roles'     => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ) ) ),
         ];
     }
 
@@ -153,21 +156,27 @@ class FairPlay_LMS_Course_Visibility_Service {
 
         foreach ( $mapping as $user_key => $course_key ) {
 
-            // Si el usuario tiene esta estructura asignada
-            if ( isset( $user_structures[ $user_key ] ) && ! empty( $course_structures[ $course_key ] ) ) {
+            // Si el curso no tiene restricción en este nivel, no filtra → continuar
+            if ( empty( $course_structures[ $course_key ] ) ) {
+                continue;
+            }
 
-                // Normalizar a int para evitar fallos por comparación estricta int vs string
-                $user_val    = (int) $user_structures[ $user_key ];
-                $course_vals = array_map( 'intval', (array) $course_structures[ $course_key ] );
+            // El curso restringe este nivel → el usuario DEBE tener valor y coincidir
+            if ( ! isset( $user_structures[ $user_key ] ) ) {
+                return false; // Usuario no tiene asignado un nivel que el curso requiere
+            }
 
-                // Verificar si la estructura del usuario está en la lista del curso
-                if ( in_array( $user_val, $course_vals, true ) ) {
-                    return true;
-                }
+            // Normalizar a int y verificar coincidencia
+            $user_val    = (int) $user_structures[ $user_key ];
+            $course_vals = array_map( 'intval', (array) $course_structures[ $course_key ] );
+
+            if ( ! in_array( $user_val, $course_vals, true ) ) {
+                return false; // No coincide en este nivel
             }
         }
 
-        return false;
+        // Todos los niveles asignados al curso coinciden con el usuario (AND entre niveles)
+        return true;
     }
 
     /**
@@ -198,10 +207,16 @@ class FairPlay_LMS_Course_Visibility_Service {
      * @param int   $user_id ID del usuario (actual si no se especifica).
      * @return array Array filtrado de IDs de cursos.
      */
-    public function filter_courses_array( array $course_ids, int $user_id = 0 ): array {
+    public function filter_courses_array( array $course_ids, $raw_user_id = 0 ): array {
 
+        // MasterStudy puede pasar el user_id como segundo argumento o no pasarlo.
+        // Normalizamos a int y fallback a current user.
+        $user_id = (int) $raw_user_id;
         if ( 0 === $user_id ) {
             $user_id = get_current_user_id();
+        }
+        if ( 0 === $user_id ) {
+            return $course_ids; // Sin usuario identificado, no filtrar
         }
 
         // Admin puede ver todos los cursos
@@ -209,11 +224,72 @@ class FairPlay_LMS_Course_Visibility_Service {
             return $course_ids;
         }
 
+        // MasterStudy puede pasar el array en tres formatos distintos:
+        //   A) Indexado:              [ 0 => 877, 1 => 882 ]
+        //      → el valor ES el course_id (numérico)
+        //   B) Asociativo numérico:   [ 877 => ['progress'=>0,...], 882 => [...] ]
+        //      → la clave es el course_id como int/string numérico
+        //   C) Asociativo con clave:  [ 'stm_lms_course_877' => ['progress'=>0,...] ]
+        //      → la clave es un string tipo 'stm_lms_course_877'; extraemos el número
         return array_filter(
             $course_ids,
-            function( $course_id ) use ( $user_id ) {
+            function( $value, $key ) use ( $user_id ) {
+                if ( is_array( $value ) || is_object( $value ) ) {
+                    // Formato B o C: la clave identifica el curso
+                    if ( is_numeric( $key ) ) {
+                        $course_id = (int) $key; // Formato B
+                    } else {
+                        // Formato C: extraer el número del final del string (ej: 'stm_lms_course_877')
+                        preg_match( '/(\d+)$/', (string) $key, $m );
+                        $course_id = ! empty( $m[1] ) ? (int) $m[1] : 0;
+                    }
+                } else {
+                    $course_id = (int) $value; // Formato A
+                }
+
+                if ( $course_id <= 0 ) {
+                    return false;
+                }
                 return $this->can_user_see_course( $user_id, $course_id );
-            }
+            },
+            ARRAY_FILTER_USE_BOTH
         );
+    }
+
+    /**
+     * Filtra la respuesta AJAX de cursos matriculados (filtro 'stm_lms_get_user_courses_filter').
+     *
+     * MasterStudy pasa $r = ['courses' => [...], 'total_posts' => N, ...] al AJAX handler.
+     * Filtramos $r['courses'] para mostrar solo los que el usuario puede ver.
+     *
+     * @param array $response Respuesta completa con claves: courses, pagination, total_pages, total_posts.
+     * @return array Respuesta con cursos filtrados según visibilidad de estructura.
+     */
+    public function filter_user_courses_response( array $response ): array {
+        $user_id = get_current_user_id();
+        if ( 0 === $user_id ) {
+            return $response;
+        }
+        if ( current_user_can( 'manage_options' ) ) {
+            return $response;
+        }
+        if ( empty( $response['courses'] ) || ! is_array( $response['courses'] ) ) {
+            return $response;
+        }
+
+        $response['courses'] = array_values(
+            array_filter(
+                $response['courses'],
+                function( $course ) use ( $user_id ) {
+                    $course_id = ! empty( $course['course_id'] ) ? (int) $course['course_id'] : 0;
+                    if ( $course_id <= 0 ) {
+                        return false;
+                    }
+                    return $this->can_user_see_course( $user_id, $course_id );
+                }
+            )
+        );
+
+        return $response;
     }
 }

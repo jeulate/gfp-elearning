@@ -3006,32 +3006,36 @@ class FairPlay_LMS_Courses_Controller {
             'roles'     => $roles,
         ];
 
-        // Si hay ciudades seleccionadas, incluir todas las empresas de esas ciudades
-        if ( ! empty( $cities ) ) {
+        // Regla de cascada: solo expandir hacia un nivel inferior si el administrador
+        // NO eligió elementos explícitos en ese nivel. Si ya eligió sucursales/cargos
+        // específicos, esa selección es la restricción; no agregar más elementos.
+
+        // Ciudades → Empresas: solo si no se eligieron empresas específicas
+        if ( ! empty( $cities ) && empty( $companies ) ) {
             foreach ( $cities as $city_id ) {
                 $city_companies = $this->get_companies_by_city( $city_id );
                 $result['companies'] = array_unique( array_merge( $result['companies'], $city_companies ) );
             }
         }
 
-        // Si hay empresas seleccionadas, incluir todos los canales de esas empresas
-        if ( ! empty( $result['companies'] ) ) {
+        // Empresas → Canales: solo si no se eligieron canales específicos
+        if ( ! empty( $result['companies'] ) && empty( $channels ) ) {
             foreach ( $result['companies'] as $company_id ) {
                 $company_channels = $this->get_channels_by_company( $company_id );
                 $result['channels'] = array_unique( array_merge( $result['channels'], $company_channels ) );
             }
         }
 
-        // Si hay canales seleccionados, incluir todas las sucursales de esos canales
-        if ( ! empty( $result['channels'] ) ) {
+        // Canales → Sucursales: solo si no se eligieron sucursales específicas
+        if ( ! empty( $result['channels'] ) && empty( $branches ) ) {
             foreach ( $result['channels'] as $channel_id ) {
                 $channel_branches = $this->get_branches_by_channel( $channel_id );
                 $result['branches'] = array_unique( array_merge( $result['branches'], $channel_branches ) );
             }
         }
 
-        // Si hay sucursales seleccionadas, incluir todos los cargos de esas sucursales
-        if ( ! empty( $result['branches'] ) ) {
+        // Sucursales → Cargos: solo si no se eligieron cargos específicos
+        if ( ! empty( $result['branches'] ) && empty( $roles ) ) {
             foreach ( $result['branches'] as $branch_id ) {
                 $branch_roles = $this->get_roles_by_branch( $branch_id );
                 $result['roles'] = array_unique( array_merge( $result['roles'], $branch_roles ) );
@@ -3187,60 +3191,71 @@ class FairPlay_LMS_Courses_Controller {
     private function get_users_by_structures( array $structures ): array {
         $user_ids = [];
 
-        // Construir meta_query para buscar usuarios
-        $meta_query = [ 'relation' => 'OR' ];
+        // Construir meta_query: AND entre niveles jerárquicos, OR dentro de cada nivel.
+        // Esto garantiza que el usuario deba cumplir TODOS los niveles asignados al curso.
+        $meta_query = [ 'relation' => 'AND' ];
 
         if ( ! empty( $structures['cities'] ) ) {
+            $group = [ 'relation' => 'OR' ];
             foreach ( $structures['cities'] as $city_id ) {
-                $meta_query[] = [
+                $group[] = [
                     'key'     => FairPlay_LMS_Config::USER_META_CITY,
                     'value'   => $city_id,
                     'compare' => '=',
                 ];
             }
+            $meta_query[] = $group;
         }
 
         if ( ! empty( $structures['companies'] ) ) {
+            $group = [ 'relation' => 'OR' ];
             foreach ( $structures['companies'] as $company_id ) {
-                $meta_query[] = [
+                $group[] = [
                     'key'     => FairPlay_LMS_Config::USER_META_COMPANY,
                     'value'   => $company_id,
                     'compare' => '=',
                 ];
             }
+            $meta_query[] = $group;
         }
 
         if ( ! empty( $structures['channels'] ) ) {
+            $group = [ 'relation' => 'OR' ];
             foreach ( $structures['channels'] as $channel_id ) {
-                $meta_query[] = [
+                $group[] = [
                     'key'     => FairPlay_LMS_Config::USER_META_CHANNEL,
                     'value'   => $channel_id,
                     'compare' => '=',
                 ];
             }
+            $meta_query[] = $group;
         }
 
         if ( ! empty( $structures['branches'] ) ) {
+            $group = [ 'relation' => 'OR' ];
             foreach ( $structures['branches'] as $branch_id ) {
-                $meta_query[] = [
+                $group[] = [
                     'key'     => FairPlay_LMS_Config::USER_META_BRANCH,
                     'value'   => $branch_id,
                     'compare' => '=',
                 ];
             }
+            $meta_query[] = $group;
         }
 
         if ( ! empty( $structures['roles'] ) ) {
+            $group = [ 'relation' => 'OR' ];
             foreach ( $structures['roles'] as $role_id ) {
-                $meta_query[] = [
+                $group[] = [
                     'key'     => FairPlay_LMS_Config::USER_META_ROLE,
                     'value'   => $role_id,
                     'compare' => '=',
                 ];
             }
+            $meta_query[] = $group;
         }
 
-        // Si no hay estructuras, no enviar notificaciones
+        // Si no hay estructuras asignadas, no matricular ni notificar a nadie
         if ( count( $meta_query ) === 1 ) {
             return [];
         }
@@ -4408,18 +4423,141 @@ class FairPlay_LMS_Courses_Controller {
             return;
         }
 
-        $meta_key     = 'stm_lms_course_' . $course_id;
-        $enroll_value = [
-            'progress'   => 0,
-            'status'     => '',
-            'lessons'    => [],
-            'start_time' => time(),
+        foreach ( $users as $user_id ) {
+            $existing = stm_lms_get_user_course( (int) $user_id, $course_id );
+            if ( empty( $existing ) ) {
+                stm_lms_add_user_course( [
+                    'user_id'          => (int) $user_id,
+                    'course_id'        => $course_id,
+                    'start_time'       => time(),
+                    'progress_percent' => 0,
+                    'status'           => '',
+                ] );
+            }
+        }
+    }
+
+    /**
+     * Matricula a un usuario en todos los cursos publicados cuyas estructuras coincidan
+     * con las suyas. Se llama al crear o editar un usuario con estructura asignada.
+     *
+     * @param int $user_id ID del usuario.
+     */
+    public function auto_enroll_user_in_matching_courses( int $user_id ): void {
+        // Solo enrolar usuarios con estructura de canal asignada (usuarios estructurados)
+        $user_channel = get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CHANNEL, true );
+        if ( empty( $user_channel ) ) {
+            return;
+        }
+
+        // Obtener strukturas del usuario
+        $user_structures = [
+            'city'    => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CITY, true ),
+            'company' => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_COMPANY, true ),
+            'channel' => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CHANNEL, true ),
+            'branch'  => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_BRANCH, true ),
+            'role'    => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ROLE, true ),
+        ];
+        $user_structures = array_filter( $user_structures ); // quitar valores 0
+
+        // Obtener todos los cursos publicados
+        $courses = get_posts( [
+            'post_type'      => FairPlay_LMS_Config::MS_PT_COURSE,
+            'post_status'    => 'publish',
+            'posts_per_page' => -1,
+            'fields'         => 'ids',
+        ] );
+
+        $mapping = [
+            'city'    => FairPlay_LMS_Config::META_COURSE_CITIES,
+            'company' => FairPlay_LMS_Config::META_COURSE_COMPANIES,
+            'channel' => FairPlay_LMS_Config::META_COURSE_CHANNELS,
+            'branch'  => FairPlay_LMS_Config::META_COURSE_BRANCHES,
+            'role'    => FairPlay_LMS_Config::META_COURSE_ROLES,
         ];
 
-        foreach ( $users as $user_id ) {
-            $existing = get_user_meta( (int) $user_id, $meta_key, true );
+        foreach ( $courses as $course_id ) {
+            // Leer estructuras del curso
+            $course_structures = [];
+            foreach ( $mapping as $user_key => $course_meta_key ) {
+                $course_structures[ $user_key . 's' ] = array_map(
+                    'intval',
+                    (array) get_post_meta( $course_id, $course_meta_key, true )
+                );
+            }
+
+            // Si el curso no tiene restricciones de estructura, visible para todos → enrolar
+            $has_restriction = false;
+            foreach ( $course_structures as $vals ) {
+                if ( ! empty( $vals ) && $vals !== [ 0 ] ) {
+                    $has_restriction = true;
+                    break;
+                }
+            }
+
+            $matches = true;
+            if ( $has_restriction ) {
+                // AND entre todos los niveles que el curso restringe
+                $level_map = [
+                    'city'    => 'citys',    // key plural interno
+                    'company' => 'companys',
+                    'channel' => 'channels',
+                    'branch'  => 'branchs',
+                    'role'    => 'roles',
+                ];
+                // Usar claves correctas
+                $cs = [
+                    'cities'    => $course_structures['citys'] ?? [],
+                    'companies' => $course_structures['companys'] ?? [],
+                    'channels'  => $course_structures['channels'] ?? [],
+                    'branches'  => $course_structures['branchs'] ?? [],
+                    'roles'     => $course_structures['roles'] ?? [],
+                ];
+                // Recoger del get_post_meta directamente para evitar confusión de claves
+                $cs = [
+                    'cities'    => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ) ) ),
+                    'companies' => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ) ) ),
+                    'channels'  => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ) ) ),
+                    'branches'  => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_BRANCHES, true ) ) ),
+                    'roles'     => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_ROLES, true ) ) ),
+                ];
+
+                $user_course_mapping = [
+                    'city'    => 'cities',
+                    'company' => 'companies',
+                    'channel' => 'channels',
+                    'branch'  => 'branches',
+                    'role'    => 'roles',
+                ];
+
+                foreach ( $user_course_mapping as $u_key => $c_key ) {
+                    if ( empty( $cs[ $c_key ] ) ) {
+                        continue; // nivel sin restricción → no filtra
+                    }
+                    if ( ! isset( $user_structures[ $u_key ] ) ) {
+                        $matches = false; // curso restringe nivel que usuario no tiene
+                        break;
+                    }
+                    if ( ! in_array( $user_structures[ $u_key ], $cs[ $c_key ], true ) ) {
+                        $matches = false;
+                        break;
+                    }
+                }
+            }
+
+            if ( ! $matches ) {
+                continue;
+            }
+
+            $existing = stm_lms_get_user_course( $user_id, (int) $course_id );
             if ( empty( $existing ) ) {
-                update_user_meta( (int) $user_id, $meta_key, $enroll_value );
+                stm_lms_add_user_course( [
+                    'user_id'          => $user_id,
+                    'course_id'        => (int) $course_id,
+                    'start_time'       => time(),
+                    'progress_percent' => 0,
+                    'status'           => '',
+                ] );
             }
         }
     }
@@ -5449,6 +5587,24 @@ class FairPlay_LMS_Courses_Controller {
 		$ajax_url_js  = esc_js( admin_url( 'admin-ajax.php' ) );
 		$nonce_js     = esc_js( $nonce );
 		$course_id_js = (int) $course_id;
+
+		// Calcular categorías permitidas para el instructor actual.
+		// Se pasan al JS para filtrar visualmente el dropdown del Vue Course Builder.
+		$allowed_cat_ids_js = 'null'; // null = sin restricción (admin)
+		if ( ! current_user_can( 'manage_options' ) ) {
+			$current_user = wp_get_current_user();
+			if ( in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $current_user->roles, true ) ) {
+				$channel_id  = (int) get_user_meta( $current_user->ID, FairPlay_LMS_Config::USER_META_CHANNEL, true );
+				$root_cat_id = $channel_id ? (int) get_term_meta( $channel_id, 'fplms_linked_category_id', true ) : 0;
+				if ( $root_cat_id ) {
+					$children        = get_term_children( $root_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
+					$allowed_ids     = array_merge( [ $root_cat_id ], is_wp_error( $children ) ? [] : $children );
+					$allowed_cat_ids_js = wp_json_encode( array_map( 'intval', $allowed_ids ) );
+				} else {
+					$allowed_cat_ids_js = '[]'; // Sin canal asignado → ninguna categoría
+				}
+			}
+		}
 		?>
 		<style>
 			#fplms-fe-panel { display:none; background:#fff; border-radius:14px; border:1px solid #e5e7eb; box-shadow:0 2px 12px rgba(0,0,0,.08); margin:28px auto; max-width:768px; width:100%; overflow:hidden; }
@@ -5518,9 +5674,11 @@ class FairPlay_LMS_Courses_Controller {
 
 		<script>
 		(function() {
-			var NONCE     = '<?php echo $nonce_js; ?>';
-			var AJAX_URL  = '<?php echo $ajax_url_js; ?>';
-			var COURSE_ID = <?php echo $course_id_js; ?>;
+			var NONCE        = '<?php echo $nonce_js; ?>';
+			var AJAX_URL     = '<?php echo $ajax_url_js; ?>';
+			var COURSE_ID    = <?php echo $course_id_js; ?>;
+			// IDs de categorías permitidas para este usuario (null = sin restricción, [] = ninguna)
+			var ALLOWED_CATS = <?php echo $allowed_cat_ids_js; ?>;
 			var _branches = {};  // { id: name }
 			var _roles    = {};  // { id: name }
 			var _selB     = [];  // checked branch IDs
@@ -5564,7 +5722,35 @@ class FairPlay_LMS_Courses_Controller {
 					}
 				});
 			}
-			new MutationObserver(renameLabels).observe(document.body, { childList:true, subtree:true });
+
+			// ── Filtrar opciones de categoría para el instructor ──────────────
+			// Vue.js renderiza los checkboxes con el nombre de la categoría como texto.
+			// Buscamos los term IDs a partir del valor del input o del data-id.
+			// MasterStudy renderiza algo como:
+			//   <li><label><input type="checkbox" value="TERM_ID"> Nombre</label></li>
+			function filterCategoryOptions() {
+				if ( ALLOWED_CATS === null ) return; // admin: sin restricción
+				// Selectores típicos del Vue Course Builder de MasterStudy
+				var containers = document.querySelectorAll(
+					'.masterstudy-multiselect__list, .stm-lms-multiselect__list, ' +
+					'[class*="multiselect"] ul, [class*="category"] ul, ' +
+					'[class*="taxonomy"] ul'
+				);
+				containers.forEach(function(ul) {
+					ul.querySelectorAll('li').forEach(function(li) {
+						var input = li.querySelector('input[type="checkbox"]');
+						if ( !input ) return;
+						var termId = parseInt( input.value || input.getAttribute('data-id') || '0', 10 );
+						if ( !termId ) return;
+						li.style.display = ALLOWED_CATS.indexOf( termId ) !== -1 ? '' : 'none';
+					});
+				});
+			}
+
+			new MutationObserver(function() {
+				renameLabels();
+				filterCategoryOptions();
+			}).observe(document.body, { childList:true, subtree:true });
 
 			// ── Event delegation: chip toggle ────────────────────────────────
 			document.addEventListener('click', function(e) {
