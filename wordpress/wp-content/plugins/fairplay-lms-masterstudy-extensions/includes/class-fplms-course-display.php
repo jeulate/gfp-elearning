@@ -39,6 +39,9 @@ class FairPlay_LMS_Course_Display {
 
         // Ocultar botón de descarga de PDF hasta llegar a la última página
         add_action( 'wp_footer', [ $this, 'inject_pdf_download_lock_script' ] );
+
+        // Ocultar revisión de respuestas del quiz si "Historial de intentos de examen" está desactivado
+        add_action( 'wp_footer', [ $this, 'inject_quiz_answer_lock_script' ] );
     }
 
     /**
@@ -226,6 +229,73 @@ class FairPlay_LMS_Course_Display {
             }
         })();
         </script>
+        <?php
+    }
+
+    /**
+     * Oculta la revisión de preguntas/respuestas al terminar un quiz cuando la opción
+     * "Historial de intentos de examen" está desactivada en la configuración del quiz.
+     *
+     * Comportamiento:
+     *   - Desactivado (por defecto): oculta la revisión detallada; el resultado (%) sigue visible.
+     *   - Activado: muestra la revisión completa (comportamiento estándar de MasterStudy).
+     *
+     * Meta key de MasterStudy: 'show_attempts_history' (name del input del Course Builder).
+     */
+    public function inject_quiz_answer_lock_script(): void {
+        if ( ! is_user_logged_in() || is_admin() ) return;
+
+        // ── Detectar el ID del quiz actual (3 métodos) ────────────────────────
+        $quiz_id = 0;
+
+        // Método 1: post type quiz directo
+        if ( is_singular( FairPlay_LMS_Config::MS_PT_QUIZ ) ) {
+            $quiz_id = (int) get_queried_object_id();
+
+        // Método 2: lección con quiz vinculado
+        } elseif ( is_singular( FairPlay_LMS_Config::MS_PT_LESSON ) ) {
+            $lesson_id = (int) get_queried_object_id();
+            $linked    = (int) get_post_meta( $lesson_id, 'quiz', true );
+            if ( $linked ) $quiz_id = $linked;
+        }
+
+        // Método 3: fallback – parsear URL buscando el último segmento numérico
+        // que corresponda a un post de tipo stm-quizzes.
+        // Cubre el caso en que MasterStudy usa rutas propias como
+        // /pagina-de-cursos/{course-slug}/{quiz-id}/
+        if ( ! $quiz_id ) {
+            $path  = trim( (string) parse_url( $_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH ), '/' );
+            $parts = array_reverse( array_filter( explode( '/', $path ) ) );
+            foreach ( $parts as $segment ) {
+                if ( ctype_digit( $segment ) ) {
+                    $candidate = (int) $segment;
+                    if ( FairPlay_LMS_Config::MS_PT_QUIZ === get_post_type( $candidate ) ) {
+                        $quiz_id = $candidate;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ── Leer "Historial de intentos de examen" ────────────────────────────
+        // Si está ACTIVADO para este quiz → el comportamiento estándar de MasterStudy
+        // ya muestra las respuestas; no necesitamos hacer nada.
+        if ( $quiz_id ) {
+            $raw  = get_post_meta( $quiz_id, 'show_attempts_history', true );
+            $show = filter_var( $raw, FILTER_VALIDATE_BOOLEAN );
+            if ( $show ) return;
+        }
+
+        // Sin quiz detectado O historial desactivado → ocultar la revisión.
+        // El selector solo actúa cuando el quiz player entra en estado _show-answers,
+        // por lo que en cualquier otra página este CSS no tiene efecto visual.
+        ?>
+        <style id="fplms-quiz-answer-lock">
+        .masterstudy-course-player-quiz.masterstudy-course-player-quiz_show-answers
+        form.masterstudy-course-player-quiz__form {
+            display: none !important;
+        }
+        </style>
         <?php
     }
 

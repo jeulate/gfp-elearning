@@ -4449,7 +4449,7 @@ class FairPlay_LMS_Users_Controller {
         }
 
         $last_login_ts = get_user_meta( $user_id, 'last_login', true );
-        $last_login    = $last_login_ts ? date( 'd/m/Y H:i', (int) $last_login_ts ) : '—';
+        $last_login    = $last_login_ts ? date_i18n( 'd/m/Y H:i', strtotime( $last_login_ts ) ) : '—';
 
         // T&C
         $ob_status       = get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ONBOARDING_STATUS, true );
