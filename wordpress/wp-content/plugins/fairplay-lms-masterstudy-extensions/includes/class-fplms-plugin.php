@@ -65,6 +65,11 @@ class FairPlay_LMS_Plugin {
      */
     private $onboarding;
 
+    /**
+     * @var FairPlay_LMS_Quiz_Settings
+     */
+    private $quiz_settings;
+
     public function __construct() {
 
         $this->structures     = new FairPlay_LMS_Structures_Controller();
@@ -78,6 +83,7 @@ class FairPlay_LMS_Plugin {
         $this->audit_logger   = new FairPlay_LMS_Audit_Logger();
         $this->audit_admin    = new FairPlay_LMS_Audit_Admin();
         $this->onboarding     = new FairPlay_LMS_Onboarding();
+        $this->quiz_settings  = new FairPlay_LMS_Quiz_Settings();
         $this->menu           = new FairPlay_LMS_Admin_Menu(
             $this->pages,
             $this->structures,
@@ -247,6 +253,10 @@ class FairPlay_LMS_Plugin {
         add_action( 'wp_ajax_fplms_resend_welcome', [ $this->onboarding, 'ajax_resend_welcome_email' ] );
         // Enviar email al crear usuario desde el panel FairPlay LMS
         add_action( 'fplms_user_created', [ $this->onboarding, 'send_welcome_email' ], 10, 1 );
+
+        // Ajustes de Tests: menú + guardar configuración
+        add_action( 'admin_menu', [ $this->quiz_settings, 'register_admin_menu' ] );
+        add_action( 'admin_init', [ $this->quiz_settings, 'handle_save' ] );
 
         // FEATURE: AJAX helpers para gestión de estructuras (usados desde panel admin de cursos)
         add_action( 'wp_ajax_fplms_get_frontend_structures',  [ $this->courses, 'ajax_get_frontend_structures' ] );

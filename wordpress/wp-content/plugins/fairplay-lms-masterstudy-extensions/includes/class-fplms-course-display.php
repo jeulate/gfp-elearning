@@ -42,6 +42,9 @@ class FairPlay_LMS_Course_Display {
 
         // Ocultar revisión de respuestas del quiz si "Historial de intentos de examen" está desactivado
         add_action( 'wp_footer', [ $this, 'inject_quiz_answer_lock_script' ] );
+
+        // Inyectar mensaje personalizado al finalizar un quiz
+        add_action( 'wp_footer', [ $this, 'inject_quiz_completion_message' ] );
     }
 
     /**
@@ -296,6 +299,141 @@ class FairPlay_LMS_Course_Display {
             display: none !important;
         }
         </style>
+        <?php
+    }
+
+    /**
+     * Inyecta el mensaje personalizado debajo del resultado del quiz una vez
+     * que el estudiante termina el examen (cuando aparece el % de puntuación).
+     * El mensaje se configura desde FairPlay LMS → Ajustes de Tests.
+     */
+    public function inject_quiz_completion_message(): void {
+        if ( ! is_user_logged_in() || is_admin() ) return;
+
+        $msg_pass = FairPlay_LMS_Quiz_Settings::get_message();
+        $msg_fail = FairPlay_LMS_Quiz_Settings::get_fail_message();
+
+        if ( '' === $msg_pass && '' === $msg_fail ) return;
+
+        $msg_pass_js = wp_json_encode( $msg_pass );
+        $msg_fail_js = wp_json_encode( $msg_fail );
+        ?>
+        <style>
+        /* Badge pill base */
+        .fplms-quiz-completion-msg {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 10px 0 2px;
+            padding: 10px 20px;
+            border-radius: 100px;
+            font-size: 15px;
+            font-style: normal;
+            font-weight: 500;
+            line-height: normal;
+            word-break: break-word;
+            border: 1px solid transparent;
+        }
+        .fplms-quiz-completion-msg svg { flex-shrink: 0; }
+        /* Aprobado */
+        .fplms-quiz-completion-msg--passed {
+            background: rgba(34, 197, 94, 0.15);
+            border-color: rgba(34, 197, 94, 0.30);
+            color: #14532d;
+        }
+        .masterstudy-course-player-content_dark-mode .fplms-quiz-completion-msg--passed {
+            background: rgba(34, 197, 94, 0.12);
+            border-color: rgba(34, 197, 94, 0.30);
+            color: #86efac;
+        }
+        /* Reprobado */
+        .fplms-quiz-completion-msg--failed {
+            background: rgba(239, 68, 68, 0.10);
+            border-color: rgba(239, 68, 68, 0.28);
+            color: #7f1d1d;
+        }
+        .masterstudy-course-player-content_dark-mode .fplms-quiz-completion-msg--failed {
+            background: rgba(239, 68, 68, 0.12);
+            border-color: rgba(239, 68, 68, 0.28);
+            color: #fca5a5;
+        }
+        </style>
+        <script>
+        (function() {
+            var MSG_PASS = <?php echo $msg_pass_js; // phpcs:ignore WordPress.Security.EscapeOutput -- json_encoded ?>;
+            var MSG_FAIL = <?php echo $msg_fail_js; // phpcs:ignore WordPress.Security.EscapeOutput -- json_encoded ?>;
+
+            // Iconos SVG inline — sin emojis
+            var SVG_PASS = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5l4 4 8-8"/></svg>';
+            var SVG_FAIL = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15L15 5M5 5l10 10"/></svg>';
+
+            /**
+             * Detecta si el quiz terminó y si fue aprobado o reprobado.
+             * - Reprobado: div __result tiene clase __result_failed  (siempre explícito)
+             * - Aprobado:  existe __result-container pero sin _failed  (el wrapper puede
+             *   tener o no _show-answers dependiendo de la versión de MasterStudy)
+             * - null: resultado todavía no visible (quiz en curso o después de Repetir)
+             */
+            function detectResult( quiz ) {
+                if ( quiz.querySelector( '.masterstudy-course-player-quiz__result_failed' ) ) return 'failed';
+                if ( quiz.querySelector( '.masterstudy-course-player-quiz__result-container' ) ) return 'passed';
+                return null;
+            }
+
+            function syncMessage() {
+                var quiz = document.querySelector( '.masterstudy-course-player-quiz' );
+
+                if ( ! quiz ) {
+                    var old = document.querySelector( '.fplms-quiz-completion-msg' );
+                    if ( old ) old.parentNode.removeChild( old );
+                    return;
+                }
+
+                var result = detectResult( quiz );
+                var msg  = result === 'passed' ? MSG_PASS : result === 'failed' ? MSG_FAIL : '';
+                var icon = result === 'passed' ? SVG_PASS : result === 'failed' ? SVG_FAIL : '';
+
+                if ( ! msg ) {
+                    var stale = quiz.querySelector( '.fplms-quiz-completion-msg' );
+                    if ( stale ) stale.parentNode.removeChild( stale );
+                    return;
+                }
+
+                // Si ya existe el badge correcto no duplicar; si cambió (retake) reemplazar
+                var existing = quiz.querySelector( '.fplms-quiz-completion-msg' );
+                if ( existing ) {
+                    if ( existing.classList.contains( 'fplms-quiz-completion-msg--' + result ) ) return;
+                    existing.parentNode.removeChild( existing );
+                }
+
+                var resultContainer = quiz.querySelector( '.masterstudy-course-player-quiz__result-container' );
+                if ( ! resultContainer ) return;
+
+                var wrapper = document.createElement( 'div' );
+                wrapper.className = 'fplms-quiz-completion-msg fplms-quiz-completion-msg--' + result;
+                wrapper.innerHTML = icon + '<span>' + msg + '</span>';
+                resultContainer.parentNode.insertBefore( wrapper, resultContainer.nextSibling );
+            }
+
+            var observer = new MutationObserver( syncMessage );
+
+            function startObserver() {
+                var root = document.querySelector( '.masterstudy-course-player-quiz' );
+                if ( ! root ) { setTimeout( startObserver, 500 ); return; }
+                observer.observe( root.parentNode || root, {
+                    childList: true, subtree: true,
+                    attributes: true, attributeFilter: ['class']
+                } );
+                syncMessage();
+            }
+
+            if ( document.readyState === 'loading' ) {
+                document.addEventListener( 'DOMContentLoaded', startObserver );
+            } else {
+                startObserver();
+            }
+        })();
+        </script>
         <?php
     }
 
