@@ -1023,7 +1023,15 @@ class FairPlay_LMS_Courses_Controller {
                                     <td>
                                         <span style="color:#1f2937;font-size:13px;white-space:nowrap;"><?php echo esc_html( $modificado ); ?></span>
                                     </td>
-                                    <td>
+                                    <td data-export="<?php
+                                        $all_names = [];
+                                        foreach ( [ 'cities', 'companies', 'channels', 'branches', 'roles' ] as $_level ) {
+                                            if ( ! empty( $course_structures[ $_level ] ) ) {
+                                                $all_names = array_merge( $all_names, $this->get_term_names_by_ids( $course_structures[ $_level ] ) );
+                                            }
+                                        }
+                                        echo esc_attr( empty( $all_names ) ? 'Sin restricción' : implode( ', ', $all_names ) );
+                                    ?>">
                                         <div class="fplms-ct-struct-tags">
                                             <?php echo $this->format_course_structures_compact( $course_structures ); // phpcs:ignore -- HTML with SVG ?>
                                         </div>
@@ -1345,7 +1353,7 @@ class FairPlay_LMS_Courses_Controller {
                 docente:    cells[2].textContent.trim(),
                 fecha:      cells[3].textContent.trim(),
                 modificado: cells[4].textContent.trim(),
-                structs:    cells[5].textContent.trim().replace(/\s+/g, ' ')
+                structs:    cells[5].getAttribute('data-export') || cells[5].textContent.trim().replace(/\s+/g, ' ')
             };
         }
 
