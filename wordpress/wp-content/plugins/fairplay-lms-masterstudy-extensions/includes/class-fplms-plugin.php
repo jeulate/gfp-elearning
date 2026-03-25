@@ -71,6 +71,11 @@ class FairPlay_LMS_Plugin {
     private $quiz_settings;
 
     /**
+     * @var FairPlay_LMS_Quiz_Availability
+     */
+    private $quiz_availability;
+
+    /**
      * @var FairPlay_LMS_Survey
      */
     private $survey;
@@ -88,8 +93,9 @@ class FairPlay_LMS_Plugin {
         $this->audit_logger   = new FairPlay_LMS_Audit_Logger();
         $this->audit_admin    = new FairPlay_LMS_Audit_Admin();
         $this->onboarding     = new FairPlay_LMS_Onboarding();
-        $this->quiz_settings  = new FairPlay_LMS_Quiz_Settings();
-        $this->survey         = new FairPlay_LMS_Survey();
+        $this->quiz_settings     = new FairPlay_LMS_Quiz_Settings();
+        $this->quiz_availability  = new FairPlay_LMS_Quiz_Availability();
+        $this->survey             = new FairPlay_LMS_Survey();
         $this->menu           = new FairPlay_LMS_Admin_Menu(
             $this->pages,
             $this->structures,
@@ -153,6 +159,12 @@ class FairPlay_LMS_Plugin {
 
         // Inyectar script de reemplazo de mensaje en formularios de login del frontend
         add_action( 'wp_footer', [ $this, 'inject_inactive_login_message_script' ] );
+
+        // Bloquear selector de unidad de tiempo en el course builder (forzar minutos)
+        add_action( 'wp_footer', [ $this, 'inject_quiz_duration_unit_lock_script' ] );
+
+        // Forzar duration_measure = minutes en cada guardado de quiz (server-side)
+        add_action( 'save_post_stm-quizzes', [ $this, 'enforce_quiz_duration_minutes' ], 20, 1 );
 
         // Registrar último login de usuario
         add_action( 'wp_login', [ $this->users, 'record_user_login' ], 10, 2 );
@@ -263,6 +275,9 @@ class FairPlay_LMS_Plugin {
         // Ajustes de Tests: menú + guardar configuración
         add_action( 'admin_menu', [ $this->quiz_settings, 'register_admin_menu' ] );
         add_action( 'admin_init', [ $this->quiz_settings, 'handle_save' ] );
+
+        // Vigencia de quizzes: metabox + enforcement REST
+        $this->quiz_availability->register_hooks();
 
         // Encuestas de Satisfacción
         add_action( 'admin_init',                                              [ $this->survey, 'maybe_create_table' ], 1 );
@@ -420,6 +435,65 @@ class FairPlay_LMS_Plugin {
                 document.addEventListener('DOMContentLoaded', startObserver);
             } else {
                 startObserver();
+            }
+        })();
+        </script>
+        <?php
+    }
+
+    /**
+     * Fuerza que la unidad de tiempo del quiz sea siempre "minutes" en el servidor.
+     * Se ejecuta DESPUÉS de que MasterStudy guarda los meta (prioridad 20).
+     */
+    public function enforce_quiz_duration_minutes( int $post_id ): void {
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) return;
+        if ( ! current_user_can( 'edit_post', $post_id ) ) return;
+        update_post_meta( $post_id, 'duration_measure', 'minutes' );
+    }
+
+    /**
+     * Oculta el selector "Unidad de tiempo" en el course builder de MasterStudy
+     * usando una regla CSS con :has() en el <head> — React no puede sobreescribir
+     * un <style> del documento, a diferencia de los inline styles en nodos del SPA.
+     */
+    public function inject_quiz_duration_unit_lock_script(): void {
+        if ( ! is_user_logged_in() || is_admin() ) {
+            return;
+        }
+        ?>
+        <style id="fplms-quiz-unit-lock">
+        /* Ocultar campo "Unidad de tiempo" en ajustes de quiz.
+           El selector :has() vive en el cascade CSS — React no puede borrarlo. */
+        [role="group"]:has(input[name="duration_measure"]) {
+            display: none !important;
+        }
+        </style>
+        <script id="fplms-quiz-unit-lock-js">
+        (function () {
+            'use strict';
+            /* Oculta el grupo [role="group"] que contiene el input oculto
+               duration_measure. Se usa setProperty con !important para que
+               sobreviva cualquier inline-style que React pueda inyectar.
+               NO se despacha ningún evento, así no se provoca re-render. */
+            function hideDurationField() {
+                var inputs = document.querySelectorAll('input[name="duration_measure"]');
+                for (var i = 0; i < inputs.length; i++) {
+                    var group = inputs[i].closest('[role="group"]');
+                    if (group) {
+                        group.style.setProperty('display', 'none', 'important');
+                    }
+                }
+            }
+            hideDurationField();
+            if (window.MutationObserver) {
+                new MutationObserver(function (mutations) {
+                    for (var i = 0; i < mutations.length; i++) {
+                        if (mutations[i].addedNodes.length > 0) {
+                            hideDurationField();
+                            break;
+                        }
+                    }
+                }).observe(document.body, { childList: true, subtree: true });
             }
         })();
         </script>

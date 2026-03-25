@@ -15,6 +15,66 @@ define( 'FPLMS_PLUGIN_FILE', __FILE__ );
 define( 'FPLMS_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'FPLMS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
+/**
+ * Normaliza números con coma decimal en respuestas REST de MasterStudy.
+ * Evita errores JS como: data.current.toFixed is not a function
+ */
+function fplms_normalize_masterstudy_rest_numbers( $response, $server, $request ) {
+
+    // Asegurar que sea una respuesta REST válida
+    if ( ! $response instanceof WP_REST_Response ) {
+        return $response;
+    }
+
+    $route = $request->get_route();
+
+    // Solo aplicar a endpoints de MasterStudy
+    if ( strpos( $route, '/stm-lms/' ) === false && strpos( $route, '/masterstudy-lms/' ) === false ) {
+        return $response;
+    }
+
+    $data = $response->get_data();
+
+    if ( empty( $data ) ) {
+        return $response;
+    }
+
+    $normalize_numbers = function ( &$item ) use ( &$normalize_numbers ) {
+        if ( is_array( $item ) ) {
+            foreach ( $item as &$value ) {
+                $normalize_numbers( $value );
+            }
+            return;
+        }
+
+        if ( is_object( $item ) ) {
+            foreach ( $item as &$value ) {
+                $normalize_numbers( $value );
+            }
+            return;
+        }
+
+        if ( is_string( $item ) ) {
+            $value = trim( $item );
+
+            // Solo convertir strings numéricos tipo 4,5 o 80,00
+            if ( preg_match( '/^-?\d+(,\d+)?$/', $value ) ) {
+                $normalized = str_replace( ',', '.', $value );
+
+                if ( is_numeric( $normalized ) ) {
+                    $item = (float) $normalized;
+                }
+            }
+        }
+    };
+
+    $normalize_numbers( $data );
+    $response->set_data( $data );
+
+    return $response;
+}
+add_filter( 'rest_post_dispatch', 'fplms_normalize_masterstudy_rest_numbers', 10, 3 );
+
 // Includes
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-config.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-capabilities.php';
@@ -29,6 +89,7 @@ require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-audit-logger.php';
 require_once FPLMS_PLUGIN_DIR . 'admin/class-fplms-audit-admin.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-onboarding.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-quiz-settings.php';
+require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-quiz-availability.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-survey.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-pages.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-menu.php';

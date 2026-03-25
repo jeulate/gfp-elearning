@@ -12,12 +12,14 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 class FairPlay_LMS_Quiz_Settings {
 
-    const OPTION_MESSAGE      = 'fplms_quiz_completion_message';
-    const OPTION_ENABLED      = 'fplms_quiz_completion_enabled';
-    const OPTION_FAIL_MESSAGE = 'fplms_quiz_fail_message';
-    const OPTION_FAIL_ENABLED = 'fplms_quiz_fail_enabled';
-    const NONCE_ACTION        = 'fplms_quiz_settings_save';
-    const NONCE_FIELD         = 'fplms_quiz_settings_nonce';
+    const OPTION_MESSAGE         = 'fplms_quiz_completion_message';
+    const OPTION_ENABLED         = 'fplms_quiz_completion_enabled';
+    const OPTION_FAIL_MESSAGE    = 'fplms_quiz_fail_message';
+    const OPTION_FAIL_ENABLED    = 'fplms_quiz_fail_enabled';
+    const OPTION_PENDING_MESSAGE = 'fplms_quiz_pending_message';
+    const OPTION_EXPIRED_MESSAGE = 'fplms_quiz_expired_message';
+    const NONCE_ACTION           = 'fplms_quiz_settings_save';
+    const NONCE_FIELD            = 'fplms_quiz_settings_nonce';
 
     // ── Admin ─────────────────────────────────────────────────────────────────
 
@@ -33,6 +35,13 @@ class FairPlay_LMS_Quiz_Settings {
     }
 
     public function handle_save(): void {
+        // Solo procesar en esta página y solo en POST
+        if ( 'POST' !== strtoupper( $_SERVER['REQUEST_METHOD'] ?? '' ) ) {
+            return;
+        }
+        if ( ! isset( $_GET['page'] ) || 'fplms-quiz-settings' !== $_GET['page'] ) {
+            return;
+        }
         if ( ! isset( $_POST[ self::NONCE_FIELD ] ) ) {
             return;
         }
@@ -60,9 +69,46 @@ class FairPlay_LMS_Quiz_Settings {
             : '';
         update_option( self::OPTION_FAIL_MESSAGE, $fail_message );
 
-        add_action( 'admin_notices', static function () {
-            echo '<div class="notice notice-success is-dismissible"><p>✅ Ajustes de test guardados correctamente.</p></div>';
-        } );
+        // Mensajes de vigencia (texto plano, sin HTML)
+        $pending_msg = isset( $_POST['fplms_quiz_pending_message'] )
+            ? sanitize_text_field( wp_unslash( $_POST['fplms_quiz_pending_message'] ) )
+            : '';
+        update_option( self::OPTION_PENDING_MESSAGE, $pending_msg );
+
+        $expired_msg = isset( $_POST['fplms_quiz_expired_message'] )
+            ? sanitize_text_field( wp_unslash( $_POST['fplms_quiz_expired_message'] ) )
+            : '';
+        update_option( self::OPTION_EXPIRED_MESSAGE, $expired_msg );
+
+        // Guardar vigencias individuales por quiz
+        if ( isset( $_POST['fplms_av'] ) && is_array( $_POST['fplms_av'] ) ) {
+            foreach ( $_POST['fplms_av'] as $quiz_id_raw => $dates ) {
+                $qid = (int) $quiz_id_raw;
+                if ( $qid <= 0 || 'stm-quizzes' !== get_post_type( $qid ) ) {
+                    continue;
+                }
+                if ( ! current_user_can( 'edit_post', $qid ) ) {
+                    continue;
+                }
+                $av_from  = isset( $dates['from'] )  ? sanitize_text_field( wp_unslash( $dates['from'] ) )  : '';
+                $av_until = isset( $dates['until'] ) ? sanitize_text_field( wp_unslash( $dates['until'] ) ) : '';
+                $d_from  = \DateTime::createFromFormat( 'Y-m-d', $av_from );
+                $d_until = \DateTime::createFromFormat( 'Y-m-d', $av_until );
+                $av_from  = ( $d_from  instanceof \DateTime && $d_from->format( 'Y-m-d' )  === $av_from  ) ? $av_from  : '';
+                $av_until = ( $d_until instanceof \DateTime && $d_until->format( 'Y-m-d' ) === $av_until ) ? $av_until : '';
+                update_post_meta( $qid, FairPlay_LMS_Quiz_Availability::META_FROM,  $av_from );
+                update_post_meta( $qid, FairPlay_LMS_Quiz_Availability::META_UNTIL, $av_until );
+            }
+        }
+
+        // POST → Redirect → GET: evita que render_page() lea el caché del request POST.
+        wp_safe_redirect(
+            add_query_arg(
+                [ 'page' => 'fplms-quiz-settings', 'fplms_saved' => '1' ],
+                admin_url( 'admin.php' )
+            )
+        );
+        exit;
     }
 
     public function render_page(): void {
@@ -74,6 +120,11 @@ class FairPlay_LMS_Quiz_Settings {
         $message      = get_option( self::OPTION_MESSAGE, '' );
         $fail_enabled = (bool) get_option( self::OPTION_FAIL_ENABLED, '' );
         $fail_message = get_option( self::OPTION_FAIL_MESSAGE, '' );
+
+        // Aviso de guardado exitoso (POST→Redirect→GET: el parámetro lo pone handle_save)
+        if ( ! empty( $_GET['fplms_saved'] ) ) {
+            echo '<div class="notice notice-success is-dismissible"><p>✅ Ajustes de test guardados correctamente.</p></div>';
+        }
         ?>
         <div class="wrap">
             <h1 style="display:flex;align-items:center;gap:10px;">
@@ -270,6 +321,217 @@ class FairPlay_LMS_Quiz_Settings {
 
                 </div><!-- .fplms-qs-card .reprobado -->
 
+                <?php
+                // ── Tarjeta: vigencia por quiz ─────────────────────────────
+                $all_quizzes = get_posts( [
+                    'post_type'      => 'stm-quizzes',
+                    'post_status'    => [ 'publish', 'draft' ],
+                    'posts_per_page' => -1,
+                    'orderby'        => 'title',
+                    'order'          => 'ASC',
+                    'no_found_rows'  => true,
+                ] );
+                ?>
+                <div class="fplms-qs-card" id="fplms-av-card" style="margin-top:20px;">
+
+                    <h2 class="fplms-qs-section-title" style="font-size:16px;margin-bottom:6px;">
+                        <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:#667eea;"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></svg>
+                        Vigencia por Test
+                    </h2>
+                    <p class="fplms-qs-desc" style="margin-bottom:18px;">Define el rango de fechas en que cada test estará disponible para ser iniciado. Deja las fechas vacías para no restringir el acceso.</p>
+
+                    <style>
+                        .fplms-av-search {
+                            width: 100%; max-width: 340px;
+                            padding: 8px 12px;
+                            border: 1px solid #d1d5db;
+                            border-radius: 8px;
+                            font-size: 13px;
+                            margin-bottom: 16px;
+                            box-sizing: border-box;
+                        }
+                        .fplms-av-search:focus { outline: 2px solid #667eea; border-color: #667eea; }
+                        .fplms-av-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+                        .fplms-av-table thead th {
+                            text-align: left;
+                            padding: 8px 12px;
+                            background: #f3f4f6;
+                            color: #6b7280;
+                            font-weight: 600;
+                            font-size: 11px;
+                            text-transform: uppercase;
+                            letter-spacing: .4px;
+                            border-bottom: 1px solid #e5e7eb;
+                        }
+                        .fplms-av-table thead th:first-child { border-radius: 6px 0 0 0; }
+                        .fplms-av-table thead th:last-child  { border-radius: 0 6px 0 0; }
+                        .fplms-av-table tbody tr { border-bottom: 1px solid #f3f4f6; transition: background .15s; }
+                        .fplms-av-table tbody tr:hover { background: #f8f9fc; }
+                        .fplms-av-table td { padding: 10px 12px; vertical-align: middle; }
+                        .fplms-av-status {
+                            display: inline-block;
+                            padding: 3px 9px;
+                            border-radius: 20px;
+                            font-size: 11px;
+                            font-weight: 600;
+                            white-space: nowrap;
+                        }
+                        .fplms-av-status.s-none    { background:#f3f4f6; color:#6b7280; }
+                        .fplms-av-status.s-active  { background:#dcfce7; color:#16a34a; }
+                        .fplms-av-status.s-pending { background:#fef9c3; color:#854d0e; }
+                        .fplms-av-status.s-expired { background:#fee2e2; color:#dc2626; }
+                        .fplms-av-table input[type="date"] {
+                            padding: 5px 8px;
+                            border: 1px solid #d1d5db;
+                            border-radius: 6px;
+                            font-size: 12px;
+                            width: 134px;
+                            transition: border-color .15s;
+                        }
+                        .fplms-av-table input[type="date"]:focus { outline: 2px solid #667eea; border-color: #667eea; }
+                        .fplms-av-quiz-name { font-weight: 500; color: #1f2937; display: flex; align-items: center; gap: 6px; }
+                        .fplms-av-quiz-name a {
+                            color: #a78bfa;
+                            text-decoration: none;
+                            font-size: 11px;
+                            padding: 2px 6px;
+                            border: 1px solid #ede9fe;
+                            border-radius: 4px;
+                            transition: background .15s;
+                        }
+                        .fplms-av-quiz-name a:hover { background: #ede9fe; }
+                        .fplms-av-clear-btn {
+                            background: none;
+                            border: 1px solid #e5e7eb;
+                            border-radius: 6px;
+                            padding: 5px 9px;
+                            font-size: 12px;
+                            color: #9ca3af;
+                            cursor: pointer;
+                            transition: all .2s;
+                            line-height: 1;
+                        }
+                        .fplms-av-clear-btn:hover { border-color: #ef4444; color: #ef4444; background: #fff5f5; }
+                        .fplms-av-no-results { text-align:center; color:#9ca3af; padding:20px; font-style:italic; display:none; }
+                        .fplms-av-count { font-size: 12px; color: #9ca3af; margin-bottom: 10px; }
+                    </style>
+
+                    <?php if ( empty( $all_quizzes ) ) : ?>
+                        <p style="color:#9ca3af;font-style:italic;">No hay tests publicados aún.</p>
+                    <?php else : ?>
+                        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px;">
+                            <input type="text" id="fplms-av-search" class="fplms-av-search"
+                                   placeholder="🔍 Buscar test por nombre…" autocomplete="off" style="margin-bottom:0;">
+                            <span class="fplms-av-count" id="fplms-av-count"><?php echo count( $all_quizzes ); ?> tests</span>
+                        </div>
+
+                        <div style="overflow-x:auto;margin-top:12px;">
+                        <table class="fplms-av-table" id="fplms-av-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:95px;">Estado</th>
+                                    <th>Test</th>
+                                    <th style="width:148px;">Disponible desde</th>
+                                    <th style="width:148px;">Disponible hasta</th>
+                                    <th style="width:46px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            <?php foreach ( $all_quizzes as $quiz ) :
+                                $av_status = FairPlay_LMS_Quiz_Availability::get_availability_status( $quiz->ID );
+                                $q_from    = (string) get_post_meta( $quiz->ID, FairPlay_LMS_Quiz_Availability::META_FROM,  true );
+                                $q_until   = (string) get_post_meta( $quiz->ID, FairPlay_LMS_Quiz_Availability::META_UNTIL, true );
+                                if ( $av_status['no_restriction'] ) {
+                                    $sc = 's-none';    $sl = 'Sin límite';
+                                } elseif ( $av_status['active'] ) {
+                                    $sc = 's-active';  $sl = '✓ Disponible';
+                                } elseif ( $av_status['pending'] ) {
+                                    $sc = 's-pending'; $sl = '⏳ Pendiente';
+                                } else {
+                                    $sc = 's-expired'; $sl = '✕ Expirado';
+                                }
+                                $edit_url = get_edit_post_link( $quiz->ID );
+                            ?>
+                            <tr data-name="<?php echo esc_attr( mb_strtolower( $quiz->post_title ) ); ?>">
+                                <td><span class="fplms-av-status <?php echo esc_attr( $sc ); ?>"><?php echo esc_html( $sl ); ?></span></td>
+                                <td>
+                                    <span class="fplms-av-quiz-name">
+                                        <?php echo esc_html( $quiz->post_title ); ?>
+                                        <?php if ( $edit_url ) : ?>
+                                        <a href="<?php echo esc_url( $edit_url ); ?>" target="_blank">Editar</a>
+                                        <?php endif; ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <input type="date"
+                                           name="fplms_av[<?php echo esc_attr( $quiz->ID ); ?>][from]"
+                                           value="<?php echo esc_attr( $q_from ); ?>">
+                                </td>
+                                <td>
+                                    <input type="date"
+                                           name="fplms_av[<?php echo esc_attr( $quiz->ID ); ?>][until]"
+                                           value="<?php echo esc_attr( $q_until ); ?>">
+                                </td>
+                                <td>
+                                    <button type="button" class="fplms-av-clear-btn" title="Borrar fechas">✕</button>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                        </div>
+                        <p class="fplms-av-no-results" id="fplms-av-no-results">No se encontraron tests con ese nombre.</p>
+                    <?php endif; ?>
+
+                </div><!-- .fplms-av-card -->
+
+                <!-- ── Tarjeta: mensajes de vigencia ────────────────────── -->
+                <?php
+                $pending_msg = (string) get_option( self::OPTION_PENDING_MESSAGE, '' );
+                $expired_msg = (string) get_option( self::OPTION_EXPIRED_MESSAGE, '' );
+                ?>
+                <div class="fplms-qs-card" style="margin-top:20px;">
+
+                    <h2 class="fplms-qs-section-title" style="font-size:16px;margin-bottom:6px;">
+                        <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:#f59e0b;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                        Mensajes de vigencia
+                    </h2>
+                    <p class="fplms-qs-desc" style="margin-bottom:24px;">Texto que verá el estudiante cuando intente iniciar un test fuera de su ventana de disponibilidad. Puedes usar <code>{fecha}</code> como marcador y será reemplazado automáticamente por la fecha correspondiente.</p>
+
+                    <!-- Mensaje: aún no disponible -->
+                    <div style="margin-bottom:28px;">
+                        <p class="fplms-qs-section-title">
+                            <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#f59e0b;"><path d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm4.3 14.3L11 11V6h1.5v4.56l4.8 4.8-1 .94z"/></svg>
+                            Test aún no disponible
+                        </p>
+                        <p class="fplms-qs-desc">Se muestra cuando el estudiante intenta iniciar un test antes de la fecha de inicio.</p>
+                        <input type="text"
+                               id="fplms_quiz_pending_message"
+                               name="fplms_quiz_pending_message"
+                               value="<?php echo esc_attr( $pending_msg ); ?>"
+                               placeholder="Este test estará disponible desde el {fecha}."
+                               style="width:100%;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box;">
+                        <p class="fplms-qs-desc" style="margin-top:6px;margin-bottom:0;">Deja vacío para usar el mensaje por defecto.</p>
+                    </div>
+
+                    <!-- Mensaje: vigencia expirada -->
+                    <div>
+                        <p class="fplms-qs-section-title">
+                            <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#ef4444;"><path d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm5 13.59L15.59 17 12 13.41 8.41 17 7 15.59 10.59 12 7 8.41 8.41 7 12 10.59 15.59 7 17 8.41 13.41 12 17 15.59z"/></svg>
+                            Vigencia expirada
+                        </p>
+                        <p class="fplms-qs-desc">Se muestra cuando la fecha límite del test ya pasó.</p>
+                        <input type="text"
+                               id="fplms_quiz_expired_message"
+                               name="fplms_quiz_expired_message"
+                               value="<?php echo esc_attr( $expired_msg ); ?>"
+                               placeholder="La vigencia de este test expiró el {fecha}."
+                               style="width:100%;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box;">
+                        <p class="fplms-qs-desc" style="margin-top:6px;margin-bottom:0;">Deja vacío para usar el mensaje por defecto.</p>
+                    </div>
+
+                </div><!-- mensajes de vigencia -->
+
                 <div style="margin-top:24px;max-width:860px;">
                     <button type="submit" class="fplms-qs-save-btn">
                         <svg viewBox="0 0 24 24" style="width:16px;height:16px;"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
@@ -281,6 +543,35 @@ class FairPlay_LMS_Quiz_Settings {
 
         <script>
         (function() {
+            // ── Búsqueda en tabla de vigencias ────────────────────────────
+            var avSearch = document.getElementById('fplms-av-search');
+            if (avSearch) {
+                avSearch.addEventListener('input', function() {
+                    var q = this.value.toLowerCase().trim();
+                    var rows = document.querySelectorAll('#fplms-av-table tbody tr');
+                    var visible = 0;
+                    rows.forEach(function(row) {
+                        var name = row.getAttribute('data-name') || '';
+                        var show = !q || name.indexOf(q) !== -1;
+                        row.style.display = show ? '' : 'none';
+                        if (show) visible++;
+                    });
+                    var countEl = document.getElementById('fplms-av-count');
+                    if (countEl) countEl.textContent = visible + ' test' + (visible !== 1 ? 's' : '');
+                    var noRes = document.getElementById('fplms-av-no-results');
+                    if (noRes) noRes.style.display = visible === 0 ? 'block' : 'none';
+                });
+            }
+
+            // ── Botones «borrar fechas» ───────────────────────────────────
+            document.addEventListener('click', function(e) {
+                if (!e.target.classList.contains('fplms-av-clear-btn')) return;
+                var row = e.target.closest('tr');
+                if (!row) return;
+                row.querySelectorAll('input[type="date"]').forEach(function(inp) { inp.value = ''; });
+            });
+
+            // ── Actualizadores de vista previa de mensajes ────────────────
             function makeUpdater(editorId, previewId) {
                 return function() {
                     var content = '';
@@ -336,5 +627,21 @@ class FairPlay_LMS_Quiz_Settings {
             return '';
         }
         return (string) get_option( self::OPTION_FAIL_MESSAGE, '' );
+    }
+
+    /**
+     * Devuelve el mensaje personalizado para test pendiente, o cadena vacía
+     * si el admin no configuró uno (enforce_rest usará el mensaje por defecto).
+     */
+    public static function get_pending_message(): string {
+        return (string) get_option( self::OPTION_PENDING_MESSAGE, '' );
+    }
+
+    /**
+     * Devuelve el mensaje personalizado para vigencia expirada, o cadena vacía
+     * si el admin no configuró uno (enforce_rest usará el mensaje por defecto).
+     */
+    public static function get_expired_message(): string {
+        return (string) get_option( self::OPTION_EXPIRED_MESSAGE, '' );
     }
 }

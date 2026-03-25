@@ -1032,7 +1032,7 @@ class FairPlay_LMS_Courses_Controller {
                                     <th style="width:36px;padding-left:18px;"><input type="checkbox" id="fplms-cl-select-all"></th>
                                     <th>Curso</th>
                                     <th>Docente</th>
-                                    <th>Creación</th>
+                                    <th>Fecha de Creación</th>
                                     <th>Modificación</th>
                                     <th>Estructuras</th>
                                     <th style="text-align:center;width:80px;">Encuesta</th>
@@ -1083,7 +1083,7 @@ class FairPlay_LMS_Courses_Controller {
                                         <div class="fplms-ct-title">
                                             <a href="<?php echo esc_url( $edit_url ); ?>" style="color:inherit;text-decoration:none;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'"><?php echo esc_html( get_the_title( $course ) ); ?></a>
                                         </div>
-                                        <div class="fplms-ct-meta">ID: <?php echo esc_html( $course->ID ); ?></div>
+                                        <div class="fplms-ct-meta"><?php echo esc_html( $course->ID ); ?></div>
                                         <span class="fplms-cs-badge <?php echo esc_attr( $status_class ); ?>"><?php echo esc_html( $status_label ); ?></span>
                                     </td>
                                     <td>
@@ -1095,7 +1095,7 @@ class FairPlay_LMS_Courses_Controller {
                                     </td>
                                     <td data-export="<?php
                                         $all_names = [];
-                                        foreach ( [ 'cities', 'companies', 'channels', 'branches', 'roles' ] as $_level ) {
+                                        foreach ( [ 'channels', 'branches', 'roles' ] as $_level ) {
                                             if ( ! empty( $course_structures[ $_level ] ) ) {
                                                 $all_names = array_merge( $all_names, $this->get_term_names_by_ids( $course_structures[ $_level ] ) );
                                             }
@@ -1459,7 +1459,7 @@ class FairPlay_LMS_Courses_Controller {
             if (cells.length < 6) return null;
             return {
                 title:      (cells[1].querySelector('.fplms-ct-title')  || { textContent: '' }).textContent.trim(),
-                id:         (cells[1].querySelector('.fplms-ct-meta')   || { textContent: '' }).textContent.trim(),
+                id:         (cells[1].querySelector('.fplms-ct-meta')   || { textContent: '' }).textContent.trim().replace(/^ID:\s*/i, ''),
                 status:     (cells[1].querySelector('.fplms-cs-badge')  || { textContent: '' }).textContent.trim(),
                 docente:    cells[2].textContent.trim(),
                 fecha:      cells[3].textContent.trim(),
@@ -1470,7 +1470,7 @@ class FairPlay_LMS_Courses_Controller {
 
         window.fplmsClExportXLS = function() {
             var rows = fplmsClGetExportRows();
-            var hdrs = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha', 'Última modificación', 'Estructuras'];
+            var hdrs = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha de Creación', 'Última modificación', 'Estructuras'];
             var t = '<table border="1" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;">';
             t += '<thead><tr>' + hdrs.map(function(h) {
                 return '<th style="background:#667eea;color:#fff;padding:8px 12px;font-weight:bold;">' + h + '</th>';
@@ -1495,7 +1495,7 @@ class FairPlay_LMS_Courses_Controller {
 
         window.fplmsClExportPDF = function() {
             var rows    = fplmsClGetExportRows();
-            var hdrs    = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha', 'Última modificación', 'Estructuras'];
+            var hdrs    = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha de Creación', 'Última modificación', 'Estructuras'];
             var checked = document.querySelectorAll('.fplms-cl-cb:checked').length;
             var label   = checked > 0 ? checked + ' seleccionados' : rows.length + ' cursos';
             var t = '<table><thead><tr>' + hdrs.map(function(h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>';
@@ -3147,20 +3147,6 @@ class FairPlay_LMS_Courses_Controller {
         $svg_role    = '<svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:#6b7280;flex-shrink:0;"><path d="M20 6h-2.18c.07-.44.18-.88.18-1 0-2.21-1.79-4-4-4s-4 1.79-4 4c0 .12.11.56.18 1H8c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h12c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-6-3c1.1 0 2 .9 2 2 0 .12-.11.56-.18 1h-3.64C12.11 5.56 12 5.12 12 5c0-1.1.9-2 2-2zm6 17H8V8h2v1c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V8h2v12z"/></svg>';
 
         $tags = [];
-
-        // Ciudades
-        if ( ! empty( $structures['cities'] ) ) {
-            foreach ( $this->get_term_names_by_ids( $structures['cities'] ) as $name ) {
-                $tags[] = '<span class="fplms-ct-struct-tag">' . $svg_city . esc_html( $name ) . '</span>';
-            }
-        }
-
-        // Empresas
-        if ( ! empty( $structures['companies'] ) ) {
-            foreach ( $this->get_term_names_by_ids( $structures['companies'] ) as $name ) {
-                $tags[] = '<span class="fplms-ct-struct-tag">' . $svg_company . esc_html( $name ) . '</span>';
-            }
-        }
 
         // Canales
         if ( ! empty( $structures['channels'] ) ) {
