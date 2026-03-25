@@ -746,6 +746,75 @@ class FairPlay_LMS_Courses_Controller {
             .fplms-ct-struct-free { background:#e7f5fe; color:#1a56db; }
             .fplms-ct-struct-free svg { fill:#1a56db; }
 
+            /* ── Survey toggle ── */
+            .fplms-survey-toggle { background:none; border:none; cursor:pointer; padding:4px; display:inline-flex; align-items:center; }
+            .fplms-st-track { display:inline-flex; align-items:center; width:36px; height:20px; border-radius:10px; background:#d1d5db; position:relative; transition:background .2s; }
+            .fplms-survey-toggle.is-on .fplms-st-track { background:#667eea; }
+            .fplms-st-knob { position:absolute; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.2); transition:left .2s; }
+            .fplms-survey-toggle.is-on .fplms-st-knob { left:18px; }
+            .fplms-survey-toggle:disabled .fplms-st-track { opacity:.6; cursor:not-allowed; }
+
+            /* ── Survey settings panel/drawer ── */
+            .fplms-sv-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:100010; backdrop-filter:blur(2px); }
+            .fplms-sv-overlay.open { display:block; }
+            .fplms-sv-drawer { position:fixed; top:0; right:-740px; width:720px; max-width:100vw; height:100vh; background:#f7f8fc; z-index:100011; transition:right .32s cubic-bezier(.4,0,.2,1); overflow:hidden; display:flex; flex-direction:column; box-shadow:-8px 0 48px rgba(0,0,0,.22); }
+            .fplms-sv-drawer.open { right:0; }
+            /* Drawer header */
+            .fplms-sv-dh { background:linear-gradient(135deg,#667eea 0%,#764ba2 100%); padding:22px 26px; display:flex; align-items:center; gap:16px; position:relative; overflow:hidden; flex-shrink:0; }
+            .fplms-sv-dh::after { content:''; position:absolute; right:-50px; top:-50px; width:200px; height:200px; border-radius:50%; background:rgba(255,255,255,.08); pointer-events:none; }
+            .fplms-sv-dh-icon { width:46px; height:46px; background:rgba(255,255,255,.2); border:1px solid rgba(255,255,255,.3); border-radius:12px; display:flex; align-items:center; justify-content:center; flex-shrink:0; z-index:1; }
+            .fplms-sv-dh-icon svg { width:22px; height:22px; fill:#fff; }
+            .fplms-sv-dh-info { flex:1; z-index:1; min-width:0; }
+            .fplms-sv-dh-title { font-size:16px; font-weight:700; color:#fff; margin:0 0 3px; line-height:1.3; }
+            .fplms-sv-dh-sub { font-size:12px; color:rgba(255,255,255,.8); margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+            .fplms-sv-dh-close { width:36px; height:36px; background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.3); border-radius:9px; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:1; flex-shrink:0; transition:background .2s; }
+            .fplms-sv-dh-close:hover { background:rgba(255,255,255,.3); }
+            .fplms-sv-dh-close svg { width:18px; height:18px; fill:#fff; }
+            /* Drawer body */
+            .fplms-sv-db { flex:1; min-height:0; overflow-y:auto; padding:22px 24px; display:block; }
+            .fplms-sv-db::-webkit-scrollbar { width:5px; } .fplms-sv-db::-webkit-scrollbar-thumb { background:#d1d5db; border-radius:4px; }
+            /* Section cards */
+            .fplms-sv-sec { background:#fff; border-radius:12px; border:1px solid #e5e7eb; overflow:hidden; box-shadow:0 1px 6px rgba(0,0,0,.05); margin-bottom:18px; }
+            .fplms-sv-sec-hdr { padding:13px 18px; border-bottom:1px solid #f0f0f5; display:flex; align-items:center; gap:10px; background:#fafbff; }
+            .fplms-sv-sec-ico { width:30px; height:30px; border-radius:8px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+            .fplms-sv-sec-ico svg { width:15px; height:15px; fill:#fff; }
+            .fplms-sv-sec-title { font-size:13px; font-weight:600; color:#374151; margin:0; }
+            .fplms-sv-sec-body { padding:16px 18px; }
+            /* Message */
+            .fplms-sv-msg { width:100%; min-height:100px; padding:10px 13px; border:1px solid #d1d5db; border-radius:8px; font-size:13.5px; font-family:inherit; color:#1f2937; resize:vertical; box-sizing:border-box; outline:none; transition:border-color .2s; line-height:1.6; }
+            .fplms-sv-msg:focus { border-color:#667eea; box-shadow:0 0 0 3px rgba(102,126,234,.12); }
+            /* Question items */
+            .fplms-sv-qi { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+            .fplms-sv-qi input { flex:1; padding:8px 12px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; color:#111827; outline:none; transition:border-color .2s; }
+            .fplms-sv-qi input:focus { border-color:#667eea; box-shadow:0 0 0 3px rgba(102,126,234,.12); }
+            .fplms-sv-q-rm { width:30px; height:30px; border:none; background:#fee2e2; color:#ef4444; border-radius:7px; cursor:pointer; font-size:18px; line-height:1; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; transition:background .15s; }
+            .fplms-sv-q-rm:hover { background:#fecaca; }
+            .fplms-sv-q-add { display:inline-flex; align-items:center; gap:7px; padding:8px 16px; border:1.5px dashed #667eea; border-radius:8px; background:transparent; color:#667eea; font-size:13px; font-weight:500; cursor:pointer; margin-top:4px; transition:background .15s; }
+            .fplms-sv-q-add:hover { background:#f0efff; }
+            .fplms-sv-q-add svg { width:15px; height:15px; fill:#667eea; }
+            /* Scale */
+            .fplms-sv-scale-row { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+            .fplms-sv-scale-row label { font-size:13px; color:#374151; font-weight:500; white-space:nowrap; }
+            .fplms-sv-scale-lbl { flex:1; padding:8px 12px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; color:#111827; outline:none; transition:border-color .2s; }
+            .fplms-sv-scale-lbl:focus { border-color:#667eea; box-shadow:0 0 0 3px rgba(102,126,234,.12); }
+            .fplms-sv-scale-opts { display:flex; flex-direction:column; gap:5px; }
+            .fplms-sv-scale-opt { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:8px; background:#f9fafb; border:1px solid #e5e7eb; }
+            .fplms-sv-scale-num { width:22px; height:22px; background:#667eea; border-radius:50%; color:#fff; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+            .fplms-sv-scale-opt-lbl { font-size:13px; color:#374151; }
+            /* Drawer footer */
+            .fplms-sv-df { padding:15px 24px; border-top:1px solid #e5e7eb; background:#fff; display:flex; align-items:center; gap:10px; flex-shrink:0; }
+            .fplms-sv-df-cancel { padding:9px 16px; background:#fff; color:#6b7280; border:1px solid #e5e7eb; border-radius:9px; font-size:13px; font-weight:500; cursor:pointer; transition:all .2s; }
+            .fplms-sv-df-cancel:hover { background:#f3f4f6; }
+            .fplms-sv-df-deact { display:inline-flex; align-items:center; gap:6px; padding:9px 16px; background:#fff; color:#dc2626; border:1.5px solid #fca5a5; border-radius:9px; font-size:13px; font-weight:500; cursor:pointer; transition:all .2s; }
+            .fplms-sv-df-deact:hover { background:#fef2f2; border-color:#ef4444; }
+            .fplms-sv-df-save { flex:1; display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:10px 20px; background:#667eea; color:#fff; border:none; border-radius:9px; font-size:14px; font-weight:600; cursor:pointer; transition:background .2s; }
+            .fplms-sv-df-save:hover { background:#5a6fd6; } .fplms-sv-df-save:disabled { opacity:.6; cursor:not-allowed; }
+            .fplms-sv-df-save svg { width:16px; height:16px; fill:#fff; }
+            /* Loading */
+            .fplms-sv-loading { display:flex; align-items:center; justify-content:center; padding:64px 20px; gap:14px; flex-direction:column; color:#6b7280; font-size:14px; }
+            .fplms-sv-spinner { width:34px; height:34px; border:3px solid #e5e7eb; border-top-color:#667eea; border-radius:50%; animation:fplmsSvSpin .7s linear infinite; }
+            @keyframes fplmsSvSpin { to { transform:rotate(360deg); } }
+
             /* ── Action icon buttons ── */
             .fplms-ct-actions { display:flex; align-items:center; gap:2px; justify-content:center; }
             .fplms-ct-btn { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:6px; border:none; background:transparent; cursor:pointer; transition:all .15s; text-decoration:none; padding:0; position:relative; }
@@ -966,6 +1035,7 @@ class FairPlay_LMS_Courses_Controller {
                                     <th>Creación</th>
                                     <th>Modificación</th>
                                     <th>Estructuras</th>
+                                    <th style="text-align:center;width:80px;">Encuesta</th>
                                     <th style="width:215px;">Asignar Docente</th>
                                     <th style="text-align:center;width:145px;">Acciones</th>
                                 </tr>
@@ -1035,6 +1105,16 @@ class FairPlay_LMS_Courses_Controller {
                                         <div class="fplms-ct-struct-tags">
                                             <?php echo $this->format_course_structures_compact( $course_structures ); // phpcs:ignore -- HTML with SVG ?>
                                         </div>
+                                    </td>
+                                    <?php $survey_enabled = (bool) get_post_meta( $course->ID, '_fplms_survey_enabled', true ); ?>
+                                    <td style="text-align:center;">
+                                        <button type="button"
+                                                class="fplms-survey-toggle fplms-ct-btn<?php echo $survey_enabled ? ' is-on' : ''; ?>"
+                                                data-course-id="<?php echo (int) $course->ID; ?>"
+                                                data-tip="<?php echo $survey_enabled ? 'Editar encuesta' : 'Activar encuesta'; ?>"
+                                                onclick="fplmsToggleSurvey(this)">
+                                            <span class="fplms-st-track"><span class="fplms-st-knob"></span></span>
+                                        </button>
                                     </td>
                                     <td>
                                         <form method="post" class="fplms-ct-inst-form" action="<?php echo esc_url( admin_url( 'admin.php?page=fplms-courses' ) ); ?>">
@@ -1135,6 +1215,37 @@ class FairPlay_LMS_Courses_Controller {
                     <button type="button" class="fplms-cl-modal-cancel" onclick="fplmsClCloseConfirmModal()">Cancelar</button>
                     <button type="button" id="fplms-cl-confirm-modal-btn" class="fplms-cl-modal-confirm" onclick="fplmsClExecuteConfirmModal()">Confirmar</button>
                 </div>
+            </div>
+        </div>
+
+        <!-- SURVEY SETTINGS DRAWER -->
+        <div id="fplms-sv-overlay" class="fplms-sv-overlay"></div>
+        <div id="fplms-sv-drawer" class="fplms-sv-drawer">
+            <div class="fplms-sv-dh">
+                <div class="fplms-sv-dh-icon">
+                    <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM9 11H7V9h2v2zm4 0h-2V9h2v2zm4 0h-2V9h2v2z"/></svg>
+                </div>
+                <div class="fplms-sv-dh-info">
+                    <p class="fplms-sv-dh-title">Configuración de Encuesta de Satisfacción</p>
+                    <p class="fplms-sv-dh-sub" id="fplms-sv-dh-sub"></p>
+                </div>
+                <button type="button" class="fplms-sv-dh-close" onclick="fplmsSvClose()">
+                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                </button>
+            </div>
+            <div class="fplms-sv-db" id="fplms-sv-body">
+                <div class="fplms-sv-loading"><div class="fplms-sv-spinner"></div>Cargando configuración…</div>
+            </div>
+            <div class="fplms-sv-df" id="fplms-sv-footer" style="display:none;">
+                <button type="button" class="fplms-sv-df-cancel" onclick="fplmsSvClose()">Cancelar</button>
+                <button type="button" class="fplms-sv-df-deact" id="fplms-sv-deact" style="display:none;" onclick="fplmsSvDeactivate()">
+                    <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#dc2626;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8 0-1.85.63-3.55 1.69-4.9L16.9 18.31C15.55 19.37 13.85 20 12 20zm6.31-3.1L7.1 5.69C8.45 4.63 10.15 4 12 4c4.42 0 8 3.58 8 8 0 1.85-.63 3.55-1.69 4.9z"/></svg>
+                    Desactivar encuesta
+                </button>
+                <button type="button" class="fplms-sv-df-save" id="fplms-sv-save" onclick="fplmsSvSave()">
+                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                    <span id="fplms-sv-save-lbl">Guardar y Activar</span>
+                </button>
             </div>
         </div>
 
@@ -1562,7 +1673,7 @@ class FairPlay_LMS_Courses_Controller {
             if (e.target.id === 'fplms-cl-confirm-modal') fplmsClCloseConfirmModal();
         });
         document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') { fplmsClCloseDeleteModal(); fplmsClCloseInstructorModal(); fplmsClCloseConfirmModal(); }
+            if (e.key === 'Escape') { fplmsClCloseDeleteModal(); fplmsClCloseInstructorModal(); fplmsClCloseConfirmModal(); if(typeof fplmsSvClose==='function') fplmsSvClose(); }
         });
 
         // ── Instructor assign modal ──────────────────────────────────────────
@@ -1595,6 +1706,171 @@ class FairPlay_LMS_Courses_Controller {
         document.addEventListener('click', function(e) {
             if (e.target.id === 'fplms-cl-instructor-modal') fplmsClCloseInstructorModal();
         });
+
+        // ── Survey settings drawer ────────────────────────────────────────────
+        var _fplmsSv = { courseId: null, toggleBtn: null, enabled: false,
+            nonce: '<?php echo wp_create_nonce( FairPlay_LMS_Survey::NONCE_SETTINGS ); ?>' };
+
+        window.fplmsToggleSurvey = function(btn) {
+            _fplmsSv.courseId  = btn.dataset.courseId;
+            _fplmsSv.toggleBtn = btn;
+            _fplmsSv.enabled   = btn.classList.contains('is-on');
+            fplmsSvOpen();
+        };
+
+        function fplmsSvOpen() {
+            document.getElementById('fplms-sv-dh-sub').textContent = '';
+            document.getElementById('fplms-sv-body').innerHTML = '<div class="fplms-sv-loading"><div class="fplms-sv-spinner"></div>Cargando…</div>';
+            document.getElementById('fplms-sv-footer').style.display = 'none';
+            document.getElementById('fplms-sv-overlay').classList.add('open');
+            document.getElementById('fplms-sv-drawer').classList.add('open');
+            document.body.style.overflow = 'hidden';
+            var fd = new FormData();
+            fd.append('action',    'fplms_get_survey_settings');
+            fd.append('nonce',     _fplmsSv.nonce);
+            fd.append('course_id', _fplmsSv.courseId);
+            fetch(ajaxurl, { method:'POST', credentials:'same-origin', body:fd })
+                .then(function(r){ return r.json(); })
+                .then(function(res){
+                    if (!res.success) { document.getElementById('fplms-sv-body').innerHTML = '<p style="padding:40px;color:#dc2626;text-align:center;">Error al cargar la configuración.</p>'; return; }
+                    fplmsSvRender(res.data);
+                })
+                .catch(function(){ document.getElementById('fplms-sv-body').innerHTML = '<p style="padding:40px;color:#dc2626;text-align:center;">Error de conexión.</p>'; });
+        }
+
+        function fplmsSvEsc(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        function fplmsSvRender(d) {
+            _fplmsSv.enabled = d.enabled;
+            document.getElementById('fplms-sv-dh-sub').textContent = d.course_title;
+
+            var qItems = (d.questions && d.questions.length ? d.questions : ['']).map(function(q){
+                return '<div class="fplms-sv-qi">'
+                     + '<input type="text" class="fplms-sv-q-in" value="' + fplmsSvEsc(q) + '" placeholder="Escribe la pregunta…">'
+                     + '<button type="button" class="fplms-sv-q-rm" title="Eliminar">&times;</button>'
+                     + '</div>';
+            }).join('');
+
+            var scItems = Object.entries(d.scale).map(function(e){
+                return '<div class="fplms-sv-scale-opt"><span class="fplms-sv-scale-num">' + e[0] + '</span><span class="fplms-sv-scale-opt-lbl">' + fplmsSvEsc(e[1]) + '</span></div>';
+            }).join('');
+
+            document.getElementById('fplms-sv-body').innerHTML =
+                '<div class="fplms-sv-sec">'
+              +   '<div class="fplms-sv-sec-hdr">'
+              +     '<div class="fplms-sv-sec-ico" style="background:linear-gradient(135deg,#667eea,#764ba2);"><svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg></div>'
+              +     '<p class="fplms-sv-sec-title">Mensaje introductorio</p>'
+              +   '</div>'
+              +   '<div class="fplms-sv-sec-body">'
+              +     '<textarea id="fplms-sv-msg" class="fplms-sv-msg" placeholder="Por favor deja tu opinión referente al módulo…">' + fplmsSvEsc(d.message || '') + '</textarea>'
+              +   '</div>'
+              + '</div>'
+              + '<div class="fplms-sv-sec">'
+              +   '<div class="fplms-sv-sec-hdr">'
+              +     '<div class="fplms-sv-sec-ico" style="background:linear-gradient(135deg,#3b82f6,#2563eb);"><svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 12h-2v-2h2v2zm0-4h-2V6h2v4z"/></svg></div>'
+              +     '<p class="fplms-sv-sec-title">Preguntas</p>'
+              +   '</div>'
+              +   '<div class="fplms-sv-sec-body">'
+              +     '<div id="fplms-sv-qlist">' + qItems + '</div>'
+              +     '<button type="button" class="fplms-sv-q-add" onclick="fplmsSvAddQ()">'
+              +       '<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg> Agregar pregunta'
+              +     '</button>'
+              +   '</div>'
+              + '</div>'
+              + '<div class="fplms-sv-sec">'
+              +   '<div class="fplms-sv-sec-hdr">'
+              +     '<div class="fplms-sv-sec-ico" style="background:linear-gradient(135deg,#10b981,#059669);"><svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg></div>'
+              +     '<p class="fplms-sv-sec-title">Respuestas (escala Likert fija 1–5)</p>'
+              +   '</div>'
+              +   '<div class="fplms-sv-sec-body">'
+              +     '<div class="fplms-sv-scale-row"><label>Nombre de la escala:</label><input type="text" id="fplms-sv-slbl" class="fplms-sv-scale-lbl" value="' + fplmsSvEsc(d.scale_label || 'Nivel de satisfacción') + '" placeholder="Nivel de satisfacción"></div>'
+              +     '<div class="fplms-sv-scale-opts">' + scItems + '</div>'
+              +   '</div>'
+              + '</div>';
+
+            document.getElementById('fplms-sv-qlist').addEventListener('click', function(e){
+                if (e.target.classList.contains('fplms-sv-q-rm')) {
+                    var all = document.querySelectorAll('.fplms-sv-qi');
+                    if (all.length > 1) e.target.closest('.fplms-sv-qi').remove();
+                }
+            });
+
+            document.getElementById('fplms-sv-save-lbl').textContent = d.enabled ? 'Guardar cambios' : 'Guardar y Activar';
+            document.getElementById('fplms-sv-deact').style.display  = d.enabled ? '' : 'none';
+            document.getElementById('fplms-sv-footer').style.display = '';
+        }
+
+        window.fplmsSvAddQ = function() {
+            var list = document.getElementById('fplms-sv-qlist');
+            var item = document.createElement('div');
+            item.className = 'fplms-sv-qi';
+            item.innerHTML = '<input type="text" class="fplms-sv-q-in" placeholder="Escribe la pregunta…"><button type="button" class="fplms-sv-q-rm" title="Eliminar">&times;</button>';
+            list.appendChild(item);
+            item.querySelector('input').focus();
+        };
+
+        window.fplmsSvClose = function() {
+            document.getElementById('fplms-sv-overlay').classList.remove('open');
+            document.getElementById('fplms-sv-drawer').classList.remove('open');
+            document.body.style.overflow = '';
+            _fplmsSv.courseId = null; _fplmsSv.toggleBtn = null;
+        };
+
+        function fplmsSvCollectFd(enabled) {
+            var fd = new FormData();
+            fd.append('action',    'fplms_save_survey_settings');
+            fd.append('nonce',     _fplmsSv.nonce);
+            fd.append('course_id', _fplmsSv.courseId);
+            fd.append('enabled',   enabled ? '1' : '0');
+            var msg = document.getElementById('fplms-sv-msg');
+            fd.append('message', msg ? msg.value : '');
+            document.querySelectorAll('.fplms-sv-q-in').forEach(function(i){ fd.append('questions[]', i.value); });
+            var sl = document.getElementById('fplms-sv-slbl');
+            fd.append('scale_label', sl ? sl.value : 'Nivel de satisfacción');
+            return fd;
+        }
+
+        window.fplmsSvSave = function() {
+            if (!_fplmsSv.courseId) return;
+            var btn = document.getElementById('fplms-sv-save');
+            btn.disabled = true;
+            fetch(ajaxurl, { method:'POST', credentials:'same-origin', body: fplmsSvCollectFd(true) })
+                .then(function(r){ return r.json(); })
+                .then(function(res){
+                    btn.disabled = false;
+                    if (res.success) {
+                        if (_fplmsSv.toggleBtn) {
+                            _fplmsSv.toggleBtn.classList.add('is-on');
+                            _fplmsSv.toggleBtn.setAttribute('data-tip','Editar encuesta');
+                        }
+                        fplmsSvClose();
+                    } else { alert('Error al guardar la configuración.'); }
+                })
+                .catch(function(){ btn.disabled = false; alert('Error de conexión.'); });
+        };
+
+        window.fplmsSvDeactivate = function() {
+            if (!_fplmsSv.courseId) return;
+            var btn = document.getElementById('fplms-sv-deact');
+            btn.disabled = true;
+            fetch(ajaxurl, { method:'POST', credentials:'same-origin', body: fplmsSvCollectFd(false) })
+                .then(function(r){ return r.json(); })
+                .then(function(res){
+                    btn.disabled = false;
+                    if (res.success) {
+                        if (_fplmsSv.toggleBtn) {
+                            _fplmsSv.toggleBtn.classList.remove('is-on');
+                            _fplmsSv.toggleBtn.setAttribute('data-tip','Activar encuesta');
+                        }
+                        fplmsSvClose();
+                    } else { alert('Error al desactivar.'); }
+                })
+                .catch(function(){ btn.disabled = false; alert('Error de conexión.'); });
+        };
+
+        document.getElementById('fplms-sv-overlay').addEventListener('click', fplmsSvClose);
 
         // ── Toast auto-dismiss ───────────────────────────────────────────────
         document.querySelectorAll('.fplms-cl-toast-auto').forEach(function(t) {

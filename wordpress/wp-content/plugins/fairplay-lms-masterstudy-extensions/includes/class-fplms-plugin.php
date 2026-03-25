@@ -70,6 +70,11 @@ class FairPlay_LMS_Plugin {
      */
     private $quiz_settings;
 
+    /**
+     * @var FairPlay_LMS_Survey
+     */
+    private $survey;
+
     public function __construct() {
 
         $this->structures     = new FairPlay_LMS_Structures_Controller();
@@ -84,6 +89,7 @@ class FairPlay_LMS_Plugin {
         $this->audit_admin    = new FairPlay_LMS_Audit_Admin();
         $this->onboarding     = new FairPlay_LMS_Onboarding();
         $this->quiz_settings  = new FairPlay_LMS_Quiz_Settings();
+        $this->survey         = new FairPlay_LMS_Survey();
         $this->menu           = new FairPlay_LMS_Admin_Menu(
             $this->pages,
             $this->structures,
@@ -257,6 +263,18 @@ class FairPlay_LMS_Plugin {
         // Ajustes de Tests: menú + guardar configuración
         add_action( 'admin_menu', [ $this->quiz_settings, 'register_admin_menu' ] );
         add_action( 'admin_init', [ $this->quiz_settings, 'handle_save' ] );
+
+        // Encuestas de Satisfacción
+        add_action( 'admin_init',                                              [ $this->survey, 'maybe_create_table' ], 1 );
+        add_action( 'admin_menu',                                              [ $this->survey, 'register_admin_menu' ] );
+        add_action( 'add_meta_boxes',                                          [ $this->survey, 'register_metabox' ] );
+        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE,          [ $this->survey, 'save_metabox' ], 20, 3 );
+        add_action( 'wp_footer',                                               [ $this->survey, 'inject_survey_script' ] );
+        add_action( 'wp_ajax_fplms_check_survey',                              [ $this->survey, 'ajax_check_survey' ] );
+        add_action( 'wp_ajax_fplms_submit_survey',                             [ $this->survey, 'ajax_submit_survey' ] );
+        add_action( 'wp_ajax_fplms_toggle_survey',                             [ $this->survey, 'ajax_toggle_survey' ] );
+        add_action( 'wp_ajax_fplms_get_survey_settings',                       [ $this->survey, 'ajax_get_survey_settings' ] );
+        add_action( 'wp_ajax_fplms_save_survey_settings',                      [ $this->survey, 'ajax_save_survey_settings' ] );
 
         // FEATURE: AJAX helpers para gestión de estructuras (usados desde panel admin de cursos)
         add_action( 'wp_ajax_fplms_get_frontend_structures',  [ $this->courses, 'ajax_get_frontend_structures' ] );

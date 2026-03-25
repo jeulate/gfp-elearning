@@ -3,7 +3,7 @@
  * Plugin Name: FairPlay LMS – MasterStudy Extensions
  * Plugin URI:  https://www.linkedin.com/in/jaeulate/
  * Description: Extensiones del panel admin, estructuras, usuarios y cursos para la plataforma eLearning con MasterStudy.
- * Version:     1.9.7
+ * Version:     1.9.8
  * Author:      Insoftline / Juan Eulate
  */
 
@@ -29,6 +29,7 @@ require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-audit-logger.php';
 require_once FPLMS_PLUGIN_DIR . 'admin/class-fplms-audit-admin.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-onboarding.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-quiz-settings.php';
+require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-survey.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-pages.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-menu.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-plugin.php';
@@ -94,6 +95,11 @@ function fplms_create_user_logins_table() {
     require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-audit-logger.php';
     $audit_logger = new FairPlay_LMS_Audit_Logger();
     $audit_logger->create_table();
+
+    // Tabla de encuestas de satisfacción
+    require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-survey.php';
+    $survey = new FairPlay_LMS_Survey();
+    $survey->create_table();
 }
 
 // Bootstrap del plugin
