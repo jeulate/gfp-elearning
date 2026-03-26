@@ -4467,10 +4467,45 @@ class FairPlay_LMS_Users_Controller {
             $terms_time = '';
         }
 
-        // Cursos en los que está inscrito el usuario
-        // Consulta directa a usermeta (evita check_ajax_referer de STM_LMS_User::get_user_courses)
+        // Cursos en los que está inscrito el usuario.
+        // NOTA: NO llamar STM_LMS_User::get_user_courses() aquí — llama check_ajax_referer()
+        // internamente, lo que imprime "-1" y hace die() en contextos no-AJAX.
+        // Se consultan directamente la tabla custom de MasterStudy y/o user meta.
         $user_courses_data = [];
+        $enrolled_ids      = [];
+
         global $wpdb;
+
+        // Método 1: tabla custom de MasterStudy (versiones recientes).
+        // Intentamos los dos nombres de tabla más comunes; usamos el que exista.
+        $ms_table = null;
+        foreach ( [ $wpdb->prefix . 'stm_lms_user_courses', $wpdb->prefix . 'stm_lms_users' ] as $t ) {
+            if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t ) {
+                $ms_table = $t;
+                break;
+            }
+        }
+        if ( $ms_table ) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT course_id, progress_percent, status FROM `{$ms_table}` WHERE user_id = %d",
+                    $user_id
+                )
+            );
+            foreach ( $rows as $row ) {
+                $cid = (int) $row->course_id;
+                if ( $cid > 0 ) {
+                    $enrolled_ids[ $cid ] = [
+                        'progress' => (float) $row->progress_percent,
+                        'status'   => (string) $row->status,
+                    ];
+                }
+            }
+        }
+
+        // Método 2: usermeta (formato anterior de MasterStudy y matriculaciones manuales).
+        // Se añaden los cursos que no estén ya en la tabla custom.
         $meta_rows = $wpdb->get_results(
             $wpdb->prepare(
                 "SELECT meta_key, meta_value FROM {$wpdb->usermeta}
@@ -4479,17 +4514,22 @@ class FairPlay_LMS_Users_Controller {
             )
         );
         foreach ( $meta_rows as $row ) {
-            if ( ! preg_match( '/^stm_lms_course_(\d+)$/', $row->meta_key, $m ) ) {
+            if ( ! preg_match( '/^stm_lms_course_(\d+)$/', $row->meta_key, $rm ) ) {
                 continue;
             }
-            $cid   = (int) $m[1];
+            $cid = (int) $rm[1];
+            if ( ! isset( $enrolled_ids[ $cid ] ) ) {
+                $enrolled_ids[ $cid ] = maybe_unserialize( $row->meta_value );
+            }
+        }
+
+        foreach ( $enrolled_ids as $cid => $prog_data ) {
             $cpost = get_post( $cid );
             if ( ! $cpost || FairPlay_LMS_Config::MS_PT_COURSE !== $cpost->post_type ) {
                 continue;
             }
-            $prog_data = maybe_unserialize( $row->meta_value );
-            $percent   = 0.0;
-            $status    = '';
+            $percent = 0.0;
+            $status  = '';
             if ( is_array( $prog_data ) ) {
                 $percent = isset( $prog_data['progress'] ) ? (float) $prog_data['progress']
                          : ( isset( $prog_data['percentage'] ) ? (float) $prog_data['percentage'] : 0.0 );
