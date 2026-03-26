@@ -18,6 +18,7 @@ class FairPlay_LMS_Quiz_Settings {
     const OPTION_FAIL_ENABLED    = 'fplms_quiz_fail_enabled';
     const OPTION_PENDING_MESSAGE = 'fplms_quiz_pending_message';
     const OPTION_EXPIRED_MESSAGE = 'fplms_quiz_expired_message';
+    const OPTION_WEIGHT_DEFAULT  = 'fplms_quiz_weight_default';
     const NONCE_ACTION           = 'fplms_quiz_settings_save';
     const NONCE_FIELD            = 'fplms_quiz_settings_nonce';
 
@@ -79,6 +80,15 @@ class FairPlay_LMS_Quiz_Settings {
             ? sanitize_text_field( wp_unslash( $_POST['fplms_quiz_expired_message'] ) )
             : '';
         update_option( self::OPTION_EXPIRED_MESSAGE, $expired_msg );
+
+        // Modo de ponderación por defecto global
+        $weight_default = isset( $_POST['fplms_weight_default'] )
+            ? sanitize_text_field( wp_unslash( $_POST['fplms_weight_default'] ) )
+            : 'auto';
+        if ( ! in_array( $weight_default, [ 'auto', 'manual' ], true ) ) {
+            $weight_default = 'auto';
+        }
+        update_option( self::OPTION_WEIGHT_DEFAULT, $weight_default );
 
         // Guardar vigencias individuales por quiz
         if ( isset( $_POST['fplms_av'] ) && is_array( $_POST['fplms_av'] ) ) {
@@ -532,6 +542,164 @@ class FairPlay_LMS_Quiz_Settings {
 
                 </div><!-- mensajes de vigencia -->
 
+                <!-- ── Tarjeta: ponderación de preguntas ─────────────────── -->
+                <?php
+                $weight_default = (string) get_option( self::OPTION_WEIGHT_DEFAULT, 'auto' );
+                if ( ! in_array( $weight_default, [ 'auto', 'manual' ], true ) ) {
+                    $weight_default = 'auto';
+                }
+                $all_quizzes_w = get_posts( [
+                    'post_type'      => 'stm-quizzes',
+                    'post_status'    => [ 'publish', 'draft' ],
+                    'posts_per_page' => -1,
+                    'orderby'        => 'title',
+                    'order'          => 'ASC',
+                    'no_found_rows'  => true,
+                ] );
+                ?>
+                <div class="fplms-qs-card" style="margin-top:20px;">
+
+                    <h2 class="fplms-qs-section-title" style="font-size:16px;margin-bottom:6px;">
+                        <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:#667eea;"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14l-5-5 1.41-1.41L12 14.17l7.59-7.59L21 8l-9 9z"/></svg>
+                        Ponderación de Preguntas
+                    </h2>
+                    <p class="fplms-qs-desc" style="margin-bottom:20px;">Define cómo se distribuyen los 100 puntos entre las preguntas de cada test. La ponderación individual se configura en el editor de cada test.</p>
+
+                    <!-- Default global ──────────────────────────────────────── -->
+                    <p class="fplms-qs-section-title">
+                        <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#667eea;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                        Modo por defecto global
+                    </p>
+                    <p class="fplms-qs-desc">Todos los tests nuevos heredarán este comportamiento a menos que se configure individualmente.</p>
+
+                    <div style="display:flex;gap:24px;flex-wrap:wrap;padding:14px 18px;background:#f8f9fc;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:24px;">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;font-size:13px;">
+                            <input type="radio" name="fplms_weight_default" value="auto"
+                                   style="accent-color:#667eea;cursor:pointer;"
+                                   <?php checked( 'auto', $weight_default ); ?>>
+                            <span>
+                                <strong>Automática</strong><br>
+                                <span style="font-size:12px;color:#6b7280;font-weight:400;">Los 100 puntos se reparten en partes iguales entre todas las preguntas.</span>
+                            </span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;font-size:13px;">
+                            <input type="radio" name="fplms_weight_default" value="manual"
+                                   style="accent-color:#667eea;cursor:pointer;"
+                                   <?php checked( 'manual', $weight_default ); ?>>
+                            <span>
+                                <strong>Manual</strong><br>
+                                <span style="font-size:12px;color:#6b7280;font-weight:400;">El administrador asigna el peso de cada pregunta en el editor del test.</span>
+                            </span>
+                        </label>
+                    </div>
+
+                    <!-- Resumen por test ────────────────────────────────────── -->
+                    <p class="fplms-qs-section-title" style="margin-bottom:14px;">
+                        <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#667eea;"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+                        Estado por test
+                    </p>
+
+                    <?php if ( empty( $all_quizzes_w ) ) : ?>
+                        <p style="color:#9ca3af;font-style:italic;">No hay tests publicados aún.</p>
+                    <?php else : ?>
+                    <style>
+                        .fplms-wt-sum-table { width:100%; border-collapse:collapse; font-size:13px; }
+                        .fplms-wt-sum-table thead th {
+                            text-align:left; padding:8px 12px;
+                            background:#f3f4f6; color:#6b7280;
+                            font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.4px;
+                            border-bottom:1px solid #e5e7eb;
+                        }
+                        .fplms-wt-sum-table thead th:first-child { border-radius:6px 0 0 0; }
+                        .fplms-wt-sum-table thead th:last-child  { border-radius:0 6px 0 0; }
+                        .fplms-wt-sum-table tbody tr   { border-bottom:1px solid #f3f4f6; transition:background .15s; }
+                        .fplms-wt-sum-table tbody tr:hover { background:#f8f9fc; }
+                        .fplms-wt-sum-table td { padding:9px 12px; vertical-align:middle; }
+                        .fplms-wt-badge {
+                            display:inline-block; padding:3px 9px; border-radius:20px;
+                            font-size:11px; font-weight:600; white-space:nowrap;
+                        }
+                        .fplms-wt-badge.b-auto    { background:#e0f2fe; color:#0369a1; }
+                        .fplms-wt-badge.b-manual  { background:#ede9fe; color:#5b21b6; }
+                        .fplms-wt-badge.b-ok      { background:#dcfce7; color:#16a34a; }
+                        .fplms-wt-badge.b-warn    { background:#fef9c3; color:#854d0e; }
+                        .fplms-wt-badge.b-inherit { background:#f3f4f6; color:#6b7280; }
+                        .fplms-wt-edit-link {
+                            color:#a78bfa; text-decoration:none;
+                            font-size:11px; padding:2px 7px;
+                            border:1px solid #ede9fe; border-radius:4px;
+                            transition:background .15s;
+                        }
+                        .fplms-wt-edit-link:hover { background:#ede9fe; }
+                    </style>
+                    <div style="overflow-x:auto;">
+                    <table class="fplms-wt-sum-table">
+                        <thead>
+                            <tr>
+                                <th>Test</th>
+                                <th style="width:130px;">Modo efectivo</th>
+                                <th style="width:100px;">Preguntas</th>
+                                <th style="width:160px;">Estado ponderación</th>
+                                <th style="width:80px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ( $all_quizzes_w as $wquiz ) :
+                            $wq_id        = $wquiz->ID;
+                            $wq_mode_raw  = (string) get_post_meta( $wq_id, FairPlay_LMS_Quiz_Weights::META_MODE, true );
+                            $wq_effective = ( '' !== $wq_mode_raw ) ? $wq_mode_raw : $weight_default;
+                            $wq_q_ids     = FairPlay_LMS_Quiz_Weights::get_question_ids( $wq_id );
+                            $wq_count     = count( $wq_q_ids );
+
+                            // Badge modo
+                            if ( '' === $wq_mode_raw ) {
+                                $mode_class = 'b-inherit';
+                                $mode_label = 'Heredado (' . ( 'manual' === $weight_default ? 'Manual' : 'Auto' ) . ')';
+                            } elseif ( 'manual' === $wq_mode_raw ) {
+                                $mode_class = 'b-manual'; $mode_label = 'Manual';
+                            } else {
+                                $mode_class = 'b-auto'; $mode_label = 'Automática';
+                            }
+
+                            // Badge estado
+                            if ( 'auto' === $wq_effective ) {
+                                $st_class = 'b-auto'; $st_label = 'Distribución equitativa';
+                            } else {
+                                $saved_wraw = get_post_meta( $wq_id, FairPlay_LMS_Quiz_Weights::META_WEIGHTS, true );
+                                $saved_wdec = is_string( $saved_wraw ) ? json_decode( $saved_wraw, true ) : null;
+                                if ( is_array( $saved_wdec ) && ! empty( $saved_wdec ) ) {
+                                    $wsum = round( array_sum( array_values( $saved_wdec ) ), 2 );
+                                    if ( abs( $wsum - 100 ) < 0.02 ) {
+                                        $st_class = 'b-ok'; $st_label = 'Configurado (= 100)';
+                                    } else {
+                                        $st_class = 'b-warn'; $st_label = 'Configurado (≠ 100)';
+                                    }
+                                } else {
+                                    $st_class = 'b-warn'; $st_label = 'Sin configurar';
+                                }
+                            }
+
+                            $edit_url = get_edit_post_link( $wq_id );
+                        ?>
+                        <tr>
+                            <td style="font-weight:500;color:#1f2937;"><?php echo esc_html( $wquiz->post_title ); ?></td>
+                            <td><span class="fplms-wt-badge <?php echo esc_attr( $mode_class ); ?>"><?php echo esc_html( $mode_label ); ?></span></td>
+                            <td style="color:#6b7280;"><?php echo esc_html( $wq_count ); ?> pregunta<?php echo $wq_count !== 1 ? 's' : ''; ?></td>
+                            <td><span class="fplms-wt-badge <?php echo esc_attr( $st_class ); ?>"><?php echo esc_html( $st_label ); ?></span></td>
+                            <td>
+                                <?php if ( $edit_url ) : ?>
+                                <a href="<?php echo esc_url( $edit_url ); ?>" target="_blank" class="fplms-wt-edit-link">Configurar</a>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    </div>
+                    <?php endif; ?>
+
+                </div><!-- ponderación de preguntas -->
+
                 <div style="margin-top:24px;max-width:860px;">
                     <button type="submit" class="fplms-qs-save-btn">
                         <svg viewBox="0 0 24 24" style="width:16px;height:16px;"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
@@ -643,5 +811,13 @@ class FairPlay_LMS_Quiz_Settings {
      */
     public static function get_expired_message(): string {
         return (string) get_option( self::OPTION_EXPIRED_MESSAGE, '' );
+    }
+
+    /**
+     * Devuelve el modo de ponderación por defecto global: 'auto' o 'manual'.
+     */
+    public static function get_weight_default_mode(): string {
+        $opt = (string) get_option( self::OPTION_WEIGHT_DEFAULT, 'auto' );
+        return in_array( $opt, [ 'auto', 'manual' ], true ) ? $opt : 'auto';
     }
 }

@@ -76,6 +76,11 @@ class FairPlay_LMS_Plugin {
     private $quiz_availability;
 
     /**
+     * @var FairPlay_LMS_Quiz_Weights
+     */
+    private $quiz_weights;
+
+    /**
      * @var FairPlay_LMS_Survey
      */
     private $survey;
@@ -95,6 +100,7 @@ class FairPlay_LMS_Plugin {
         $this->onboarding     = new FairPlay_LMS_Onboarding();
         $this->quiz_settings     = new FairPlay_LMS_Quiz_Settings();
         $this->quiz_availability  = new FairPlay_LMS_Quiz_Availability();
+        $this->quiz_weights       = new FairPlay_LMS_Quiz_Weights();
         $this->survey             = new FairPlay_LMS_Survey();
         $this->menu           = new FairPlay_LMS_Admin_Menu(
             $this->pages,
@@ -278,6 +284,9 @@ class FairPlay_LMS_Plugin {
 
         // Vigencia de quizzes: metabox + enforcement REST
         $this->quiz_availability->register_hooks();
+
+        // Ponderación de preguntas: metabox + score filter REST
+        $this->quiz_weights->register_hooks();
 
         // Encuestas de Satisfacción
         add_action( 'admin_init',                                              [ $this->survey, 'maybe_create_table' ], 1 );

@@ -4517,11 +4517,33 @@ class FairPlay_LMS_Users_Controller {
         }
         ?>
         <div class="wrap">
-            <h1>👁️ Información de: <?php echo esc_html( trim( $first_name . ' ' . $last_name ) ); ?></h1>
-            <p>
-                <a href="<?php echo esc_url( admin_url( 'admin.php?page=fplms-users' ) ); ?>" class="button">← Volver a la lista</a>
-                &nbsp;
-                <a href="<?php echo esc_url( add_query_arg( [ 'action' => 'edit', 'user_id' => $user_id ], admin_url( 'admin.php?page=fplms-users' ) ) ); ?>" class="button button-primary">✏️ Editar usuario</a>
+            <h1 style="display:flex;align-items:center;gap:10px;">
+                <svg viewBox="0 0 24 24" style="width:26px;height:26px;fill:#667eea;flex-shrink:0;"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                Información de: <?php echo esc_html( trim( $first_name . ' ' . $last_name ) ); ?>
+            </h1>
+            <p style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <a href="<?php echo esc_url( admin_url( 'admin.php?page=fplms-users' ) ); ?>" class="button" style="display:inline-flex;align-items:center;gap:5px;">
+                    <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    Volver a la lista
+                </a>
+                <a href="<?php echo esc_url( add_query_arg( [ 'action' => 'edit', 'user_id' => $user_id ], admin_url( 'admin.php?page=fplms-users' ) ) ); ?>" class="button button-primary" style="display:inline-flex;align-items:center;gap:5px;">
+                    <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                    Editar usuario
+                </a>
+                <?php
+                $reset_pw_url = wp_nonce_url(
+                    add_query_arg(
+                        [ 'action' => 'resetpassword', 'users' => $user_id ],
+                        admin_url( 'users.php' )
+                    ),
+                    'bulk-users'
+                );
+                ?>
+                <a href="<?php echo esc_url( $reset_pw_url ); ?>" class="button" style="display:inline-flex;align-items:center;gap:5px;"
+                   onclick="return confirm('\u00bfEnviar correo de restablecimiento de contrase\u00f1a a <?php echo esc_js( $user->user_email ); ?>?');">
+                    <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4l4-4-4-4v4h-4.35zM7 16c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4z"/></svg>
+                    Enviar nueva contraseña
+                </a>
             </p>
 
             <style>
@@ -4637,6 +4659,11 @@ class FairPlay_LMS_Users_Controller {
                     box-shadow: 0 4px 15px rgba(102,126,234,.4);
                 }
                 .fplms-view-actions .btn-edit:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(102,126,234,.5); }
+                .fplms-view-actions .btn-reset {
+                    background: #fff; color: #d97706;
+                    border: 2px solid #fde68a;
+                }
+                .fplms-view-actions .btn-reset:hover { background: #fffbeb; border-color: #f59e0b; }
                 .fplms-view-actions svg { width: 16px; height: 16px; fill: currentColor; }
 
                 /* ── Courses section ── */
@@ -4970,6 +4997,23 @@ class FairPlay_LMS_Users_Controller {
                         </div>
                     <?php endif; ?>
                 </div><!-- .fplms-user-courses-card -->
+
+                <!-- Barra de acciones inferior -->
+                <div class="fplms-view-actions">
+                    <a href="<?php echo esc_url( admin_url( 'admin.php?page=fplms-users' ) ); ?>" class="btn-back">
+                        <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                        Volver a usuarios
+                    </a>
+                    <a href="<?php echo esc_url( add_query_arg( [ 'action' => 'edit', 'user_id' => $user_id ], admin_url( 'admin.php?page=fplms-users' ) ) ); ?>" class="btn-edit">
+                        <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+                        Editar usuario
+                    </a>
+                    <a href="<?php echo esc_url( $reset_pw_url ); ?>" class="btn-reset"
+                       onclick="return confirm('\u00bfEnviar correo de restablecimiento de contrase\u00f1a a <?php echo esc_js( $user->user_email ); ?>?');">
+                        <svg viewBox="0 0 24 24"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4l4-4-4-4v4h-4.35zM7 16c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4z"/></svg>
+                        Enviar nueva contraseña
+                    </a>
+                </div><!-- .fplms-view-actions -->
 
             </div><!-- .fplms-edit-user-container -->
         </div><!-- .wrap -->

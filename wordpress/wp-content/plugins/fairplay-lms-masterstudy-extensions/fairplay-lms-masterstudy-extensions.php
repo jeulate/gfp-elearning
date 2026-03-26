@@ -90,6 +90,7 @@ require_once FPLMS_PLUGIN_DIR . 'admin/class-fplms-audit-admin.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-onboarding.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-quiz-settings.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-quiz-availability.php';
+require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-quiz-weights.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-survey.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-pages.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-menu.php';
