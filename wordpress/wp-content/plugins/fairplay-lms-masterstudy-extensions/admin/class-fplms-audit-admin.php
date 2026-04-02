@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * FairPlay LMS Audit Log Admin Interface
  *
@@ -61,10 +61,12 @@ class FairPlay_LMS_Audit_Admin {
 			wp_die( 'No tienes permisos para acceder a esta página.' );
 		}
 
-		// Procesar exportación si se solicita
-		if ( isset( $_GET['action'] ) && $_GET['action'] === 'export_csv' && check_admin_referer( 'fplms_export_audit' ) ) {
-			$this->export_csv();
-			return;
+		// Procesar exportaciones
+		if ( isset( $_GET['action'] ) && check_admin_referer( 'fplms_export_audit' ) ) {
+			if ( 'export_csv' === sanitize_key( $_GET['action'] ) ) {
+				$this->export_csv();
+				return;
+			}
 		}
 
 		// Obtener filtros
@@ -190,10 +192,13 @@ class FairPlay_LMS_Audit_Admin {
 	 * @return void
 	 */
 	private function render_filters( array $filters ): void {
-		$export_url = wp_nonce_url(
-			add_query_arg( 'action', 'export_csv', admin_url( 'admin.php?page=fairplay-lms-audit' ) ),
-			'fplms_export_audit'
-		);
+		// URLs de exportación con los filtros activos
+		$base = [ 'page' => 'fairplay-lms-audit' ];
+		if ( ! empty( $filters['action'] ) )      { $base['filter_action']    = $filters['action']; }
+		if ( ! empty( $filters['entity_type'] ) ) { $base['filter_entity']    = $filters['entity_type']; }
+		if ( ! empty( $filters['date_from'] ) )   { $base['filter_date_from'] = $filters['date_from']; }
+		if ( ! empty( $filters['date_to'] ) )     { $base['filter_date_to']   = $filters['date_to']; }
+		$export_csv_url = wp_nonce_url( add_query_arg( $base + [ 'action' => 'export_csv' ], admin_url( 'admin.php' ) ), 'fplms_export_audit' );
 		?>
 		<div class="fplms-audit-filters" style="background: #fff; padding: 15px; margin: 20px 0; border: 1px solid #ccd0d4;">
 			<form method="get" action="">
@@ -255,15 +260,92 @@ class FairPlay_LMS_Audit_Admin {
 						<label for="filter_date_to" style="display: block; font-weight: 600; margin-bottom: 5px;">Hasta</label>
 						<input type="date" name="filter_date_to" id="filter_date_to" value="<?php echo esc_attr( $filters['date_to'] ); ?>" style="width: 100%;">
 					</div>
+
+					<div>
+						<label for="filter_period" style="display: block; font-weight: 600; margin-bottom: 5px;">Período Rápido</label>
+						<select id="filter_period" style="width: 100%;">
+							<option value="">— Seleccionar —</option>
+							<?php
+							$cy = (int) date( 'Y' );
+							for ( $y = $cy; $y >= $cy - 3; $y-- ) {
+								$y_esc = esc_attr( $y );
+								echo "<optgroup label=\"{$y_esc}\">";
+								echo "<option value=\"{$y_esc}-full\">{$y_esc} — Año completo</option>";
+								echo "<option value=\"{$y_esc}-S1\">{$y_esc} — 1er Semestre (Ene–Jun)</option>";
+								echo "<option value=\"{$y_esc}-S2\">{$y_esc} — 2do Semestre (Jul–Dic)</option>";
+								echo "<option value=\"{$y_esc}-Q1\">{$y_esc} — T1 Trimestre (Ene–Mar)</option>";
+								echo "<option value=\"{$y_esc}-Q2\">{$y_esc} — T2 Trimestre (Abr–Jun)</option>";
+								echo "<option value=\"{$y_esc}-Q3\">{$y_esc} — T3 Trimestre (Jul–Sep)</option>";
+								echo "<option value=\"{$y_esc}-Q4\">{$y_esc} — T4 Trimestre (Oct–Dic)</option>";
+								echo '</optgroup>';
+							}
+							?>
+						</select>
+					</div>
 				</div>
 
-				<div style="display: flex; gap: 10px;">
+				<div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
 					<button type="submit" class="button button-primary">🔍 Filtrar</button>
-					<a href="<?php echo esc_url( admin_url( 'admin.php?page=fairplay-lms-audit' ) ); ?>" class="button">🔄 Limpiar Filtros</a>
-					<a href="<?php echo esc_url( $export_url ); ?>" class="button" style="margin-left: auto;">📥 Exportar CSV</a>
+					<a href="<?php echo esc_url( admin_url( 'admin.php?page=fairplay-lms-audit' ) ); ?>" class="button">🔄 Limpiar</a>
+					<a href="<?php echo esc_url( $export_csv_url ); ?>"
+					   class="button"
+					   title="Exportar CSV (todos los registros filtrados, sin límite de paginación)"
+					   style="display:inline-flex;align-items:center;gap:5px;margin-left:auto;">
+						<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;flex-shrink:0;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+						CSV completo
+					</a>
 				</div>
 			</form>
 		</div>
+		<script>
+		(function () {
+			var periodSel = document.getElementById( 'filter_period' );
+			var dateFrom  = document.getElementById( 'filter_date_from' );
+			var dateTo    = document.getElementById( 'filter_date_to' );
+			if ( ! periodSel || ! dateFrom || ! dateTo ) { return; }
+
+			var periodMap = {
+				'full': function (y) { return [ y + '-01-01', y + '-12-31' ]; },
+				'S1':   function (y) { return [ y + '-01-01', y + '-06-30' ]; },
+				'S2':   function (y) { return [ y + '-07-01', y + '-12-31' ]; },
+				'Q1':   function (y) { return [ y + '-01-01', y + '-03-31' ]; },
+				'Q2':   function (y) { return [ y + '-04-01', y + '-06-30' ]; },
+				'Q3':   function (y) { return [ y + '-07-01', y + '-09-30' ]; },
+				'Q4':   function (y) { return [ y + '-10-01', y + '-12-31' ]; },
+			};
+
+			// Detectar período al cargar si las fechas coinciden
+			(function detectPeriod() {
+				var from = dateFrom.value, to = dateTo.value;
+				if ( ! from || ! to ) { return; }
+				var year = from.substring( 0, 4 );
+				for ( var code in periodMap ) {
+					var d = periodMap[ code ]( year );
+					if ( d[0] === from && d[1] === to ) {
+						periodSel.value = year + '-' + code;
+						return;
+					}
+				}
+			} )();
+
+			// Período → fechas
+			periodSel.addEventListener( 'change', function () {
+				var val = this.value;
+				if ( ! val ) { return; }
+				var year = val.substring( 0, 4 );
+				var code = val.substring( 5 );
+				if ( periodMap[ code ] ) {
+					var d = periodMap[ code ]( year );
+					dateFrom.value = d[0];
+					dateTo.value   = d[1];
+				}
+			} );
+
+			// Fecha manual → limpiar período
+			dateFrom.addEventListener( 'change', function () { periodSel.value = ''; } );
+			dateTo.addEventListener(   'change', function () { periodSel.value = ''; } );
+		} )();
+		</script>
 		<?php
 	}
 
@@ -279,30 +361,60 @@ class FairPlay_LMS_Audit_Admin {
 	 */
 	private function render_logs_table( array $logs, int $current_page, int $total_pages, int $total_logs, int $per_page ): void {
 		?>
+		<style>
+		.fplms-audit-dl-wrap{position:relative;display:inline-flex;}
+		.fplms-audit-dl-btn{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;background:#2271b1;color:#fff!important;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;line-height:2;}
+		.fplms-audit-dl-btn:hover{background:#135e96;}
+		.fplms-audit-dl-drop{display:none;position:absolute;top:calc(100% + 4px);right:0;background:#fff;border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);min-width:165px;z-index:9999;overflow:hidden;}
+		.fplms-audit-dl-drop.open{display:block;}
+		.fplms-audit-dl-item{display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:13px;color:#374151;cursor:pointer;border:none;background:none;width:100%;text-align:left;}
+		.fplms-audit-dl-item:hover{background:#f3f4f6;}
+		.fplms-audit-cb{cursor:pointer;width:15px;height:15px;margin:0;}
+		</style>
 		<div class="fplms-audit-table">
 			<div style="background: #fff; padding: 15px; border: 1px solid #ccd0d4;">
-				<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-					<h3 style="margin: 0;">Registros de Auditoría (<?php echo esc_html( number_format( $total_logs ) ); ?> total)</h3>
-					
-					<form method="get" action="" style="margin: 0;">
-						<input type="hidden" name="page" value="fairplay-lms-audit">
-						<?php
-						// Mantener todos los filtros actuales
-						foreach ( $_GET as $key => $value ) {
-							if ( $key !== 'page' && $key !== 'per_page' && $key !== 'paged' ) {
-								echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( $value ) . '">';
+				<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap:10px; flex-wrap:wrap;">
+					<div style="display:flex;align-items:center;gap:12px;">
+						<h3 style="margin: 0;">Registros de Auditoría (<?php echo esc_html( number_format( $total_logs ) ); ?> total)</h3>
+						<span id="fplms-audit-sel-label" style="font-size:12px;color:#667eea;font-weight:600;background:#eef2ff;padding:2px 8px;border-radius:12px;display:none;"></span>
+					</div>
+					<div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+						<form method="get" action="" style="margin: 0;">
+							<input type="hidden" name="page" value="fairplay-lms-audit">
+							<?php
+							foreach ( $_GET as $key => $value ) {
+								if ( $key !== 'page' && $key !== 'per_page' && $key !== 'paged' ) {
+									echo '<input type="hidden" name="' . esc_attr( $key ) . '" value="' . esc_attr( $value ) . '">';
+								}
 							}
-						}
-						?>
-						<label for="per_page" style="margin-right: 5px; font-weight: 600;">Mostrar:</label>
-						<select name="per_page" id="per_page" onchange="this.form.submit()" style="padding: 6px 30px 6px 10px; min-width: 70px; border: 1px solid #8c8f94; border-radius: 4px; background-color: #fff; font-size: 13px; cursor: pointer;">
-							<option value="10" <?php selected( $per_page, 10 ); ?>>10</option>
-							<option value="20" <?php selected( $per_page, 20 ); ?>>20</option>
-							<option value="50" <?php selected( $per_page, 50 ); ?>>50</option>
-							<option value="100" <?php selected( $per_page, 100 ); ?>>100</option>
-						</select>
-						<span style="margin-left: 5px;">registros por página</span>
-					</form>
+							?>
+							<label for="per_page" style="margin-right: 5px; font-weight: 600;">Mostrar:</label>
+							<select name="per_page" id="per_page" onchange="this.form.submit()" style="padding: 6px 30px 6px 10px; min-width: 70px; border: 1px solid #8c8f94; border-radius: 4px; background-color: #fff; font-size: 13px; cursor: pointer;">
+								<option value="10" <?php selected( $per_page, 10 ); ?>>10</option>
+								<option value="20" <?php selected( $per_page, 20 ); ?>>20</option>
+								<option value="50" <?php selected( $per_page, 50 ); ?>>50</option>
+								<option value="100" <?php selected( $per_page, 100 ); ?>>100</option>
+							</select>
+							<span style="margin-left: 5px;">registros por página</span>
+						</form>
+						<div class="fplms-audit-dl-wrap">
+							<button type="button" class="fplms-audit-dl-btn" onclick="fplmsAuditToggleDl(event)">
+								<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:#fff;flex-shrink:0;"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+								Descargar
+								<svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:#fff;margin-left:2px;"><path d="M7 10l5 5 5-5z"/></svg>
+							</button>
+							<div id="fplms-audit-dl-drop" class="fplms-audit-dl-drop">
+								<button type="button" class="fplms-audit-dl-item" onclick="fplmsAuditExportXLS()">
+									<svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#217346;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zM7 17l2-3-2-3h1.7l1.3 2 1.3-2H13l-2 3 2 3h-1.7L10 18l-1.3 2H7z"/></svg>
+									Excel (.xls)
+								</button>
+								<button type="button" class="fplms-audit-dl-item" onclick="fplmsAuditExportPDF()">
+									<svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#e53e3e;"><path d="M20 2H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8.5 7.5c0 .83-.67 1.5-1.5 1.5H9v2H7.5V7H10c.83 0 1.5.67 1.5 1.5v1zm5 2c0 .83-.67 1.5-1.5 1.5h-2.5V7H15c.83 0 1.5.67 1.5 1.5v3zm4-3H19v1h1.5V11H19v2h-1.5V7h3v1.5zM9 9.5h1v-1H9v1zM13 11h1V8.5h-1V11z"/></svg>
+									PDF / Imprimir
+								</button>
+							</div>
+						</div>
+					</div>
 				</div>
 				
 				<?php if ( empty( $logs ) ) : ?>
@@ -316,6 +428,7 @@ class FairPlay_LMS_Audit_Admin {
 					<table class="wp-list-table widefat fixed striped" style="margin-top: 15px;">
 						<thead>
 							<tr>
+								<th style="width:34px;text-align:center;"><input type="checkbox" id="fplms-audit-select-all" class="fplms-audit-cb" title="Seleccionar todo"></th>
 								<th style="width: 60px;">ID</th>
 								<th style="width: 150px;">Fecha/Hora</th>
 								<th style="width: 120px;">Usuario</th>
@@ -329,14 +442,22 @@ class FairPlay_LMS_Audit_Admin {
 						</thead>
 						<tbody>
 							<?php foreach ( $logs as $log ) : ?>
-								<tr>
+								<?php $dt_r = new DateTime( $log['timestamp'] ); ?>
+								<tr class="fplms-audit-row"
+									data-log-id="<?php echo esc_attr( $log['id'] ); ?>"
+									data-date="<?php echo esc_attr( $dt_r->format( 'd/m/Y' ) ); ?>"
+									data-time="<?php echo esc_attr( $dt_r->format( 'H:i:s' ) ); ?>"
+									data-user="<?php echo esc_attr( $log['user_name'] ); ?>"
+									data-action="<?php echo esc_attr( $this->format_action_plain( $log['action'] ) ); ?>"
+									data-type="<?php echo esc_attr( $log['entity_type'] ); ?>"
+									data-entity="<?php echo esc_attr( $log['entity_title'] ?: '#' . $log['entity_id'] ); ?>"
+									data-entity-id="<?php echo esc_attr( $log['entity_id'] ); ?>"
+									data-ip="<?php echo esc_attr( $log['ip_address'] ?? '' ); ?>"
+									data-old="<?php echo esc_attr( $log['old_value'] ?? '' ); ?>"
+									data-new="<?php echo esc_attr( $log['new_value'] ?? '' ); ?>">
+									<td style="text-align:center;"><input type="checkbox" class="fplms-audit-cb" style="margin:0;"></td>
 									<td><strong><?php echo esc_html( $log['id'] ); ?></strong></td>
-									<td>
-										<?php
-										$date = new DateTime( $log['timestamp'] );
-										echo esc_html( $date->format( 'd/m/Y H:i' ) );
-										?>
-									</td>
+									<td><?php echo esc_html( $dt_r->format( 'd/m/Y H:i' ) ); ?></td>
 									<td><?php echo esc_html( $log['user_name'] ); ?></td>
 									<td><?php echo esc_html( $this->format_action( $log['action'] ) ); ?></td>
 									<td>
@@ -362,7 +483,7 @@ class FairPlay_LMS_Audit_Admin {
 									</td>
 								</tr>
 								<tr id="fplms-details-<?php echo esc_attr( $log['id'] ); ?>" style="display: none;">
-									<td colspan="9" style="background: #f9f9f9; padding: 15px;">
+									<td colspan="10" style="background: #f9f9f9; padding: 15px;">
 										<?php
 										// Intentar mostrar cambios en formato mejorado si ambos valores son JSON
 										if ( $log['old_value'] && $log['new_value'] ) {
@@ -712,6 +833,157 @@ class FairPlay_LMS_Audit_Admin {
 				fplmsAuditCloseModal();
 			}
 		});
+
+		/* ── Dropdown Descargar ── */
+		window.fplmsAuditToggleDl = function(e) {
+			e.stopPropagation();
+			var dd = document.getElementById('fplms-audit-dl-drop');
+			if (dd) { dd.classList.toggle('open'); }
+		};
+		document.addEventListener('click', function(e) {
+			var dd = document.getElementById('fplms-audit-dl-drop');
+			if (dd && !e.target.closest('.fplms-audit-dl-wrap')) { dd.classList.remove('open'); }
+		});
+
+		/* ── Select-All checkbox ── */
+		var selectAll = document.getElementById('fplms-audit-select-all');
+		if (selectAll) {
+			selectAll.addEventListener('change', function() {
+				document.querySelectorAll('.fplms-audit-cb:not(#fplms-audit-select-all)').forEach(function(cb) {
+					cb.checked = selectAll.checked;
+				});
+				fplmsAuditUpdateSelLabel();
+			});
+		}
+		document.addEventListener('change', function(e) {
+			if (e.target && e.target.classList.contains('fplms-audit-cb') && e.target.id !== 'fplms-audit-select-all') {
+				fplmsAuditUpdateSelLabel();
+			}
+		});
+		function fplmsAuditUpdateSelLabel() {
+			var n   = document.querySelectorAll('.fplms-audit-cb:not(#fplms-audit-select-all):checked').length;
+			var lbl = document.getElementById('fplms-audit-sel-label');
+			if (!lbl) { return; }
+			if (n > 0) { lbl.textContent = n + ' seleccionado' + (n > 1 ? 's' : ''); lbl.style.display = 'inline'; }
+			else       { lbl.style.display = 'none'; }
+		}
+
+		/* ── Helpers de exportación ── */
+		function fplmsHtmlEsc(s) {
+			return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+		}
+		function fplmsComputeChanges(oldStr, newStr) {
+			if (!oldStr && !newStr) { return ''; }
+			var old = {}, nw = {};
+			try { old = JSON.parse(oldStr); } catch(e) {}
+			try { nw  = JSON.parse(newStr); } catch(e) {}
+			if (typeof old !== 'object' || old === null || typeof nw !== 'object' || nw === null) {
+				var p = [];
+				if (oldStr) { p.push('Anterior: ' + oldStr.substring(0,120)); }
+				if (newStr) { p.push('Nuevo: '    + newStr.substring(0,120)); }
+				return p.join(' | ');
+			}
+			var labels = {
+				email:'Email', first_name:'Nombre', last_name:'Apellido', id_usuario:'ID Usuario',
+				role:'Rol', city_id:'Ciudad', company_id:'Empresa', channel_id:'Canal',
+				branch_id:'Sucursal', role_id:'Cargo', name:'Nombre', slug:'Slug',
+				description:'Descripción', parent:'Padre', active:'Activo', status:'Estado',
+				title:'Título', content:'Contenido', price:'Precio', duration:'Duración',
+				level:'Nivel', passing_grade:'Nota Mínima', questions_count:'Nº Preguntas'
+			};
+			var keys = Object.keys(Object.assign({}, old, nw));
+			var lines = [];
+			keys.forEach(function(k) {
+				var ov = (old[k] === undefined || old[k] === null) ? '' : (typeof old[k] === 'object' ? JSON.stringify(old[k]) : String(old[k]));
+				var nv = (nw[k]  === undefined || nw[k]  === null) ? '' : (typeof nw[k]  === 'object' ? JSON.stringify(nw[k])  : String(nw[k]));
+				if (ov !== nv) {
+					var label = labels[k] || k.replace(/_/g,' ');
+					if (ov.length > 70) { ov = ov.substring(0,67) + '...'; }
+					if (nv.length > 70) { nv = nv.substring(0,67) + '...'; }
+					lines.push(label + ': "' + (ov||'(vacío)') + '" → "' + (nv||'(vacío)') + '"');
+				}
+			});
+			return lines.join('\n');
+		}
+		function fplmsAuditGetRows() {
+			var checked = document.querySelectorAll('.fplms-audit-cb:not(#fplms-audit-select-all):checked');
+			if (checked.length > 0) {
+				return Array.from(checked).map(function(cb) { return cb.closest('tr.fplms-audit-row'); }).filter(Boolean);
+			}
+			return Array.from(document.querySelectorAll('tr.fplms-audit-row'));
+		}
+
+		/* ── Exportar Excel (.xls) ── */
+		window.fplmsAuditExportXLS = function() {
+			var rows = fplmsAuditGetRows();
+			var selCount = document.querySelectorAll('.fplms-audit-cb:not(#fplms-audit-select-all):checked').length;
+			var headers = ['ID','Fecha','Hora','Administrador','Acción','Tipo','Entidad','ID Entidad','Detalle de Cambios','IP'];
+			var t = '<table border="1" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:11px;">';
+			t += '<thead><tr>' + headers.map(function(h) {
+				return '<th style="background:#2271b1;color:#fff;padding:7px 10px;font-weight:bold;white-space:nowrap;">' + h + '</th>';
+			}).join('') + '</tr></thead><tbody>';
+			rows.forEach(function(row) {
+				var d = row.dataset;
+				var changes = fplmsComputeChanges(d.old || '', d['new'] || '');
+				var vals = [d.logId, d.date, d.time, d.user, d.action, d.type, d.entity, d.entityId, changes, d.ip];
+				t += '<tr>' + vals.map(function(v, i) {
+					var wrap = i === 8 ? 'white-space:pre-wrap;max-width:300px;' : '';
+					return '<td style="padding:5px 8px;vertical-align:top;' + wrap + '">' + fplmsHtmlEsc(v || '') + '</td>';
+				}).join('') + '</tr>';
+			});
+			t += '</tbody></table>';
+			var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' + t + '</body></html>';
+			var blob = new Blob(["\uFEFF" + html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+			var a = document.createElement('a');
+			a.href = URL.createObjectURL(blob);
+			a.download = 'bitacora-auditoria' + (selCount > 0 ? '-seleccion' : '') + '-' + new Date().toISOString().slice(0,10) + '.xls';
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(a.href);
+			var dd = document.getElementById('fplms-audit-dl-drop');
+			if (dd) { dd.classList.remove('open'); }
+		};
+
+		/* ── Exportar PDF (ventana de impresión) ── */
+		window.fplmsAuditExportPDF = function() {
+			var rows = fplmsAuditGetRows();
+			var selCount = document.querySelectorAll('.fplms-audit-cb:not(#fplms-audit-select-all):checked').length;
+			var label = selCount > 0 ? selCount + ' seleccionado(s)' : rows.length + ' registro(s)';
+			var headers = ['ID','Fecha','Hora','Administrador','Acción','Tipo','Entidad','Detalle de Cambios','IP'];
+			var t = '<table><thead><tr>' + headers.map(function(h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>';
+			rows.forEach(function(row) {
+				var d = row.dataset;
+				var changes = fplmsComputeChanges(d.old || '', d['new'] || '').replace(/\n/g,'<br>');
+				var vals = [d.logId, d.date, d.time, d.user, d.action, d.type, d.entity, changes, d.ip];
+				t += '<tr>' + vals.map(function(v, i) {
+					return '<td>' + (i === 7 ? (v||'') : fplmsHtmlEsc(v||'')) + '</td>';
+				}).join('') + '</tr>';
+			});
+			t += '</tbody></table>';
+			var win = window.open('', '_blank', 'width=1100,height=750');
+			win.document.write('<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+				+ '<title>Bitácora de Auditoría (' + label + ')</title>'
+				+ '<style>'
+				+ 'body{font-family:Arial,sans-serif;font-size:11px;margin:20px;color:#1f2937;}'
+				+ 'h2{font-size:16px;margin-bottom:6px;color:#1e3a5f;}'
+				+ 'p.meta{font-size:11px;color:#6b7280;margin-bottom:14px;}'
+				+ 'table{width:100%;border-collapse:collapse;}'
+				+ 'th{background:#2271b1;color:#fff;padding:7px 8px;text-align:left;font-size:10px;white-space:nowrap;}'
+				+ 'td{padding:5px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top;font-size:10px;}'
+				+ 'tr:nth-child(even) td{background:#f9fafb;}'
+				+ '.btn{margin-top:16px;padding:8px 20px;background:#2271b1;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;}'
+				+ '@media print{.btn{display:none;} body{margin:6px;}}'
+				+ '</style></head><body>'
+				+ '<h2>Bitácora de Auditoría — FairPlay LMS</h2>'
+				+ '<p class="meta">' + label + ' &mdash; Generado: ' + new Date().toLocaleDateString('es-ES') + '</p>'
+				+ t
+				+ '<br><button class="btn" onclick="window.print()">Imprimir / Guardar como PDF</button>'
+				+ '</body></html>');
+			win.document.close();
+			var dd = document.getElementById('fplms-audit-dl-drop');
+			if (dd) { dd.classList.remove('open'); }
+		};
 		</script>
 		<?php
 	}
@@ -1054,6 +1326,50 @@ class FairPlay_LMS_Audit_Admin {
 		echo "\xEF\xBB\xBF"; // UTF-8 BOM
 		echo $csv;
 		exit;
+	}
+
+	/**
+	 * Extrae los filtros actuales de los parámetros GET para usarlos en la exportación.
+	 */
+	private function get_export_filters(): array {
+		return [
+			'action'      => isset( $_GET['filter_action'] ) ? sanitize_text_field( wp_unslash( $_GET['filter_action'] ) ) : '',
+			'entity_type' => isset( $_GET['filter_entity'] ) ? sanitize_text_field( wp_unslash( $_GET['filter_entity'] ) ) : '',
+			'user_id'     => isset( $_GET['filter_user'] ) ? intval( $_GET['filter_user'] ) : 0,
+			'date_from'   => isset( $_GET['filter_date_from'] ) ? sanitize_text_field( wp_unslash( $_GET['filter_date_from'] ) ) : '',
+			'date_to'     => isset( $_GET['filter_date_to'] ) ? sanitize_text_field( wp_unslash( $_GET['filter_date_to'] ) ) : '',
+		];
+	}
+
+
+	/**
+	 * Nombre de acción sin emojis (para Excel).
+	 */
+	private function format_action_plain( string $action ): string {
+		$map = [
+			'course_created'                           => 'Curso Creado',
+			'course_updated'                           => 'Curso Actualizado',
+			'course_deleted'                           => 'Curso Eliminado',
+			'lesson_added'                             => 'Leccion Agregada',
+			'lesson_updated'                           => 'Leccion Actualizada',
+			'lesson_deleted'                           => 'Leccion Eliminada',
+			'quiz_added'                               => 'Quiz Agregado',
+			'quiz_updated'                             => 'Quiz Actualizado',
+			'quiz_deleted'                             => 'Quiz Eliminado',
+			'user_deactivated'                         => 'Usuario Desactivado',
+			'user_reactivated'                         => 'Usuario Reactivado',
+			'user_permanently_deleted'                 => 'Usuario Eliminado Permanentemente',
+			'user_updated'                             => 'Usuario Actualizado',
+			'structure_created'                        => 'Estructura Creada',
+			'structure_updated'                        => 'Estructura Actualizada',
+			'structure_deleted'                        => 'Estructura Eliminada',
+			'structures_assigned'                      => 'Estructuras Asignadas',
+			'structures_updated'                       => 'Estructuras Actualizadas',
+			'course_structures_synced_from_categories' => 'Sync desde Categorias',
+			'channel_category_sync'                    => 'Canal-Categoria Sync',
+			'channel_unsynced'                         => 'Canal Desvinculado',
+		];
+		return $map[ $action ] ?? ucwords( str_replace( '_', ' ', $action ) );
 	}
 
 	/**
