@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * FairPlay LMS Audit Log Admin Interface
  *

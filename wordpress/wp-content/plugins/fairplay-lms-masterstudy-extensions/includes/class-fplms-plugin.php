@@ -311,6 +311,10 @@ class FairPlay_LMS_Plugin {
         // Administradores tienen control total sobre todos los cursos MasterStudy,
         // independientemente de quién sea el autor del curso.
         add_filter( 'map_meta_cap', [ $this, 'grant_admin_full_course_control' ], 10, 4 );
+
+        // Panel /user-account/: estadísticas personalizadas por rol
+        add_action( 'wp_ajax_fplms_dashboard_stats',  [ $this, 'ajax_dashboard_stats' ] );
+        add_action( 'wp_footer',                       [ $this, 'inject_student_dashboard_script' ] );
     }
 
     /**
@@ -829,6 +833,343 @@ class FairPlay_LMS_Plugin {
         }
         
         return $use_block_editor;
+    }
+
+    /**
+     * Endpoint AJAX: devuelve estadísticas del panel /user-account/ según el tipo solicitado.
+     * type=student  → FairPlay_LMS_Progress_Service::get_student_dashboard_stats()
+     * type=instructor → FairPlay_LMS_Progress_Service::get_instructor_dashboard_stats()
+     */
+    public function ajax_dashboard_stats(): void {
+        if ( ! is_user_logged_in() ) {
+            wp_send_json_error( 'not_logged_in', 403 );
+        }
+
+        check_ajax_referer( 'fplms_dashboard_stats', 'nonce' );
+
+        $type    = isset( $_POST['type'] ) ? sanitize_key( $_POST['type'] ) : 'student';
+        $user_id = get_current_user_id();
+
+        // Modo debug: devuelve los meta de los cursos completados (solo admin)
+        if ( 'debug_hours' === $type && current_user_can( 'manage_options' ) ) {
+            global $wpdb;
+            $stats   = $this->progress->get_student_dashboard_stats( $user_id );
+            // Forzar recálculo limpio sin transient
+            delete_transient( 'fplms_sdash_v2_' . $user_id );
+            $stats2  = $this->progress->get_student_dashboard_stats( $user_id );
+            // Obtener IDs de cursos completados directamente
+            $ms_table = null;
+            foreach ( [ $wpdb->prefix . 'stm_lms_user_courses', $wpdb->prefix . 'stm_lms_users' ] as $t ) {
+                if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t ) {
+                    $ms_table = $t;
+                    break;
+                }
+            }
+            $completed_ids = [];
+            if ( $ms_table ) {
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $rows = $wpdb->get_results( $wpdb->prepare(
+                    "SELECT course_id, progress_percent, status FROM `{$ms_table}` WHERE user_id = %d",
+                    $user_id
+                ) );
+                foreach ( $rows as $r ) {
+                    if ( (float) $r->progress_percent >= 99.9 || strtolower( $r->status ) === 'completed' ) {
+                        $completed_ids[] = (int) $r->course_id;
+                    }
+                }
+            }
+            $meta_dump = [];
+            // Solo dump completo del primer curso para no saturar la respuesta
+            $first_cid = ! empty( $completed_ids ) ? $completed_ids[0] : 0;
+            if ( $first_cid ) {
+                $all_meta = $wpdb->get_results( $wpdb->prepare(
+                    "SELECT meta_key, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d ORDER BY meta_key",
+                    $first_cid
+                ) );
+                $meta_dump[ $first_cid ] = [
+                    'title' => get_the_title( $first_cid ),
+                    'all_metas' => $all_meta,
+                ];
+            }
+            // Además: buscar en tablas custom de MasterStudy
+            $custom_tables = $wpdb->get_results(
+                "SHOW TABLES LIKE '%stm_lms%'"
+            );
+            $stm_tables = array_map( function($r) { return array_values( (array) $r )[0]; }, $custom_tables );
+            wp_send_json_success( [
+                'cached_stats'   => $stats,
+                'fresh_stats'    => $stats2,
+                'completed_ids'  => $completed_ids,
+                'meta_dump'      => $meta_dump,
+                'ms_table'       => $ms_table,
+                'stm_tables'     => $stm_tables,
+            ] );
+        }
+
+        if ( 'instructor' === $type ) {
+            $user_roles = (array) wp_get_current_user()->roles;
+            $is_instructor = in_array( 'stm_lms_instructor', $user_roles, true )
+                          || in_array( 'administrator', $user_roles, true )
+                          || current_user_can( 'manage_options' );
+            if ( ! $is_instructor ) {
+                wp_send_json_error( 'forbidden', 403 );
+            }
+            wp_send_json_success( $this->progress->get_instructor_dashboard_stats( $user_id ) );
+        } else {
+            wp_send_json_success( $this->progress->get_student_dashboard_stats( $user_id ) );
+        }
+    }
+
+    /**
+     * Inyecta en wp_footer el script que reemplaza los bloques de estadísticas del panel
+     * /user-account/ de MasterStudy con métricas relevantes para cada rol:
+     * - Elemento .masterstudy-enrolled-courses-sorting  → vista estudiante (5 métricas)
+     * - Elemento .masterstudy-analytics-short-report-page-stats__wrapper → vista instructor
+     */
+    public function inject_student_dashboard_script(): void {
+        // Solo ejecutar en páginas del frontend con el usuario logueado
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        // Limitar a la URL del panel de cuenta
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        if ( false === strpos( $request_uri, '/user-account' ) ) {
+            return;
+        }
+
+        $ajax_url = admin_url( 'admin-ajax.php' );
+        $nonce    = wp_create_nonce( 'fplms_dashboard_stats' );
+        ?>
+        <script id="fplms-dashboard-stats-script">
+        (function () {
+            'use strict';
+
+            var AJAX_URL   = <?php echo wp_json_encode( $ajax_url ); ?>;
+            var NONCE      = <?php echo wp_json_encode( $nonce ); ?>;
+            var renderedStudent       = false;
+            var renderedInstructor    = false;
+            var searchInjected        = false;
+            var searchInjectedInstr   = false;
+
+            /* ── Barra de búsqueda de cursos ─────────────────────────────────── */
+
+            /**
+             * Inyecta una barra de búsqueda debajo del bloque de estadísticas.
+             * cfg.wrapperId   — id del wrapper del input
+             * cfg.inputId     — id del input
+             * cfg.noResultsId — id del párrafo "sin resultados"
+             * cfg.placeholder — texto del placeholder
+             * cfg.cardSelectors — selector CSS de las tarjetas a filtrar
+             * cfg.scopeSelector — selector del contenedor padre para el MutationObserver
+             */
+            function injectSearchBar( statsEl, cfg ) {
+                if ( document.getElementById( cfg.wrapperId ) ) return;
+
+                var wrapper = document.createElement( 'div' );
+                wrapper.id = cfg.wrapperId;
+                wrapper.style.cssText = 'margin:16px 0 8px;position:relative;padding-bottom:10px;';
+                wrapper.innerHTML =
+                    '<input id="' + cfg.inputId + '" type="search" placeholder="' + cfg.placeholder + '" ' +
+                    'style="width:100%;padding:10px 16px 10px 44px;border:1.5px solid #e0e0e0;border-radius:8px;' +
+                    'font-size:14px;background:#fff;outline:none;box-sizing:border-box;transition:border-color .2s;" />' +
+                    '<svg style="position:absolute;left:14px;top:50%;transform:translateY(-50%);' +
+                    'color:#aaa;pointer-events:none;" width="18" height="18" fill="none" ' +
+                    'viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">' +
+                    '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
+
+                var noResults = document.createElement( 'p' );
+                noResults.id = cfg.noResultsId;
+                noResults.style.cssText = 'display:none;text-align:center;color:#888;padding:24px 0;font-size:14px;margin:0;';
+                noResults.textContent = 'No se encontraron cursos.';
+
+                // insertAnchor permite insertar después de un ancestro específico
+                // (útil cuando statsEl está dentro de un flex container).
+                var anchor = cfg.insertAnchor || statsEl;
+                var parent = anchor.parentNode;
+                parent.insertBefore( wrapper, anchor.nextSibling );
+                parent.insertBefore( noResults, wrapper.nextSibling );
+
+                var input = wrapper.querySelector( 'input' );
+
+                function doFilter() {
+                    var q = input.value.trim().toLowerCase();
+                    var scope = cfg.scopeSelector
+                        ? ( statsEl.closest( cfg.scopeSelector ) || document )
+                        : document;
+                    var cards = scope.querySelectorAll( cfg.cardSelectors );
+                    var found = 0;
+                    cards.forEach( function ( card ) {
+                        var titleEl = card.querySelector(
+                            '.masterstudy-course-card__title, .masterstudy-course-card__name, h3, h4'
+                        );
+                        var title = titleEl ? titleEl.textContent.toLowerCase() : card.textContent.toLowerCase();
+                        var visible = ! q || title.indexOf( q ) !== -1;
+                        card.style.display = visible ? '' : 'none';
+                        if ( visible ) found++;
+                    } );
+                    var nr = document.getElementById( cfg.noResultsId );
+                    if ( nr ) {
+                        nr.style.display = ( q && found === 0 && cards.length > 0 ) ? 'block' : 'none';
+                    }
+                }
+
+                input.addEventListener( 'input', doFilter );
+                input.addEventListener( 'focus', function () { this.style.borderColor = '#ffa800d9'; } );
+                input.addEventListener( 'blur',  function () { this.style.borderColor = '#e0e0e0'; } );
+
+                // Re-filtrar cuando Vue.js re-renderice la lista
+                var listContainer = cfg.scopeSelector
+                    ? ( statsEl.closest( cfg.scopeSelector ) || parent )
+                    : parent;
+                var listObserver = new MutationObserver( function () {
+                    if ( input.value.trim() ) doFilter();
+                } );
+                listObserver.observe( listContainer, { childList: true, subtree: true } );
+            }
+
+            /* ── Helpers de bloque ───────────────────────────────────────────── */
+
+            function mkStudentBlock( iconMod, title, value ) {
+                return '<div class="masterstudy-enrolled-courses-sorting__block-wrapper">' +
+                    '<div class="masterstudy-enrolled-courses-sorting__block">' +
+                    '<div class="masterstudy-enrolled-courses-sorting__block-icon ' +
+                    'masterstudy-enrolled-courses-sorting__block-icon_' + iconMod + '"></div>' +
+                    '<div class="masterstudy-enrolled-courses-sorting__block-content">' +
+                    '<span class="masterstudy-enrolled-courses-sorting__block-title">' + title + '</span>' +
+                    '<span class="masterstudy-enrolled-courses-sorting__block-value">' + value + '</span>' +
+                    '</div></div></div>';
+            }
+
+            function mkInstructorBlock( mod, title, value ) {
+                return '<div class="masterstudy-analytics-short-report-page-stats__block">' +
+                    '<div class="masterstudy-stats-block masterstudy-stats-block_' + mod + '">' +
+                    '<span class="masterstudy-stats-block__icon"></span>' +
+                    '<div class="masterstudy-stats-block__content">' +
+                    '<div class="masterstudy-stats-block__title">' + title + '</div>' +
+                    '<div class="masterstudy-stats-block__value">' + value + '</div>' +
+                    '</div></div></div>';
+            }
+
+            /* ── Render student ──────────────────────────────────────────────── */
+
+            function renderStudent( el, data ) {
+                var avg  = (data.avg_progress || 0) + '%';
+                var hrs  = (data.hours || 0) + ' h';
+                var html = mkStudentBlock( 'courses',      'Cursos Inscritos',   data.enrolled      || 0 )
+                         + mkStudentBlock( 'groups',       'Avance Promedio',    avg                    )
+                         + mkStudentBlock( 'courses',      'Cursos Completados', data.completed     || 0 )
+                         + mkStudentBlock( 'certificates', 'Certificados',       data.certificates  || 0 )
+                         + mkStudentBlock( 'groups',       'Horas de Formación', hrs                    );
+                el.innerHTML = html;
+                renderedStudent = true;
+                if ( ! searchInjected ) {
+                    searchInjected = true;
+                    injectSearchBar( el, {
+                        wrapperId:    'fplms-course-search-wrapper',
+                        inputId:      'fplms-course-search',
+                        noResultsId:  'fplms-no-results',
+                        placeholder:  'Buscar cursos inscritos...',
+                        cardSelectors: '.masterstudy-course-card, .masterstudy-enrolled-courses-list__item, .masterstudy-enrolled-courses__item',
+                        scopeSelector: '.masterstudy-enrolled-courses'
+                    } );
+                }
+            }
+
+            /* ── Render instructor ───────────────────────────────────────────── */
+
+            function renderInstructor( el, data ) {
+                var avgP = (data.avg_student_progress || 0) + '%';
+                var html = mkInstructorBlock( 'courses',              'Cursos Creados',       data.created_courses    || 0 )
+                         + mkInstructorBlock( 'orders',               'Cursos por Vencer',    data.expiring_courses   || 0 )
+                         + mkInstructorBlock( 'students',             'Estudiantes Inscritos', data.total_students    || 0 )
+                         + mkInstructorBlock( 'enrollments',          'Avance Promedio',       avgP                       )
+                         + mkInstructorBlock( 'certificates_created', 'Certificados Emitidos', data.total_certificates || 0 );
+                el.innerHTML = html;
+                renderedInstructor = true;
+                if ( ! searchInjectedInstr ) {
+                    searchInjectedInstr = true;
+                    injectSearchBar( el, {
+                        wrapperId:    'fplms-instr-search-wrapper',
+                        inputId:      'fplms-instr-search',
+                        noResultsId:  'fplms-instr-no-results',
+                        placeholder:  'Buscar cursos creados...',
+                        cardSelectors: '.masterstudy-course-card, .masterstudy-courses-list__item, .masterstudy-my-courses__item, .masterstudy-instructor-courses__item',
+                        scopeSelector: '.masterstudy-analytics-short-report-page',
+                        insertAnchor:  el.closest( '.masterstudy-analytics-short-report-page-stats' ) || el
+                    } );
+                }
+            }
+
+            /* ── Fetch and render ────────────────────────────────────────────── */
+
+            function fetchStats( type, callback ) {
+                var fd = new FormData();
+                fd.append( 'action', 'fplms_dashboard_stats' );
+                fd.append( 'nonce',  NONCE );
+                fd.append( 'type',   type );
+                fetch( AJAX_URL, { method: 'POST', body: fd } )
+                    .then( function ( r ) { return r.json(); } )
+                    .then( function ( res ) { if ( res && res.success ) callback( res.data ); } )
+                    .catch( function () {} );
+            }
+
+            function tryRender() {
+                var studentEl    = document.querySelector( '.masterstudy-enrolled-courses-sorting' );
+                var instructorEl = document.querySelector( '.masterstudy-analytics-short-report-page-stats__wrapper' );
+
+                if ( studentEl && ! renderedStudent ) {
+                    renderedStudent = true; // bloquear doble fetch
+                    fetchStats( 'student', function ( data ) {
+                        if ( data ) {
+                            renderStudent( studentEl, data );
+                        } else {
+                            renderedStudent = false; // permitir reintento si AJAX devuelve vacío
+                        }
+                    } );
+                }
+
+                if ( instructorEl && ! renderedInstructor ) {
+                    renderedInstructor = true; // bloquear doble fetch
+                    fetchStats( 'instructor', function ( data ) {
+                        if ( data ) {
+                            renderInstructor( instructorEl, data );
+                        } else {
+                            renderedInstructor = false; // permitir reintento si AJAX devuelve vacío
+                        }
+                    } );
+                }
+            }
+
+            /* ── Init ────────────────────────────────────────────────────────── */
+
+            function init() {
+                tryRender();
+                var checkTimer;
+                var observer = new MutationObserver( function () {
+                    clearTimeout( checkTimer );
+                    checkTimer = setTimeout( function () {
+                        if ( renderedStudent && renderedInstructor ) {
+                            observer.disconnect();
+                            return;
+                        }
+                        tryRender();
+                    }, 200 );
+                } );
+                observer.observe( document.body, { childList: true, subtree: true } );
+
+                // Safety: disconnect after 30 s
+                setTimeout( function () { observer.disconnect(); }, 30000 );
+            }
+
+            if ( document.readyState === 'loading' ) {
+                document.addEventListener( 'DOMContentLoaded', init );
+            } else {
+                init();
+            }
+        })();
+        </script>
+        <?php
     }
 }
 
