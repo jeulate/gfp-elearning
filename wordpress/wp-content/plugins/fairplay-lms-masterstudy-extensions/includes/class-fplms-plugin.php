@@ -938,15 +938,17 @@ class FairPlay_LMS_Plugin {
             return;
         }
 
-        $ajax_url = admin_url( 'admin-ajax.php' );
-        $nonce    = wp_create_nonce( 'fplms_dashboard_stats' );
+        $ajax_url      = admin_url( 'admin-ajax.php' );
+        $nonce         = wp_create_nonce( 'fplms_dashboard_stats' );
+        $struct_nonce  = wp_create_nonce( 'fplms_frontend_structures' );
         ?>
         <script id="fplms-dashboard-stats-script">
         (function () {
             'use strict';
 
-            var AJAX_URL   = <?php echo wp_json_encode( $ajax_url ); ?>;
-            var NONCE      = <?php echo wp_json_encode( $nonce ); ?>;
+            var AJAX_URL      = <?php echo wp_json_encode( $ajax_url ); ?>;
+            var NONCE         = <?php echo wp_json_encode( $nonce ); ?>;
+            var STRUCT_NONCE  = <?php echo wp_json_encode( $struct_nonce ); ?>;
             var renderedStudent       = false;
             var renderedInstructor    = false;
             var searchInjected        = false;
@@ -957,6 +959,7 @@ class FairPlay_LMS_Plugin {
             var instrCardObsSetup          = false;
             var programmaticStudentClick   = false; // bandera para click programático en tab "all"
             var programmaticInstrClick     = false;
+            var instrCoursesData           = null;  // datos del instructor (courses_list, etc.)
 
             /* ── Helpers de filtrado por ID de curso ────────────────────────── */
 
@@ -1017,7 +1020,7 @@ class FairPlay_LMS_Plugin {
                     var visible;
                     if ( type === 'in_progress' ) {
                         var p = extractProgressFromCard( card );
-                        visible = p > 0 && p < 100;
+                        visible = p > 1 && p < 100;
                     } else if ( type === 'completed' ) {
                         var p = extractProgressFromCard( card );
                         visible = p >= 100;
@@ -1120,90 +1123,89 @@ class FairPlay_LMS_Plugin {
              * .masterstudy-enrolled-courses-tabs__blocks replicando la estructura existente.
              */
             function injectStudentTabs( data ) {
-                var tabsInjected = false;
+                var filtersInjected = false;
+
+                var BTN_BASE   = 'padding:6px 16px;border-radius:20px;border:1.5px solid #ddd;' +
+                                 'background:#f5f5f5;color:#555;font-size:13px;cursor:pointer;' +
+                                 'white-space:nowrap;transition:all .18s;font-weight:500;line-height:1.5;';
+                var BTN_ACTIVE = 'padding:6px 16px;border-radius:20px;border:1.5px solid #ffa800;' +
+                                 'background:#ffa800;color:#fff;font-size:13px;cursor:pointer;' +
+                                 'white-space:nowrap;transition:all .18s;font-weight:600;line-height:1.5;';
 
                 function tryInject() {
-                    if ( tabsInjected ) return;
+                    if ( filtersInjected ) return;
                     var blocks = document.querySelector( '.masterstudy-enrolled-courses-tabs__blocks' );
                     if ( ! blocks ) return;
-                    if ( blocks.querySelector( '[data-status="upcoming"]' ) ) { tabsInjected = true; return; }
-                    tabsInjected = true;
+                    if ( document.getElementById( 'fplms-filter-buttons' ) ) { filtersInjected = true; return; }
+                    filtersInjected = true;
 
-                    var upcoming = document.createElement( 'div' );
-                    upcoming.className = 'masterstudy-enrolled-courses-tabs__block';
-                    upcoming.dataset.status = 'upcoming';
-                    upcoming.innerHTML =
-                        '<div class="masterstudy-enrolled-courses-tabs__block-content">' +
-                        '<span class="masterstudy-enrolled-courses-tabs__block-title">Próximo</span>' +
-                        '<span class="masterstudy-enrolled-courses-tabs__block-value" data-status="upcoming">' +
-                        ( data.upcoming_count || 0 ) + '</span></div>';
+                    // Ocultar todos los tabs nativos excepto "Todos"
+                    // Vue sólo verá el tab "all" → siempre carga todos los cursos → estado consistente
+                    blocks.querySelectorAll( '[data-status]' ).forEach( function ( t ) {
+                        if ( t.dataset.status && t.dataset.status !== 'all' ) {
+                            t.style.display = 'none';
+                        }
+                    } );
 
-                    var expiring = document.createElement( 'div' );
-                    expiring.className = 'masterstudy-enrolled-courses-tabs__block';
-                    expiring.dataset.status = 'expiring';
-                    expiring.innerHTML =
-                        '<div class="masterstudy-enrolled-courses-tabs__block-content">' +
-                        '<span class="masterstudy-enrolled-courses-tabs__block-title">Por Vencer</span>' +
-                        '<span class="masterstudy-enrolled-courses-tabs__block-value" data-status="expiring">' +
-                        ( data.expiring_count || 0 ) + '</span></div>';
+                    // ── Botones de filtro (reemplazan a los tabs) ─────────────────────────
+                    // Cada botón filtra client-side las cards ya cargadas por Vue.
+                    // No hay AJAX, no hay stopPropagation, no hay conflictos con Vue.
+                    var wrap = document.createElement( 'div' );
+                    wrap.id = 'fplms-filter-buttons';
+                    wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 6px;';
 
-                    // ── Gestión de clicks en tabs (capture phase) ────────────────────────────
-                    // Tabs NATIVOS (all / in_progress / completed / failed):
-                    //   → limpiar filtro custom, resetear display y dejar que Vue lo maneje.
-                    // Tabs CUSTOM (upcoming / expiring):
-                    //   → stopPropagation (MasterStudy no conoce esos status, devolvería 0)
-                    //   → cargar "all" programáticamente + filtrar client-side.
-                    blocks.addEventListener( 'click', function ( e ) {
-                        if ( programmaticStudentClick ) return;
-                        var b = e.target.closest( '[data-status]' );
-                        if ( ! b ) return;
-                        var s = b.dataset.status;
+                    var defs = [
+                        { label: 'Todos',       type: 'all',         ids: [],                      count: data.enrolled       || 0 },
+                        { label: 'Completado',  type: 'completed',   ids: [],                      count: data.completed      || 0 },
+                        { label: 'En Progreso', type: 'in_progress', ids: [],                      count: data.in_progress_count || 0 },
+                        { label: 'Próximo',     type: 'ids',         ids: data.upcoming_ids || [],  count: data.upcoming_count || 0 },
+                        { label: 'Por Vencer',  type: 'ids',         ids: data.expiring_ids || [],  count: data.expiring_count || 0 },
+                    ];
 
-                        // Tabs que Vue maneja correctamente vía AJAX nativo
-                        if ( s === 'all' || s === 'failed' ) {
-                            studentCustomFilter = null;
+                    var activeBtn = null;
+                    function setActive( btn ) {
+                        if ( activeBtn ) activeBtn.style.cssText = BTN_BASE;
+                        activeBtn = btn;
+                        btn.style.cssText = BTN_ACTIVE;
+                    }
+
+                    defs.forEach( function ( def ) {
+                        var btn  = document.createElement( 'button' );
+                        btn.type = 'button';
+                        btn.textContent = def.label + ( def.count !== null ? ' (' + def.count + ')' : '' );
+                        btn.style.cssText = BTN_BASE;
+
+                        btn.addEventListener( 'click', function () {
+                            setActive( btn );
                             var scope = document.querySelector( '.masterstudy-enrolled-courses' ) || document;
-                            scope.querySelectorAll(
+                            var cards = scope.querySelectorAll(
                                 '.masterstudy-course-card, .masterstudy-enrolled-courses-list__item, .masterstudy-enrolled-courses__item'
-                            ).forEach( function ( card ) { card.style.display = ''; } );
-                            return; // sin stopPropagation: Vue lo recibe y hace su AJAX
-                        }
+                            );
+                            if ( def.type === 'all' ) {
+                                studentCustomFilter = null;
+                                cards.forEach( function ( c ) { c.style.display = ''; } );
+                            } else {
+                                studentCustomFilter = { type: def.type, ids: def.ids, tabEl: null };
+                                applyStudentCustomFilter();
+                            }
+                        } );
 
-                        // Todos los demás tabs: interceptar y aplicar filtro client-side.
-                        // Razón: MasterStudy filtra por status en DB, pero los cursos con
-                        // progress_percent=100 suelen tener status='in_progress' en DB, no
-                        // 'completed' → su AJAX devuelve 0 resultados para completed/in_progress.
-                        // Para upcoming/expiring directamente no existen en su API.
-                        e.stopPropagation();
+                        if ( def.type === 'all' ) setActive( btn );
+                        wrap.appendChild( btn );
+                    } );
 
-                        var filterType = 'ids';
-                        var filterIds  = [];
-                        if ( s === 'expiring' ) {
-                            filterIds = data.expiring_ids || [];
-                        } else if ( s === 'upcoming' ) {
-                            filterIds = data.upcoming_ids || [];
-                        } else if ( s === 'in_progress' ) {
-                            filterType = 'in_progress';
-                        } else if ( s === 'completed' ) {
-                            filterType = 'completed';
-                        } else {
-                            return; // status desconocido, ignorar
-                        }
+                    // Insertar después del mensaje "sin resultados" del buscador
+                    var noResultsEl  = document.getElementById( 'fplms-no-results' );
+                    var searchWrapEl = document.getElementById( 'fplms-course-search-wrapper' );
+                    var anchor       = noResultsEl || searchWrapEl;
+                    if ( anchor && anchor.parentNode ) {
+                        anchor.parentNode.insertBefore( wrap, anchor.nextSibling );
+                    } else if ( blocks.parentNode ) {
+                        blocks.parentNode.insertBefore( wrap, blocks );
+                    }
 
-                        studentCustomFilter = { type: filterType, ids: filterIds, tabEl: b };
-                        var allTab = blocks.querySelector( '[data-status="all"]' );
-                        if ( allTab ) {
-                            programmaticStudentClick = true;
-                            allTab.click();
-                            programmaticStudentClick = false;
-                        }
-                        setTimeout( applyStudentCustomFilter, 150 );
-                    }, true );
-
-                    blocks.appendChild( upcoming );
-                    blocks.appendChild( expiring );
-
-                    // MutationObserver en la lista de cursos para re-aplicar filtro tras re-render de Vue
+                    // MutationObserver: re-aplicar filtro cuando Vue re-renderiza la lista
+                    // (p.ej. carga de página siguiente o recarga al volver al tab "Todos")
                     if ( ! studentCardObsSetup ) {
                         studentCardObsSetup = true;
                         var courseList = document.querySelector( '.masterstudy-enrolled-courses' );
@@ -1212,7 +1214,7 @@ class FairPlay_LMS_Plugin {
                             new MutationObserver( function () {
                                 if ( studentCustomFilter ) {
                                     clearTimeout( filterTimer );
-                                    filterTimer = setTimeout( applyStudentCustomFilter, 50 );
+                                    filterTimer = setTimeout( applyStudentCustomFilter, 80 );
                                 }
                             } ).observe( courseList, { childList: true, subtree: true } );
                         }
@@ -1220,10 +1222,10 @@ class FairPlay_LMS_Plugin {
                 }
 
                 tryInject();
-                if ( ! tabsInjected ) {
+                if ( ! filtersInjected ) {
                     var obs = new MutationObserver( function () {
                         tryInject();
-                        if ( tabsInjected ) obs.disconnect();
+                        if ( filtersInjected ) obs.disconnect();
                     } );
                     obs.observe( document.body, { childList: true, subtree: true } );
                     setTimeout( function () { obs.disconnect(); }, 15000 );
@@ -1231,81 +1233,775 @@ class FairPlay_LMS_Plugin {
             }
 
             /**
-             * Instructor: agrega tab "Por Vencer" a la lista nativa
-             * .masterstudy-tabs justo antes del último <li> ("Próximo" ya existe).
+             * Construye la tabla de gestión de cursos dentro del contenedor dado.
+             * Reutilizable desde showMisCursosPage().
              */
-            function injectInstructorTab( data ) {
-                var tabsInjected = false;
-                function tryInject() {
-                    if ( tabsInjected ) return;
-                    var tabs = document.querySelector( '.masterstudy-instructor-courses__tabs .masterstudy-tabs' );
-                    if ( ! tabs ) return;
-                    if ( tabs.querySelector( '[data-id="expiring"]' ) ) { tabsInjected = true; return; }
-                    tabsInjected = true;
+            function buildInstructorCoursePanel( container, courses ) {
+                // ── Estilos (una sola vez) ────────────────────────────────────────────
+                if ( ! document.getElementById( 'fplms-icp-styles' ) ) {
+                    var style = document.createElement( 'style' );
+                    style.id  = 'fplms-icp-styles';
+                    style.textContent =
+                        '#fplms-mis-cursos-page{font-family:inherit;padding:0;}' +
+                        '#fplms-mis-cursos-page h2{font-size:20px;font-weight:700;color:#222;margin:0 0 20px;}' +
+                        '#fplms-icp-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:16px;}' +
+                        '#fplms-icp-search{flex:1 1 220px;min-width:160px;padding:9px 14px 9px 40px;' +
+                        'border:1.5px solid #e0e0e0;border-radius:8px;font-size:13px;outline:none;' +
+                        'box-sizing:border-box;background:#fff;transition:border-color .2s;}' +
+                        '#fplms-icp-search:focus{border-color:#ffa800;}' +
+                        '.fplms-icp-filter{padding:7px 18px;border-radius:20px;border:1.5px solid #ddd;' +
+                        'background:#f5f5f5;color:#555;font-size:13px;cursor:pointer;font-weight:500;' +
+                        'white-space:nowrap;transition:all .15s;}' +
+                        '.fplms-icp-filter.active{border-color:#ffa800;background:#ffa800;color:#fff;font-weight:600;}' +
+                        '.fplms-icp-export-btn{padding:7px 14px;border-radius:7px;border:1.5px solid #ddd;' +
+                        'background:#fff;color:#555;font-size:12px;cursor:pointer;font-weight:500;' +
+                        'display:inline-flex;align-items:center;gap:5px;white-space:nowrap;transition:all .15s;}' +
+                        '.fplms-icp-export-btn:hover{border-color:#ffa800;color:#ffa800;}' +
+                        '.fplms-icp-export-btn:disabled{opacity:.45;cursor:not-allowed;}' +
+                        '#fplms-icp-sel-bar{display:none;align-items:center;gap:10px;padding:8px 14px;' +
+                        'background:#fff8ec;border:1.5px solid #ffa800;border-radius:8px;margin-bottom:10px;font-size:13px;}' +
+                        '#fplms-icp-sel-bar.visible{display:flex;}' +
+                        '#fplms-icp-sel-count{font-weight:600;color:#e07b00;}' +
+                        '#fplms-icp-table{width:100%;border-collapse:collapse;font-size:13px;}' +
+                        '#fplms-icp-table th{background:#f8f8f8;color:#444;font-weight:600;padding:11px 14px;' +
+                        'text-align:left;border-bottom:2px solid #e8e8e8;white-space:nowrap;}' +
+                        '#fplms-icp-table th.fplms-icp-th-chk{width:36px;text-align:center;}' +
+                        '#fplms-icp-table td{padding:11px 14px;border-bottom:1px solid #f0f0f0;vertical-align:middle;color:#333;}' +
+                        '#fplms-icp-table td.fplms-icp-td-chk{text-align:center;width:36px;}' +
+                        '#fplms-icp-table tr:hover td{background:#fffaf0;}' +
+                        '#fplms-icp-table tr.fplms-icp-selected td{background:#fff8ec;}' +
+                        '.fplms-icp-chk{width:16px;height:16px;cursor:pointer;accent-color:#ffa800;}' +
+                        '.fplms-icp-title{font-weight:600;color:#222;}' +
+                        '.fplms-icp-title a{color:#222;text-decoration:none;}' +
+                        '.fplms-icp-title a:hover{color:#ffa800;}' +
+                        '.fplms-icp-id{font-size:11px;color:#888;display:block;margin-top:2px;}' +
+                        '.fplms-icp-tag{display:inline-block;background:#f0f4ff;color:#4466cc;' +
+                        'border-radius:4px;padding:2px 7px;font-size:11px;margin:2px 2px 2px 0;}' +
+                        '.fplms-icp-tag-exp{background:#fff4e0;color:#e07b00;}' +
+                        '.fplms-icp-actions{display:flex;gap:6px;align-items:center;}' +
+                        '.fplms-icp-btn{display:inline-flex;align-items:center;justify-content:center;' +
+                        'width:32px;height:32px;border-radius:7px;border:1.5px solid #ddd;' +
+                        'background:#fff;color:#666;text-decoration:none;transition:all .15s;cursor:pointer;' +
+                        'font-size:11px;font-weight:600;}' +
+                        '.fplms-icp-btn:hover{border-color:#ffa800;color:#ffa800;background:#fffaf0;}' +
+                        '.fplms-icp-empty{text-align:center;color:#aaa;padding:40px;font-size:14px;}' +
+                        '#fplms-icp-pagination{display:flex;align-items:center;gap:5px;margin-top:14px;flex-wrap:wrap;}' +
+                        '.fplms-icp-pg-btn{min-width:32px;height:32px;padding:0 8px;border-radius:6px;border:1.5px solid #ddd;' +
+                        'background:#fff;color:#555;font-size:13px;cursor:pointer;transition:all .15s;}' +
+                        '.fplms-icp-pg-btn.active{border-color:#ffa800;background:#ffa800;color:#fff;font-weight:700;}' +
+                        '.fplms-icp-pg-btn:hover:not(.active):not(:disabled){border-color:#ffa800;color:#ffa800;}' +
+                        '.fplms-icp-pg-btn:disabled{opacity:.35;cursor:not-allowed;}' +
+                        '#fplms-icp-bottom-bar{display:flex;align-items:center;justify-content:space-between;' +
+                        'margin-top:12px;flex-wrap:wrap;gap:8px;}' +
+                        '#fplms-icp-bottom-bar .dt-length{display:flex;align-items:center;gap:6px;font-size:13px;color:#555;}' +
+                        '#fplms-icp-bottom-bar .dt-length .dt-input{padding:4px 8px;border:1px solid #d0d0d0;' +
+                        'border-radius:4px;font-size:13px;color:#333;background:#fff;cursor:pointer;}' +
+                        /* Modal estructuras */
+                        '#fplms-struct-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99999;' +
+                        'align-items:center;justify-content:center;}' +
+                        '#fplms-struct-overlay.open{display:flex;}' +
+                        '#fplms-struct-modal{background:#fff;border-radius:12px;padding:28px 28px 22px;width:96%;max-width:520px;' +
+                        'max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.18);}' +
+                        '#fplms-struct-modal h3{margin:0 0 6px;font-size:17px;font-weight:700;color:#222;}' +
+                        '#fplms-struct-modal .fplms-sm-sub{font-size:12px;color:#999;margin:0 0 18px;}' +
+                        '.fplms-sm-section{margin-bottom:18px;}' +
+                        '.fplms-sm-section label.fplms-sm-title{display:block;font-size:12px;font-weight:700;' +
+                        'color:#666;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;}' +
+                        '.fplms-sm-tags{display:flex;flex-wrap:wrap;gap:6px;}' +
+                        '.fplms-sm-tag{padding:5px 12px;border-radius:20px;border:1.5px solid #ddd;' +
+                        'background:#f5f5f5;color:#555;font-size:12px;cursor:pointer;transition:all .15s;font-weight:500;}' +
+                        '.fplms-sm-tag.selected{border-color:#ffa800;background:#ffa800;color:#fff;font-weight:600;}' +
+                        '.fplms-sm-tag:disabled,.fplms-sm-tag[disabled]{opacity:.4;cursor:not-allowed;}' +
+                        '.fplms-sm-loading{text-align:center;color:#aaa;padding:16px;font-size:13px;}' +
+                        '.fplms-sm-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;' +
+                        'padding-top:14px;border-top:1px solid #f0f0f0;}' +
+                        '.fplms-sm-cancel{padding:9px 18px;border-radius:8px;border:1.5px solid #ddd;' +
+                        'background:#fff;color:#555;font-size:13px;cursor:pointer;font-weight:500;}' +
+                        '.fplms-sm-save{padding:9px 22px;border-radius:8px;border:none;' +
+                        'background:#ffa800;color:#fff;font-size:13px;cursor:pointer;font-weight:700;transition:opacity .15s;}' +
+                        '.fplms-sm-save:disabled{opacity:.5;cursor:not-allowed;}' +
+                        '.fplms-sm-msg{margin-top:10px;font-size:13px;text-align:center;font-weight:500;}' +
+                        '.fplms-sm-msg.ok{color:#27ae60;}.fplms-sm-msg.err{color:#e74c3c;}' +
+                        '@media(max-width:640px){#fplms-icp-table thead{display:none;}' +
+                        '#fplms-icp-table tr{display:block;margin-bottom:14px;border:1px solid #eee;' +
+                        'border-radius:10px;padding:12px;}' +
+                        '#fplms-icp-table td{display:block;padding:4px 8px;border:none;}' +
+                        '#fplms-icp-table td:before{content:attr(data-label);font-weight:600;color:#666;' +
+                        'display:block;font-size:11px;margin-bottom:2px;}}';
+                    document.head.appendChild( style );
+                }
 
-                    var li = document.createElement( 'li' );
-                    li.className = 'masterstudy-tabs__item';
-                    li.dataset.id = 'expiring';
-                    li.textContent = 'Por Vencer';
+                var expCount = courses.filter( function ( c ) { return c.is_expiring; } ).length;
 
-                    // ── Gestión unificada de tabs del instructor (capture phase) ────────────
-                    // Tab "expiring": stopPropagation para evitar AJAX incorrecto de MasterStudy
-                    // (devolvería 0 resultados y rompería el estado de Vue).
-                    // Tabs nativos: limpiar filtro y resetear display; Vue los maneja.
-                    tabs.addEventListener( 'click', function ( e ) {
-                        if ( programmaticInstrClick ) return;
-                        var item = e.target.closest( '[data-id]' );
-                        if ( ! item ) return;
-                        var id = item.dataset.id;
+                // ── Estructura HTML del panel ─────────────────────────────────────────
+                container.innerHTML =
+                    '<h2>Mis Cursos</h2>' +
+                    // barra de selección (visible solo cuando hay ítems marcados)
+                    '<div id="fplms-icp-sel-bar">' +
+                    '<span id="fplms-icp-sel-count">0 seleccionados</span>' +
+                    '<button class="fplms-icp-export-btn" id="fplms-icp-exp-xls">' +
+                    '<svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">' +
+                    '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>' +
+                    '<polyline points="14 2 14 8 20 8"/>' +
+                    '<line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>' +
+                    'Exportar XLS</button>' +
+                    '<button class="fplms-icp-export-btn" id="fplms-icp-exp-pdf">' +
+                    '<svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">' +
+                    '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>' +
+                    '<polyline points="14 2 14 8 20 8"/></svg>' +
+                    'Exportar PDF</button>' +
+                    '<button class="fplms-icp-export-btn" id="fplms-icp-desel" style="margin-left:auto;font-size:12px;color:#000000;">' +
+                    '✕ Deseleccionar todo</button>' +
+                    '</div>' +
+                    // toolbar
+                    '<div id="fplms-icp-toolbar">' +
+                    '<div style="position:relative;flex:1 1 220px;min-width:160px;">' +
+                    '<input id="fplms-icp-search" type="search" placeholder="Buscar curso..." autocomplete="off">' +
+                    '<svg style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#aaa;pointer-events:none;" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' +
+                    '</div>' +
+                    '<button class="fplms-icp-filter active" data-filter="all">Todos (' + courses.length + ')</button>' +
+                    '<button class="fplms-icp-filter" data-filter="expiring">Por Vencer (' + expCount + ')</button>' +
+                    '</div>' +
+                    // tabla
+                    '<div style="overflow-x:auto;">' +
+                    '<table id="fplms-icp-table">' +
+                    '<thead><tr>' +
+                    '<th class="fplms-icp-th-chk"><input type="checkbox" class="fplms-icp-chk" id="fplms-icp-chk-all"></th>' +
+                    '<th>Curso</th><th>Creación</th><th>Modificación</th>' +
+                    '<th>Estructuras</th><th>Estudiantes</th><th>Acciones</th>' +
+                    '</tr></thead>' +
+                    '<tbody id="fplms-icp-tbody"></tbody>' +
+                    '</table>' +
+                    '</div>' +
+                    '<div id="fplms-icp-bottom-bar">' +
+                    '<div class="dt-length">' +
+                    '<select id="fplms-icp-perpage" class="dt-input">' +
+                    '<option value="5">5</option>' +
+                    '<option value="10" selected>10</option>' +
+                    '<option value="20">20</option>' +
+                    '<option value="50">50</option>' +
+                    '<option value="100">100</option>' +
+                    '</select>' +
+                    '<label for="fplms-icp-perpage"> paginas</label>' +
+                    '</div>' +
+                    '<div id="fplms-icp-pagination"></div>' +
+                    '</div>' +
+                    // modal estructuras
+                    '<div id="fplms-struct-overlay">' +
+                    '<div id="fplms-struct-modal">' +
+                    '<h3 id="fplms-sm-title">Asignar Estructuras</h3>' +
+                    '<p class="fplms-sm-sub" id="fplms-sm-sub"></p>' +
+                    '<div id="fplms-sm-body"><div class="fplms-sm-loading">Cargando...</div></div>' +
+                    '<p class="fplms-sm-msg" id="fplms-sm-msg"></p>' +
+                    '<div class="fplms-sm-footer">' +
+                    '<button class="fplms-sm-cancel" id="fplms-sm-cancel">Cancelar</button>' +
+                    '<button class="fplms-sm-save"  id="fplms-sm-save">Guardar</button>' +
+                    '</div>' +
+                    '</div></div>';
 
-                        if ( id === 'expiring' ) {
-                            e.stopPropagation();
-                            instrCustomFilter = { ids: data.expiring_ids || [], tabEl: item };
-                            var allLi = tabs.querySelector( '[data-id="all"]' );
-                            if ( allLi ) {
-                                programmaticInstrClick = true;
-                                allLi.click();
-                                programmaticInstrClick = false;
-                            }
-                            setTimeout( applyInstrCustomFilter, 150 );
-                            return;
-                        }
+                var tbody      = container.querySelector( '#fplms-icp-tbody' );
+                var search     = container.querySelector( '#fplms-icp-search' );
+                var filters    = container.querySelectorAll( '.fplms-icp-filter' );
+                var chkAll     = container.querySelector( '#fplms-icp-chk-all' );
+                var selBar     = container.querySelector( '#fplms-icp-sel-bar' );
+                var selCount   = container.querySelector( '#fplms-icp-sel-count' );
+                var btnExpXls  = container.querySelector( '#fplms-icp-exp-xls' );
+                var btnExpPdf  = container.querySelector( '#fplms-icp-exp-pdf' );
+                var btnDesel   = container.querySelector( '#fplms-icp-desel' );
+                var perpageSel = container.querySelector( '#fplms-icp-perpage' );
+                var activeFilter = 'all';
+                var searchQuery  = '';
+                var selectedIds  = [];   // IDs de cursos marcados
 
-                        // Tab nativo: limpiar filtro y resetear display; Vue lo maneja
-                        instrCustomFilter = null;
-                        var scope = document.querySelector( '.masterstudy-analytics-short-report-page' ) || document;
-                        scope.querySelectorAll(
-                            '.masterstudy-course-card, .masterstudy-courses-list__item, .masterstudy-my-courses__item, .masterstudy-instructor-courses__item'
-                        ).forEach( function ( card ) { card.style.display = ''; } );
-                    }, true );
-
-                    var proximoLi = tabs.querySelector( '[data-id="coming_soon_status"]' );
-                    if ( proximoLi && proximoLi.nextSibling ) {
-                        tabs.insertBefore( li, proximoLi.nextSibling );
+                // ── helpers de selección ──────────────────────────────────────────────
+                function updateSelBar() {
+                    selectedIds = [];
+                    tbody.querySelectorAll( '.fplms-icp-chk:checked' ).forEach( function ( ch ) {
+                        selectedIds.push( parseInt( ch.dataset.id ) );
+                    } );
+                    if ( selectedIds.length > 0 ) {
+                        selBar.classList.add( 'visible' );
+                        selCount.textContent = selectedIds.length + ' seleccionado' + ( selectedIds.length !== 1 ? 's' : '' );
                     } else {
-                        tabs.appendChild( li );
+                        selBar.classList.remove( 'visible' );
+                    }
+                    chkAll.indeterminate = false;
+                    var total = tbody.querySelectorAll( '.fplms-icp-chk' ).length;
+                    if ( selectedIds.length === 0 )      chkAll.checked = false;
+                    else if ( selectedIds.length === total ) chkAll.checked = true;
+                    else { chkAll.checked = false; chkAll.indeterminate = true; }
+                }
+
+                chkAll.addEventListener( 'change', function () {
+                    tbody.querySelectorAll( '.fplms-icp-chk' ).forEach( function ( ch ) {
+                        ch.checked = chkAll.checked;
+                        ch.closest( 'tr' ).classList.toggle( 'fplms-icp-selected', chkAll.checked );
+                    } );
+                    updateSelBar();
+                } );
+
+                btnDesel.addEventListener( 'click', function () {
+                    tbody.querySelectorAll( '.fplms-icp-chk' ).forEach( function ( ch ) {
+                        ch.checked = false;
+                        ch.closest( 'tr' ).classList.remove( 'fplms-icp-selected' );
+                    } );
+                    chkAll.checked = false;
+                    updateSelBar();
+                } );
+
+                // ── Exportar XLS (tabla visible en selección) ─────────────────────────
+                btnExpXls.addEventListener( 'click', function () {
+                    var rows = getExportRows();
+                    if ( ! rows.length ) return;
+                    var csv = '\uFEFF' + // BOM UTF-8 para Excel
+                        'Curso\tID\tCreación\tModificación\tCanales\tSucursales\tCargos\tEstudiantes\n' +
+                        rows.map( function ( c ) {
+                            return [
+                                c.title, c.id, c.created, c.modified,
+                                ( c.channels || [] ).join( ' | ' ),
+                                ( c.branches || [] ).join( ' | ' ),
+                                ( c.roles    || [] ).join( ' | ' ),
+                                c.students || 0,
+                            ].join( '\t' );
+                        } ).join( '\n' );
+                    downloadFile( csv, 'mis-cursos.xls', 'application/vnd.ms-excel' );
+                } );
+
+                // ── Exportar PDF (impresión vía ventana) ──────────────────────────────
+                btnExpPdf.addEventListener( 'click', function () {
+                    var rows = getExportRows();
+                    if ( ! rows.length ) return;
+                    var html =
+                        '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+                        '<title>Mis Cursos</title>' +
+                        '<style>body{font-family:sans-serif;font-size:12px;}' +
+                        'h1{font-size:16px;margin-bottom:12px;}' +
+                        'table{width:100%;border-collapse:collapse;}' +
+                        'th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;}' +
+                        'th{background:#f5f5f5;font-weight:700;}</style></head><body>' +
+                        '<h1>Mis Cursos</h1>' +
+                        '<table><thead><tr>' +
+                        '<th>Curso</th><th>ID</th><th>Creación</th><th>Modificación</th>' +
+                        '<th>Estructuras</th><th>Estudiantes</th>' +
+                        '</tr></thead><tbody>' +
+                        rows.map( function ( c ) {
+                            var allStructs = ( c.channels || [] ).concat( c.branches || [], c.roles || [] );
+                            return '<tr><td>' + escH( c.title ) + '</td><td>' + c.id + '</td>' +
+                                '<td>' + c.created + '</td><td>' + c.modified + '</td>' +
+                                '<td>' + escH( allStructs.join( ', ' ) ) + '</td>' +
+                                '<td>' + ( c.students || 0 ) + '</td></tr>';
+                        } ).join( '' ) +
+                        '</tbody></table></body></html>';
+                    var w = window.open( '', '_blank', 'width=900,height=600' );
+                    if ( w ) { w.document.write( html ); w.document.close(); w.print(); }
+                } );
+
+                function getExportRows() {
+                    // Si hay selección → solo esos; si no, todos los visibles en la tabla
+                    if ( selectedIds.length > 0 ) {
+                        return courses.filter( function ( c ) { return selectedIds.indexOf( c.id ) !== -1; } );
+                    }
+                    var q = searchQuery.toLowerCase();
+                    return courses.filter( function ( c ) {
+                        if ( activeFilter === 'expiring' && ! c.is_expiring ) return false;
+                        if ( q && c.title.toLowerCase().indexOf( q ) === -1 ) return false;
+                        return true;
+                    } );
+                }
+
+                function downloadFile( content, name, mime ) {
+                    var blob = new Blob( [ content ], { type: mime + ';charset=utf-8;' } );
+                    var url  = URL.createObjectURL( blob );
+                    var a    = document.createElement( 'a' );
+                    a.href = url; a.download = name; a.click();
+                    setTimeout( function () { URL.revokeObjectURL( url ); }, 1000 );
+                }
+
+                function escH( s ) { return String( s ).replace( /&/g, '&amp;' ).replace( /</g, '&lt;' ).replace( />/g, '&gt;' ); }
+
+                // ── Modal de estructuras ──────────────────────────────────────────────
+                var overlay     = container.querySelector( '#fplms-struct-overlay' );
+                var smTitle     = container.querySelector( '#fplms-sm-title' );
+                var smSub       = container.querySelector( '#fplms-sm-sub' );
+                var smBody      = container.querySelector( '#fplms-sm-body' );
+                var smMsg       = container.querySelector( '#fplms-sm-msg' );
+                var smSave      = container.querySelector( '#fplms-sm-save' );
+                var smCancel    = container.querySelector( '#fplms-sm-cancel' );
+                var modalCourseId = 0;
+
+                smCancel.addEventListener( 'click', function () { overlay.classList.remove( 'open' ); } );
+                overlay.addEventListener( 'click',  function ( e ) {
+                    if ( e.target === overlay ) overlay.classList.remove( 'open' );
+                } );
+
+                function openStructModal( courseId, courseTitle ) {
+                    modalCourseId = courseId;
+                    smTitle.textContent = 'Asignar Estructuras';
+                    smSub.textContent   = courseTitle;
+                    smMsg.textContent   = '';
+                    smMsg.className     = 'fplms-sm-msg';
+                    smBody.innerHTML    = '<div class="fplms-sm-loading">Cargando estructuras...</div>';
+                    smSave.disabled     = true;
+                    overlay.classList.add( 'open' );
+
+                    // Cargar estructuras del curso vía AJAX
+                    var fd = new FormData();
+                    fd.append( 'action',    'fplms_get_frontend_structures' );
+                    fd.append( 'nonce',     STRUCT_NONCE );
+                    fd.append( 'course_id', courseId );
+                    fetch( AJAX_URL, { method: 'POST', body: fd } )
+                        .then( function ( r ) { return r.json(); } )
+                        .then( function ( res ) {
+                            if ( ! res || ! res.success ) {
+                                smBody.innerHTML = '<p style="color:#e74c3c;text-align:center;">' +
+                                    escH( ( res && res.data ) ? res.data : 'Error al cargar.' ) + '</p>';
+                                return;
+                            }
+                            renderModalBody( res.data );
+                            smSave.disabled = false;
+                        } )
+                        .catch( function () {
+                            smBody.innerHTML = '<p style="color:#e74c3c;text-align:center;">Error de red.</p>';
+                        } );
+                }
+
+                function renderModalBody( d ) {
+                    // Canales: solo lectura (informativos)
+                    var channelHtml = '';
+                    if ( d.channel_names && d.channel_names.length ) {
+                        channelHtml =
+                            '<div class="fplms-sm-section">' +
+                            '<label class="fplms-sm-title">Canal</label>' +
+                            '<div class="fplms-sm-tags">' +
+                            d.channel_names.map( function ( n ) {
+                                return '<span class="fplms-sm-tag selected" style="cursor:default;">' + escH( n ) + '</span>';
+                            } ).join( '' ) +
+                            '</div></div>';
+                    } else {
+                        channelHtml =
+                            '<div class="fplms-sm-section">' +
+                            '<label class="fplms-sm-title">Canal</label>' +
+                            '<p style="font-size:12px;color:#e74c3c;">Sin canal asignado. Asigna una Categoría/Canal en el editor del curso.</p>' +
+                            '</div>';
                     }
 
-                    // MutationObserver en la lista de cursos del instructor
-                    if ( ! instrCardObsSetup ) {
-                        instrCardObsSetup = true;
-                        var instrList = document.querySelector( '.masterstudy-analytics-short-report-page' );
-                        if ( instrList ) {
-                            var filterTimer = null;
-                            new MutationObserver( function () {
-                                if ( instrCustomFilter ) {
-                                    clearTimeout( filterTimer );
-                                    filterTimer = setTimeout( applyInstrCustomFilter, 50 );
-                                }
-                            } ).observe( instrList, { childList: true, subtree: true } );
-                        }
+                    // Sucursales: toggleable
+                    var branchHtml =
+                        '<div class="fplms-sm-section" id="fplms-sm-branches">' +
+                        '<label class="fplms-sm-title">Sucursal <span style="font-weight:400;text-transform:none;font-size:11px;color:#999;">(dejar vacío = todas)</span></label>' +
+                        '<div class="fplms-sm-tags">';
+                    var branches = d.branches || {};
+                    var manualBranches = d.manual_branches || [];
+                    Object.keys( branches ).forEach( function ( bid ) {
+                        var sel = manualBranches.indexOf( parseInt( bid ) ) !== -1 ? ' selected' : '';
+                        branchHtml += '<button type="button" class="fplms-sm-tag' + sel + '" data-bid="' + bid + '">' +
+                            escH( branches[ bid ] ) + '</button>';
+                    } );
+                    if ( ! Object.keys( branches ).length ) {
+                        branchHtml += '<span style="color:#aaa;font-size:12px;">Sin sucursales disponibles.</span>';
+                    }
+                    branchHtml += '</div></div>';
+
+                    // Cargos: se cargan dinámicamente según sucursales seleccionadas
+                    var roleHtml =
+                        '<div class="fplms-sm-section" id="fplms-sm-roles">' +
+                        '<label class="fplms-sm-title">Cargo <span style="font-weight:400;text-transform:none;font-size:11px;color:#999;">(dejar vacío = todos)</span></label>' +
+                        '<div class="fplms-sm-tags" id="fplms-sm-roles-tags"><div class="fplms-sm-loading">Selecciona sucursales para ver cargos...</div></div>' +
+                        '</div>';
+
+                    smBody.innerHTML = channelHtml + branchHtml + roleHtml;
+
+                    // Guardar data de roles actuales para re-pintar después de cargar
+                    smBody._modalData = { roles: d.roles || {}, manualRoles: d.manual_roles || [] };
+
+                    // Pintar roles iniciales basados en selección inicial de sucursales
+                    refreshRoleOptions( manualBranches, d.roles || {}, d.manual_roles || [] );
+
+                    // Eventos en botones de sucursal
+                    smBody.querySelectorAll( '#fplms-sm-branches .fplms-sm-tag' ).forEach( function ( btn ) {
+                        btn.addEventListener( 'click', function () {
+                            btn.classList.toggle( 'selected' );
+                            var selBranches = getSelectedBranches();
+                            // Recargar cargos dinámicamente
+                            loadRolesForBranches( selBranches );
+                        } );
+                    } );
+                }
+
+                function getSelectedBranches() {
+                    var ids = [];
+                    smBody.querySelectorAll( '#fplms-sm-branches .fplms-sm-tag.selected' ).forEach( function ( b ) {
+                        ids.push( parseInt( b.dataset.bid ) );
+                    } );
+                    return ids;
+                }
+
+                function getSelectedRoles() {
+                    var ids = [];
+                    smBody.querySelectorAll( '#fplms-sm-roles .fplms-sm-tag.selected' ).forEach( function ( b ) {
+                        ids.push( parseInt( b.dataset.rid ) );
+                    } );
+                    return ids;
+                }
+
+                function refreshRoleOptions( selectedBranchIds, rolesMap, selectedRoleIds ) {
+                    var tagsEl = smBody.querySelector( '#fplms-sm-roles-tags' );
+                    if ( ! tagsEl ) return;
+                    tagsEl.innerHTML = '';
+                    if ( ! Object.keys( rolesMap ).length ) {
+                        tagsEl.innerHTML = '<span style="color:#aaa;font-size:12px;">' +
+                            ( selectedBranchIds.length ? 'Sin cargos disponibles.' : 'Selecciona sucursales para ver cargos...' ) +
+                            '</span>';
+                        return;
+                    }
+                    Object.keys( rolesMap ).forEach( function ( rid ) {
+                        var sel = selectedRoleIds.indexOf( parseInt( rid ) ) !== -1 ? ' selected' : '';
+                        var btn = document.createElement( 'button' );
+                        btn.type      = 'button';
+                        btn.className = 'fplms-sm-tag' + sel;
+                        btn.dataset.rid = rid;
+                        btn.textContent = rolesMap[ rid ];
+                        btn.addEventListener( 'click', function () { btn.classList.toggle( 'selected' ); } );
+                        tagsEl.appendChild( btn );
+                    } );
+                }
+
+                function loadRolesForBranches( branchIds ) {
+                    var tagsEl = smBody.querySelector( '#fplms-sm-roles-tags' );
+                    if ( ! tagsEl ) return;
+                    if ( ! branchIds.length ) {
+                        refreshRoleOptions( [], {}, [] );
+                        return;
+                    }
+                    tagsEl.innerHTML = '<div class="fplms-sm-loading">Cargando cargos...</div>';
+                    var fd = new FormData();
+                    fd.append( 'action', 'fplms_get_branch_roles' );
+                    fd.append( 'nonce',  STRUCT_NONCE );
+                    branchIds.forEach( function ( id ) { fd.append( 'branch_ids[]', id ); } );
+                    fetch( AJAX_URL, { method: 'POST', body: fd } )
+                        .then( function ( r ) { return r.json(); } )
+                        .then( function ( res ) {
+                            refreshRoleOptions( branchIds, ( res && res.success && res.data ) ? res.data : {}, [] );
+                        } )
+                        .catch( function () {
+                            tagsEl.innerHTML = '<span style="color:#e74c3c;font-size:12px;">Error al cargar cargos.</span>';
+                        } );
+                }
+
+                smSave.addEventListener( 'click', function () {
+                    smSave.disabled = true;
+                    smMsg.textContent = 'Guardando...';
+                    smMsg.className   = 'fplms-sm-msg';
+                    var branchIds = getSelectedBranches();
+                    var roleIds   = getSelectedRoles();
+                    var fd = new FormData();
+                    fd.append( 'action',    'fplms_save_frontend_structures' );
+                    fd.append( 'nonce',     STRUCT_NONCE );
+                    fd.append( 'course_id', modalCourseId );
+                    branchIds.forEach( function ( id ) { fd.append( 'branch_ids[]', id ); } );
+                    roleIds.forEach(   function ( id ) { fd.append( 'role_ids[]',   id ); } );
+                    fetch( AJAX_URL, { method: 'POST', body: fd } )
+                        .then( function ( r ) { return r.json(); } )
+                        .then( function ( res ) {
+                            smSave.disabled = false;
+                            if ( res && res.success ) {
+                                smMsg.textContent = '✓ ' + ( res.data && res.data.message ? res.data.message : 'Guardado correctamente.' );
+                                smMsg.className   = 'fplms-sm-msg ok';
+                                // Actualizar los tags de la fila en la tabla
+                                updateCourseStructTags( modalCourseId, branchIds, roleIds );
+                                setTimeout( function () { overlay.classList.remove( 'open' ); }, 1800 );
+                            } else {
+                                smMsg.textContent = '✗ ' + ( res && res.data ? res.data : 'Error al guardar.' );
+                                smMsg.className   = 'fplms-sm-msg err';
+                            }
+                        } )
+                        .catch( function () {
+                            smSave.disabled   = false;
+                            smMsg.textContent = '✗ Error de red.';
+                            smMsg.className   = 'fplms-sm-msg err';
+                        } );
+                } );
+
+                // Actualizar tags de estructura en la fila de la tabla tras guardar
+                function updateCourseStructTags( courseId, branchIds, roleIds ) {
+                    var row = tbody.querySelector( 'tr[data-id="' + courseId + '"]' );
+                    if ( ! row ) return;
+                    var td = row.querySelector( 'td[data-label="Estructuras"]' );
+                    if ( ! td ) return;
+                    // Reconstruir nombres desde los IDs en caché local de courses[]
+                    var c = courses.filter( function ( x ) { return x.id === courseId; } )[0];
+                    if ( c ) {
+                        // Marcar el curso para re-consulta en el próximo load
+                        c._struct_updated = true;
+                    }
+                    // Mensaje simple hasta próxima carga
+                    td.innerHTML = '<span class="fplms-icp-tag" style="background:#e8f5e9;color:#27ae60;">Actualizado ✓</span>';
+                }
+
+                // ── Render de filas ───────────────────────────────────────────────────
+                function renderRow( c ) {
+                    var channels = c.channels || [];
+                    var branches = c.branches || [];
+                    var roles    = c.roles    || [];
+                    var all      = channels.concat( branches ).concat( roles );
+                    var structs_html = '';
+                    var max = 3;
+                    var shown = 0;
+                    for ( var si = 0; si < channels.length && shown < max; si++, shown++ ) {
+                        structs_html += '<span class="fplms-icp-tag" style="background:#e8f0fe;color:#3557c2;">' + escH( channels[si] ) + '</span>';
+                    }
+                    for ( var si = 0; si < branches.length && shown < max; si++, shown++ ) {
+                        structs_html += '<span class="fplms-icp-tag" style="background:#e8f5e9;color:#2a7a45;">' + escH( branches[si] ) + '</span>';
+                    }
+                    for ( var si = 0; si < roles.length && shown < max; si++, shown++ ) {
+                        structs_html += '<span class="fplms-icp-tag" style="background:#fff3e0;color:#b45309;">' + escH( roles[si] ) + '</span>';
+                    }
+                    var remaining = all.length - shown;
+                    if ( remaining > 0 ) {
+                        structs_html += '<span class="fplms-icp-tag">+' + remaining + ' más</span>';
+                    }
+                    if ( ! structs_html ) {
+                        structs_html = '<span style="color:#bbb;font-size:12px;">—</span>';
+                    }
+
+                    // Botón Editar (lápiz) → edit_url
+                    var edit_btn = c.edit_url
+                        ? '<a href="' + c.edit_url + '" class="fplms-icp-btn" title="Editar curso">' +
+                          '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
+                          ' fill="none" stroke="#555" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"' +
+                          ' style="display:block;flex-shrink:0;">' +
+                          '<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>' +
+                          '<path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></a>'
+                        : '';
+
+                    // Botón Estructuras (árbol)
+                    var struct_btn =
+                        '<button type="button" class="fplms-icp-btn fplms-icp-struct-btn" ' +
+                        'title="Asignar estructuras" data-id="' + c.id + '" data-title="' + escH( c.title ) + '">' +
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
+                        ' fill="none" stroke="#555" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"' +
+                        ' style="display:block;flex-shrink:0;">' +
+                        '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></button>';
+
+                    var tr = document.createElement( 'tr' );
+                    tr.dataset.id  = c.id;
+                    tr.dataset.exp = c.is_expiring ? '1' : '0';
+                    tr.innerHTML =
+                        '<td class="fplms-icp-td-chk"><input type="checkbox" class="fplms-icp-chk" data-id="' + c.id + '"></td>' +
+                        '<td data-label="Curso"><span class="fplms-icp-title">' +
+                        '<a href="' + ( c.view_url || '#' ) + '" target="_blank">' + escH( c.title ) + '</a></span>' +
+                        '<span class="fplms-icp-id">ID: ' + c.id + '</span></td>' +
+                        '<td data-label="Creación">'      + c.created  + '</td>' +
+                        '<td data-label="Modificación">'  + c.modified + '</td>' +
+                        '<td data-label="Estructuras">'   + structs_html + '</td>' +
+                        '<td data-label="Estudiantes" style="text-align:center;">' + ( c.students || 0 ) + '</td>' +
+                        '<td data-label="Acciones"><div class="fplms-icp-actions">' + edit_btn + struct_btn + '</div></td>';
+                    return tr;
+                }
+
+                var perPage     = 10;
+                var currentPage = 1;
+
+                function applyFilters() {
+                    chkAll.checked = false;
+                    selBar.classList.remove( 'visible' );
+
+                    var q = searchQuery.toLowerCase();
+                    var filtered = courses.filter( function ( c ) {
+                        if ( activeFilter === 'expiring' && ! c.is_expiring ) return false;
+                        if ( q && c.title.toLowerCase().indexOf( q ) === -1 ) return false;
+                        return true;
+                    } );
+
+                    var totalPages = Math.max( 1, Math.ceil( filtered.length / perPage ) );
+                    if ( currentPage > totalPages ) currentPage = 1;
+                    var start   = ( currentPage - 1 ) * perPage;
+                    var pageItems = filtered.slice( start, start + perPage );
+
+                    tbody.innerHTML = '';
+                    if ( pageItems.length === 0 ) {
+                        var tr = document.createElement( 'tr' );
+                        tr.innerHTML = '<td colspan="7" class="fplms-icp-empty">No se encontraron cursos.</td>';
+                        tbody.appendChild( tr );
+                    } else {
+                        pageItems.forEach( function ( c ) { tbody.appendChild( renderRow( c ) ); } );
+                    }
+
+                    tbody.querySelectorAll( '.fplms-icp-chk' ).forEach( function ( ch ) {
+                        ch.addEventListener( 'change', function () {
+                            ch.closest( 'tr' ).classList.toggle( 'fplms-icp-selected', ch.checked );
+                            updateSelBar();
+                        } );
+                    } );
+                    tbody.querySelectorAll( '.fplms-icp-struct-btn' ).forEach( function ( btn ) {
+                        btn.addEventListener( 'click', function () {
+                            openStructModal( parseInt( btn.dataset.id ), btn.dataset.title );
+                        } );
+                    } );
+
+                    renderPagination( filtered.length, totalPages );
+                }
+
+                function renderPagination( total, totalPages ) {
+                    var pg = document.getElementById( 'fplms-icp-pagination' );
+                    if ( ! pg ) return;
+                    pg.innerHTML = '';
+                    if ( totalPages <= 1 && total === 0 ) return;
+
+                    var info = document.createElement( 'span' );
+                    info.style.cssText = 'font-size:12px;color:#888;';
+                    var start = ( currentPage - 1 ) * perPage + 1;
+                    var end   = Math.min( currentPage * perPage, total );
+                    info.textContent = start + '–' + end + ' de ' + total;
+                    pg.appendChild( info );
+
+                    var btnPrev = document.createElement( 'button' );
+                    btnPrev.textContent = '←';
+                    btnPrev.className = 'fplms-icp-pg-btn';
+                    btnPrev.disabled = currentPage === 1;
+                    btnPrev.addEventListener( 'click', function () { currentPage--; applyFilters(); } );
+                    pg.appendChild( btnPrev );
+
+                    for ( var p = 1; p <= totalPages; p++ ) {
+                        (function( page ) {
+                            var btn = document.createElement( 'button' );
+                            btn.textContent = page;
+                            btn.className = 'fplms-icp-pg-btn' + ( page === currentPage ? ' active' : '' );
+                            btn.addEventListener( 'click', function () { currentPage = page; applyFilters(); } );
+                            pg.appendChild( btn );
+                        })( p );
+                    }
+
+                    var btnNext = document.createElement( 'button' );
+                    btnNext.textContent = '→';
+                    btnNext.className = 'fplms-icp-pg-btn';
+                    btnNext.disabled = currentPage === totalPages;
+                    btnNext.addEventListener( 'click', function () { currentPage++; applyFilters(); } );
+                    pg.appendChild( btnNext );
+                }
+
+                filters.forEach( function ( btn ) {
+                    btn.addEventListener( 'click', function () {
+                        filters.forEach( function ( b ) { b.classList.remove( 'active' ); } );
+                        btn.classList.add( 'active' );
+                        activeFilter = btn.dataset.filter;
+                        currentPage = 1;
+                        applyFilters();
+                    } );
+                } );
+
+                search.addEventListener( 'input', function () {
+                    searchQuery = search.value.trim();
+                    currentPage = 1;
+                    applyFilters();
+                } );
+
+                if ( perpageSel ) {
+                    perpageSel.addEventListener( 'change', function () {
+                        perPage = parseInt( perpageSel.value );
+                        currentPage = 1;
+                        applyFilters();
+                    } );
+                }
+
+                applyFilters();
+            }
+
+            /**
+             * Muestra la página "Mis Cursos" (oculta el contenido Vue del instructor).
+             */
+            function showMisCursosPage() {
+                // Construir la página si no existe aún
+                if ( ! document.getElementById( 'fplms-mis-cursos-page' ) && instrCoursesData ) {
+                    var vuePage = document.querySelector( '.masterstudy-analytics-short-report-page' );
+                    if ( vuePage && vuePage.parentNode ) {
+                        var container = document.createElement( 'div' );
+                        container.id  = 'fplms-mis-cursos-page';
+                        container.style.cssText = 'display:none;';
+                        vuePage.parentNode.insertBefore( container, vuePage.nextSibling );
+                        buildInstructorCoursePanel( container, instrCoursesData.courses_list || [] );
                     }
                 }
-                tryInject();
-                if ( ! tabsInjected ) {
+                var vuePage   = document.querySelector( '.masterstudy-analytics-short-report-page' );
+                var statsWrap = document.querySelector( '.masterstudy-analytics-short-report-page-stats__wrapper' );
+                var miCursosP = document.getElementById( 'fplms-mis-cursos-page' );
+                if ( vuePage )   vuePage.style.display   = 'none';
+                if ( statsWrap ) statsWrap.style.display = 'none';
+                if ( miCursosP ) miCursosP.style.display = '';
+
+                // Estado activo en sidebar
+                document.querySelectorAll( '.masterstudy-account-menu__list-item' ).forEach( function ( el ) {
+                    el.classList.remove( 'masterstudy-account-menu__list-item_active' );
+                } );
+                var nav = document.getElementById( 'fplms-mis-cursos-nav' );
+                if ( nav ) nav.classList.add( 'masterstudy-account-menu__list-item_active' );
+            }
+
+            /**
+             * Oculta la página "Mis Cursos" y restaura el contenido Vue del instructor.
+             */
+            function hideMisCursosPage() {
+                var miCursosP = document.getElementById( 'fplms-mis-cursos-page' );
+                var vuePage   = document.querySelector( '.masterstudy-analytics-short-report-page' );
+                var statsWrap = document.querySelector( '.masterstudy-analytics-short-report-page-stats__wrapper' );
+                if ( miCursosP ) miCursosP.style.display = 'none';
+                if ( vuePage )   vuePage.style.display   = '';
+                if ( statsWrap ) statsWrap.style.display = '';
+                var nav = document.getElementById( 'fplms-mis-cursos-nav' );
+                if ( nav ) nav.classList.remove( 'masterstudy-account-menu__list-item_active' );
+            }
+
+            /**
+             * Inyecta el ítem "Mis Cursos" en el menú lateral del instructor
+             * justo después de "Curso Nuevo".
+             */
+            function injectMisCursosSidebarLink() {
+                function tryBuild() {
+                    if ( document.getElementById( 'fplms-mis-cursos-nav' ) ) return true;
+                    // Buscar el enlace "Curso Nuevo" (edit-course)
+                    var items  = document.querySelectorAll( '.masterstudy-account-menu__list-item' );
+                    var anchor = null;
+                    items.forEach( function ( a ) {
+                        if ( a.href && a.href.indexOf( 'edit-course' ) !== -1 ) anchor = a;
+                    } );
+                    if ( ! anchor ) return false;
+
+                    var link = document.createElement( 'a' );
+                    link.id        = 'fplms-mis-cursos-nav';
+                    link.className = 'masterstudy-account-menu__list-item';
+                    link.href      = '#';
+                    link.setAttribute( 'data-menu-place', 'main' );
+                    link.setAttribute( 'data-menu-mode',  'on'   );
+                    link.innerHTML =
+                        '<i class="stmlms-menu-assignments"></i>' +
+                        '<span class="masterstudy-account-menu__list-item-label">Mis Cursos</span>';
+
+                    anchor.parentNode.insertBefore( link, anchor.nextSibling );
+
+                    // Clic en "Mis Cursos" → mostrar página personalizada
+                    link.addEventListener( 'click', function ( e ) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        showMisCursosPage();
+                    } );
+
+                    // Clic en cualquier otro ítem del menú → restaurar vista Vue
+                    var menu = document.querySelector( '.masterstudy-account-menu' );
+                    if ( menu ) {
+                        menu.addEventListener( 'click', function ( e ) {
+                            var item = e.target.closest( '.masterstudy-account-menu__list-item' );
+                            if ( item && item.id !== 'fplms-mis-cursos-nav' ) {
+                                hideMisCursosPage();
+                            }
+                        } );
+                    }
+
+                    return true;
+                }
+
+                if ( ! tryBuild() ) {
                     var obs = new MutationObserver( function () {
-                        tryInject();
-                        if ( tabsInjected ) obs.disconnect();
+                        if ( tryBuild() ) obs.disconnect();
                     } );
                     obs.observe( document.body, { childList: true, subtree: true } );
                     setTimeout( function () { obs.disconnect(); }, 15000 );
@@ -1364,6 +2060,7 @@ class FairPlay_LMS_Plugin {
             /* ── Render instructor ───────────────────────────────────────────── */
 
             function renderInstructor( el, data ) {
+                instrCoursesData = data;
                 var avgP = (data.avg_student_progress || 0) + '%';
                 var html = mkInstructorBlock( 'courses',              'Cursos Creados',       data.created_courses    || 0 )
                          + mkInstructorBlock( 'orders',               'Cursos por Vencer',    data.expiring_courses   || 0 )
@@ -1372,19 +2069,7 @@ class FairPlay_LMS_Plugin {
                          + mkInstructorBlock( 'certificates_created', 'Certificados Emitidos', data.total_certificates || 0 );
                 el.innerHTML = html;
                 renderedInstructor = true;
-                if ( ! searchInjectedInstr ) {
-                    searchInjectedInstr = true;
-                    injectSearchBar( el, {
-                        wrapperId:     'fplms-instr-search-wrapper',
-                        inputId:       'fplms-instr-search',
-                        noResultsId:   'fplms-instr-no-results',
-                        placeholder:   'Buscar cursos creados...',
-                        cardSelectors: '.masterstudy-course-card, .masterstudy-courses-list__item, .masterstudy-my-courses__item, .masterstudy-instructor-courses__item',
-                        scopeSelector: '.masterstudy-analytics-short-report-page',
-                        insertAnchor:  el.closest( '.masterstudy-analytics-short-report-page-stats' ) || el
-                    } );
-                }
-                injectInstructorTab( data );
+                injectMisCursosSidebarLink();
             }
 
             /* ── Fetch and render ────────────────────────────────────────────── */

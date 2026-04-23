@@ -132,22 +132,23 @@ class FairPlay_LMS_Progress_Service {
     public function get_student_dashboard_stats( int $user_id ): array {
         global $wpdb;
 
-        $cache_key = 'fplms_sdash_v6_' . $user_id;
+        $cache_key = 'fplms_sdash_v7_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
         }
 
         $stats = [
-            'enrolled'       => 0,
-            'avg_progress'   => 0,
-            'completed'      => 0,
-            'certificates'   => 0,
-            'hours'          => 0.0,
-            'expiring_count' => 0,
-            'expiring_ids'   => [],
-            'upcoming_count' => 0,
-            'upcoming_ids'   => [],
+            'enrolled'          => 0,
+            'avg_progress'      => 0,
+            'completed'         => 0,
+            'in_progress_count' => 0,
+            'certificates'      => 0,
+            'hours'             => 0.0,
+            'expiring_count'    => 0,
+            'expiring_ids'      => [],
+            'upcoming_count'    => 0,
+            'upcoming_ids'      => [],
         ];
 
         // 1. Matrículas — tabla custom MasterStudy o usermeta como fallback
@@ -213,6 +214,8 @@ class FairPlay_LMS_Progress_Service {
                 if ( 'completed' === $status || $progress >= 99.9 ) {
                     $stats['completed']++;
                     $completed_ids[] = (int) $cid;
+                } elseif ( $progress > 1 ) {
+                    $stats['in_progress_count']++;
                 }
             }
 
@@ -310,12 +313,12 @@ class FairPlay_LMS_Progress_Service {
     /**
      * Estadísticas del panel /user-account/ para rol instructor/tutor.
      * Devuelve: created_courses, expiring_courses, total_students,
-     *           avg_student_progress, total_certificates.
+     *           avg_student_progress, total_certificates, expiring_ids, courses_list.
      */
     public function get_instructor_dashboard_stats( int $user_id ): array {
         global $wpdb;
 
-        $cache_key = 'fplms_idash_v2_' . $user_id;
+        $cache_key = 'fplms_idash_v4_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
@@ -328,6 +331,7 @@ class FairPlay_LMS_Progress_Service {
             'avg_student_progress' => 0,
             'total_certificates'   => 0,
             'expiring_ids'         => [],
+            'courses_list'         => [],
         ];
 
         // 1. Cursos publicados del instructor
@@ -387,6 +391,100 @@ class FairPlay_LMS_Progress_Service {
                    AND pm.meta_key   = 'course_id'
                    AND pm.meta_value IN ($in)"
             );
+
+            // 5. Lista detallada de cursos para el panel frontend del instructor
+            // Conteo de estudiantes por curso (evitar N queries)
+            $students_by_course = [];
+            if ( $ms_table ) {
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
+                $sc_rows = (array) $wpdb->get_results(
+                    "SELECT course_id, COUNT(DISTINCT user_id) AS cnt FROM `{$ms_table}`
+                     WHERE course_id IN ($in) GROUP BY course_id"
+                );
+                foreach ( $sc_rows as $sc ) {
+                    $students_by_course[ (int) $sc->course_id ] = (int) $sc->cnt;
+                }
+            }
+
+            // Metas de estructura en una sola query masiva (solo canal, sucursal, cargo)
+            $struct_meta_keys = [
+                FairPlay_LMS_Config::META_COURSE_CHANNELS => FairPlay_LMS_Config::TAX_CHANNEL,
+                FairPlay_LMS_Config::META_COURSE_BRANCHES => FairPlay_LMS_Config::TAX_BRANCH,
+                FairPlay_LMS_Config::META_COURSE_ROLES    => FairPlay_LMS_Config::TAX_ROLE,
+            ];
+            $struct_keys_list = array_keys( $struct_meta_keys );
+            $struct_keys_sql  = implode( ',', array_fill( 0, count( $struct_keys_list ), '%s' ) );
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $struct_rows = (array) $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta}
+                     WHERE post_id IN ($in) AND meta_key IN ($struct_keys_sql)",
+                    ...$struct_keys_list
+                )
+            );
+            // Indexar por curso y tipo
+            $struct_by_course = []; // [ cid => [ meta_key => [ids] ] ]
+            foreach ( $struct_rows as $sr ) {
+                $cid_s   = (int) $sr->post_id;
+                $ids_arr = array_values( array_filter( array_map( 'intval', (array) maybe_unserialize( $sr->meta_value ) ) ) );
+                if ( ! empty( $ids_arr ) ) {
+                    $struct_by_course[ $cid_s ][ $sr->meta_key ] = $ids_arr;
+                }
+            }
+
+            // Helper: resolver IDs de términos a nombres
+            $term_cache    = [];
+            $resolve_terms = function( array $ids, string $taxonomy ) use ( &$term_cache ): array {
+                $names = [];
+                foreach ( $ids as $tid ) {
+                    $key = $taxonomy . '_' . $tid;
+                    if ( ! isset( $term_cache[ $key ] ) ) {
+                        $term = get_term( $tid, $taxonomy );
+                        $term_cache[ $key ] = ( $term && ! is_wp_error( $term ) ) ? $term->name : null;
+                    }
+                    if ( $term_cache[ $key ] ) {
+                        $names[] = $term_cache[ $key ];
+                    }
+                }
+                return array_unique( $names );
+            };
+
+            $account_base = rtrim( home_url( '/user-account/edit-course/' ), '/' );
+
+            foreach ( $course_ids as $cid ) {
+                $post = get_post( $cid );
+                if ( ! $post ) continue;
+
+                $cid_structs = $struct_by_course[ $cid ] ?? [];
+
+                $channels = $resolve_terms(
+                    $cid_structs[ FairPlay_LMS_Config::META_COURSE_CHANNELS ] ?? [],
+                    FairPlay_LMS_Config::TAX_CHANNEL
+                );
+                $branches = $resolve_terms(
+                    $cid_structs[ FairPlay_LMS_Config::META_COURSE_BRANCHES ] ?? [],
+                    FairPlay_LMS_Config::TAX_BRANCH
+                );
+                $roles = $resolve_terms(
+                    $cid_structs[ FairPlay_LMS_Config::META_COURSE_ROLES ] ?? [],
+                    FairPlay_LMS_Config::TAX_ROLE
+                );
+
+                $stats['courses_list'][] = [
+                    'id'          => $cid,
+                    'title'       => get_the_title( $cid ),
+                    'edit_url'    => $account_base . '?course_id=' . $cid,
+                    'view_url'    => (string) get_permalink( $cid ),
+                    'created'     => get_the_date( 'd/m/Y', $cid ),
+                    'modified'    => get_the_modified_date( 'd/m/Y', $cid ),
+                    'students'    => $students_by_course[ $cid ] ?? 0,
+                    'channels'    => $channels,
+                    'branches'    => $branches,
+                    'roles'       => $roles,
+                    'is_expiring' => in_array( $cid, $exp_ids, true ),
+                    'status'      => $post->post_status,
+                ];
+            }
         }
 
         set_transient( $cache_key, $stats, 5 * MINUTE_IN_SECONDS );
