@@ -132,18 +132,22 @@ class FairPlay_LMS_Progress_Service {
     public function get_student_dashboard_stats( int $user_id ): array {
         global $wpdb;
 
-        $cache_key = 'fplms_sdash_v3_' . $user_id;
+        $cache_key = 'fplms_sdash_v6_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
         }
 
         $stats = [
-            'enrolled'     => 0,
-            'avg_progress' => 0,
-            'completed'    => 0,
-            'certificates' => 0,
-            'hours'        => 0.0,
+            'enrolled'       => 0,
+            'avg_progress'   => 0,
+            'completed'      => 0,
+            'certificates'   => 0,
+            'hours'          => 0.0,
+            'expiring_count' => 0,
+            'expiring_ids'   => [],
+            'upcoming_count' => 0,
+            'upcoming_ids'   => [],
         ];
 
         // 1. Matrículas — tabla custom MasterStudy o usermeta como fallback
@@ -248,6 +252,32 @@ class FairPlay_LMS_Progress_Service {
                 }
             }
             $stats['hours'] = round( $total_hours, 1 );
+
+            // Cursos próximos a iniciar (status = 'not_started' o coming_soon_status activo).
+            // Cursos con fecha de vencimiento configurada (expiring).
+            $all_cids_safe = implode( ',', array_map( 'intval', array_keys( $enrolled_ids ) ) );
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $expiring_ids = array_map( 'intval', (array) $wpdb->get_col(
+                "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
+                 WHERE post_id IN ($all_cids_safe)
+                   AND meta_key IN ('access_duration','expiration_course','status_dates_end')
+                   AND meta_value != ''
+                   AND meta_value IS NOT NULL"
+            ) );
+            $stats['expiring_count'] = count( $expiring_ids );
+            $stats['expiring_ids']   = $expiring_ids;
+
+            // Cursos próximos: coming_soon_status = '1' o 'true' o similar.
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $upcoming_ids = array_map( 'intval', (array) $wpdb->get_col(
+                "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
+                 WHERE post_id IN ($all_cids_safe)
+                   AND meta_key = 'coming_soon_status'
+                   AND meta_value != ''
+                   AND meta_value != '0'"
+            ) );
+            $stats['upcoming_count'] = count( $upcoming_ids );
+            $stats['upcoming_ids']   = $upcoming_ids;
         }
 
         // 3. Certificados del usuario
@@ -256,7 +286,7 @@ class FairPlay_LMS_Progress_Service {
              FROM {$wpdb->posts} p
              INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
              WHERE p.post_type  IN ('stm-certificates','stm-certificate')
-               AND p.post_status = 'publish'
+               AND p.post_status != 'trash'
                AND pm.meta_key   = 'user_id'
                AND pm.meta_value = %d",
             $user_id
@@ -266,7 +296,7 @@ class FairPlay_LMS_Progress_Service {
             $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
                 "SELECT COUNT(ID) FROM {$wpdb->posts}
                  WHERE post_type IN ('stm-certificates','stm-certificate')
-                   AND post_status = 'publish'
+                   AND post_status != 'trash'
                    AND post_author = %d",
                 $user_id
             ) );
@@ -285,7 +315,7 @@ class FairPlay_LMS_Progress_Service {
     public function get_instructor_dashboard_stats( int $user_id ): array {
         global $wpdb;
 
-        $cache_key = 'fplms_idash_' . $user_id;
+        $cache_key = 'fplms_idash_v2_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
@@ -297,6 +327,7 @@ class FairPlay_LMS_Progress_Service {
             'total_students'       => 0,
             'avg_student_progress' => 0,
             'total_certificates'   => 0,
+            'expiring_ids'         => [],
         ];
 
         // 1. Cursos publicados del instructor
@@ -312,15 +343,17 @@ class FairPlay_LMS_Progress_Service {
         if ( ! empty( $course_ids ) ) {
             $in = implode( ',', $course_ids ); // seguro: todos son intval
 
-            // 2. Cursos con límite de duración ("por vencer")
+            // 2. Cursos con límite de duración ("por vencer") — count e IDs
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $stats['expiring_courses'] = (int) $wpdb->get_var(
-                "SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta}
+            $exp_ids = array_map( 'intval', (array) $wpdb->get_col(
+                "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
                  WHERE post_id IN ($in)
                    AND meta_key   = 'course_duration'
                    AND meta_value != ''
                    AND meta_value  > 0"
-            );
+            ) );
+            $stats['expiring_courses'] = count( $exp_ids );
+            $stats['expiring_ids']     = $exp_ids;
 
             // 3. Estudiantes inscritos y progreso promedio
             $ms_table = null;

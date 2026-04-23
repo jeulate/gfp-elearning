@@ -855,7 +855,7 @@ class FairPlay_LMS_Plugin {
             global $wpdb;
             $stats   = $this->progress->get_student_dashboard_stats( $user_id );
             // Forzar recálculo limpio sin transient
-            delete_transient( 'fplms_sdash_v2_' . $user_id );
+            delete_transient( 'fplms_sdash_v4_' . $user_id );
             $stats2  = $this->progress->get_student_dashboard_stats( $user_id );
             // Obtener IDs de cursos completados directamente
             $ms_table = null;
@@ -951,24 +951,122 @@ class FairPlay_LMS_Plugin {
             var renderedInstructor    = false;
             var searchInjected        = false;
             var searchInjectedInstr   = false;
+            var studentCustomFilter        = null;  // { ids: [], tabEl: Element } | null
+            var instrCustomFilter          = null;
+            var studentCardObsSetup        = false;
+            var instrCardObsSetup          = false;
+            var programmaticStudentClick   = false; // bandera para click programático en tab "all"
+            var programmaticInstrClick     = false;
 
-            /* ── Barra de búsqueda de cursos ─────────────────────────────────── */
+            /* ── Helpers de filtrado por ID de curso ────────────────────────── */
 
-            /**
-             * Inyecta una barra de búsqueda debajo del bloque de estadísticas.
-             * cfg.wrapperId   — id del wrapper del input
-             * cfg.inputId     — id del input
-             * cfg.noResultsId — id del párrafo "sin resultados"
-             * cfg.placeholder — texto del placeholder
-             * cfg.cardSelectors — selector CSS de las tarjetas a filtrar
-             * cfg.scopeSelector — selector del contenedor padre para el MutationObserver
-             */
+            function extractCourseIdFromCard( card ) {
+                if ( card.dataset && card.dataset.id )       return parseInt( card.dataset.id );
+                if ( card.dataset && card.dataset.courseId ) return parseInt( card.dataset.courseId );
+                var attr = card.querySelector( '[data-id]' );
+                if ( attr ) return parseInt( attr.dataset.id );
+                // Tarjeta "coming soon": el ID está en id="countdown_XXXX"
+                var countdown = card.querySelector( '[id^="countdown_"]' );
+                if ( countdown ) {
+                    var cm = countdown.id.match( /countdown_(\d+)/ );
+                    if ( cm ) return parseInt( cm[1] );
+                }
+                // Botón / enlace con ID como último segmento de ruta: /slug/12345  o  /slug/12345/
+                var links = card.querySelectorAll( 'a[href]' );
+                for ( var i = 0; i < links.length; i++ ) {
+                    var href = links[i].href;
+                    // último segmento numérico (mínimo 3 dígitos para no confundir páginas)
+                    var pm = href.match( /\/(\d{3,})\/?(?:[?#]|$)/ );
+                    if ( pm ) return parseInt( pm[1] );
+                    var qm = href.match( /[?&](?:course_id|course-id|id)=(\d+)/ );
+                    if ( qm ) return parseInt( qm[1] );
+                }
+                return 0;
+            }
+
+            // Extrae el % de progreso de una tarjeta desde la barra o texto de progreso.
+            function extractProgressFromCard( card ) {
+                var bar = card.querySelector( '.masterstudy-course-card__progress-bar_filled' );
+                if ( bar ) {
+                    var w = parseFloat( bar.style.width || '-1' );
+                    if ( ! isNaN( w ) && w >= 0 ) return w;
+                }
+                var txt = card.querySelector( '.masterstudy-course-card__progress-title' );
+                if ( txt ) {
+                    var m = txt.textContent.match( /(\d+(?:\.\d+)?)\s*%/ );
+                    if ( m ) return parseFloat( m[1] );
+                }
+                // Botón de acción: "Completado" → 100
+                var btn = card.querySelector( '.masterstudy-button__title' );
+                if ( btn ) {
+                    var t = btn.textContent.trim().toLowerCase();
+                    if ( t === 'completado' || t === 'completed' ) return 100;
+                }
+                return -1; // sin datos (coming soon, no iniciado)
+            }
+
+            function applyStudentCustomFilter() {
+                if ( ! studentCustomFilter ) return;
+                var type  = studentCustomFilter.type || 'ids';
+                var ids   = studentCustomFilter.ids || [];
+                var scope = document.querySelector( '.masterstudy-enrolled-courses' ) || document;
+                var cards = scope.querySelectorAll(
+                    '.masterstudy-course-card, .masterstudy-enrolled-courses-list__item, .masterstudy-enrolled-courses__item'
+                );
+                cards.forEach( function ( card ) {
+                    var visible;
+                    if ( type === 'in_progress' ) {
+                        var p = extractProgressFromCard( card );
+                        visible = p > 0 && p < 100;
+                    } else if ( type === 'completed' ) {
+                        var p = extractProgressFromCard( card );
+                        visible = p >= 100;
+                    } else {
+                        var cid = extractCourseIdFromCard( card );
+                        visible = ( cid && ids.indexOf( cid ) !== -1 );
+                    }
+                    card.style.display = visible ? '' : 'none';
+                } );
+                // Re-marcar tab como activo (Vue lo resetó al clickar "all")
+                var tabEl  = studentCustomFilter.tabEl;
+                var blocks = tabEl && tabEl.closest( '.masterstudy-enrolled-courses-tabs__blocks' );
+                if ( blocks ) {
+                    blocks.querySelectorAll( '.masterstudy-enrolled-courses-tabs__block' ).forEach( function ( b ) {
+                        b.classList.remove( 'masterstudy-enrolled-courses-tabs__block_active' );
+                    } );
+                    tabEl.classList.add( 'masterstudy-enrolled-courses-tabs__block_active' );
+                }
+            }
+
+            function applyInstrCustomFilter() {
+                if ( ! instrCustomFilter ) return;
+                var ids   = instrCustomFilter.ids;
+                var scope = document.querySelector( '.masterstudy-analytics-short-report-page' ) || document;
+                var cards = scope.querySelectorAll(
+                    '.masterstudy-course-card, .masterstudy-courses-list__item, .masterstudy-my-courses__item, .masterstudy-instructor-courses__item'
+                );
+                cards.forEach( function ( card ) {
+                    var cid = extractCourseIdFromCard( card );
+                    card.style.display = ( cid && ids.indexOf( cid ) !== -1 ) ? '' : 'none';
+                } );
+                var tabEl = instrCustomFilter.tabEl;
+                var tabs  = tabEl && tabEl.closest( '.masterstudy-tabs' );
+                if ( tabs ) {
+                    tabs.querySelectorAll( '.masterstudy-tabs__item' ).forEach( function ( li ) {
+                        li.classList.remove( 'masterstudy-tabs__item_active' );
+                    } );
+                    tabEl.classList.add( 'masterstudy-tabs__item_active' );
+                }
+            }
+
+            /* ── Barra buscadora (sin filtros propios) ─────────────────────── */
+
             function injectSearchBar( statsEl, cfg ) {
                 if ( document.getElementById( cfg.wrapperId ) ) return;
 
                 var wrapper = document.createElement( 'div' );
-                wrapper.id = cfg.wrapperId;
-                wrapper.style.cssText = 'margin:16px 0 8px;position:relative;padding-bottom:10px;';
+                wrapper.id  = cfg.wrapperId;
+                wrapper.style.cssText = 'margin:16px 0 18px;position:relative;';
                 wrapper.innerHTML =
                     '<input id="' + cfg.inputId + '" type="search" placeholder="' + cfg.placeholder + '" ' +
                     'style="width:100%;padding:10px 16px 10px 44px;border:1.5px solid #e0e0e0;border-radius:8px;' +
@@ -979,53 +1077,239 @@ class FairPlay_LMS_Plugin {
                     '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
 
                 var noResults = document.createElement( 'p' );
-                noResults.id = cfg.noResultsId;
+                noResults.id  = cfg.noResultsId;
                 noResults.style.cssText = 'display:none;text-align:center;color:#888;padding:24px 0;font-size:14px;margin:0;';
-                noResults.textContent = 'No se encontraron cursos.';
+                noResults.textContent   = 'No se encontraron cursos.';
 
-                // insertAnchor permite insertar después de un ancestro específico
-                // (útil cuando statsEl está dentro de un flex container).
                 var anchor = cfg.insertAnchor || statsEl;
                 var parent = anchor.parentNode;
-                parent.insertBefore( wrapper, anchor.nextSibling );
+                parent.insertBefore( wrapper,   anchor.nextSibling );
                 parent.insertBefore( noResults, wrapper.nextSibling );
 
                 var input = wrapper.querySelector( 'input' );
-
-                function doFilter() {
+                function doSearch() {
                     var q = input.value.trim().toLowerCase();
-                    var scope = cfg.scopeSelector
-                        ? ( statsEl.closest( cfg.scopeSelector ) || document )
-                        : document;
+                    var scope = cfg.scopeSelector ? ( statsEl.closest( cfg.scopeSelector ) || document ) : document;
                     var cards = scope.querySelectorAll( cfg.cardSelectors );
                     var found = 0;
                     cards.forEach( function ( card ) {
-                        var titleEl = card.querySelector(
-                            '.masterstudy-course-card__title, .masterstudy-course-card__name, h3, h4'
-                        );
+                        var titleEl = card.querySelector( '.masterstudy-course-card__title, .masterstudy-course-card__name, h3, h4' );
                         var title = titleEl ? titleEl.textContent.toLowerCase() : card.textContent.toLowerCase();
                         var visible = ! q || title.indexOf( q ) !== -1;
                         card.style.display = visible ? '' : 'none';
                         if ( visible ) found++;
                     } );
                     var nr = document.getElementById( cfg.noResultsId );
-                    if ( nr ) {
-                        nr.style.display = ( q && found === 0 && cards.length > 0 ) ? 'block' : 'none';
-                    }
+                    if ( nr ) nr.style.display = ( q && found === 0 && cards.length > 0 ) ? 'block' : 'none';
                 }
-
-                input.addEventListener( 'input', doFilter );
+                input.addEventListener( 'input', doSearch );
                 input.addEventListener( 'focus', function () { this.style.borderColor = '#ffa800d9'; } );
                 input.addEventListener( 'blur',  function () { this.style.borderColor = '#e0e0e0'; } );
 
-                // Re-filtrar cuando Vue.js re-renderice la lista
-                var listContainer = cfg.scopeSelector
-                    ? ( statsEl.closest( cfg.scopeSelector ) || parent )
-                    : parent;
-                var listObserver = new MutationObserver( function () {
-                    if ( input.value.trim() ) doFilter();
-                } );
-                listObserver.observe( listContainer, { childList: true, subtree: true } );
+                // Limpiar filtro de texto cuando Vue re-renderiza (cambio de tab nativo)
+                var listContainer = cfg.scopeSelector ? ( statsEl.closest( cfg.scopeSelector ) || parent ) : parent;
+                new MutationObserver( function () {
+                    if ( input.value.trim() ) doSearch();
+                } ).observe( listContainer, { childList: true, subtree: true } );
+            }
+
+            /* ── Inyectar tabs nativos ────────────────────────────────────── */
+
+            /**
+             * Estudiante: agrega tabs "Próximo" y "Por Vencer" al bloque nativo
+             * .masterstudy-enrolled-courses-tabs__blocks replicando la estructura existente.
+             */
+            function injectStudentTabs( data ) {
+                var tabsInjected = false;
+
+                function tryInject() {
+                    if ( tabsInjected ) return;
+                    var blocks = document.querySelector( '.masterstudy-enrolled-courses-tabs__blocks' );
+                    if ( ! blocks ) return;
+                    if ( blocks.querySelector( '[data-status="upcoming"]' ) ) { tabsInjected = true; return; }
+                    tabsInjected = true;
+
+                    var upcoming = document.createElement( 'div' );
+                    upcoming.className = 'masterstudy-enrolled-courses-tabs__block';
+                    upcoming.dataset.status = 'upcoming';
+                    upcoming.innerHTML =
+                        '<div class="masterstudy-enrolled-courses-tabs__block-content">' +
+                        '<span class="masterstudy-enrolled-courses-tabs__block-title">Próximo</span>' +
+                        '<span class="masterstudy-enrolled-courses-tabs__block-value" data-status="upcoming">' +
+                        ( data.upcoming_count || 0 ) + '</span></div>';
+
+                    var expiring = document.createElement( 'div' );
+                    expiring.className = 'masterstudy-enrolled-courses-tabs__block';
+                    expiring.dataset.status = 'expiring';
+                    expiring.innerHTML =
+                        '<div class="masterstudy-enrolled-courses-tabs__block-content">' +
+                        '<span class="masterstudy-enrolled-courses-tabs__block-title">Por Vencer</span>' +
+                        '<span class="masterstudy-enrolled-courses-tabs__block-value" data-status="expiring">' +
+                        ( data.expiring_count || 0 ) + '</span></div>';
+
+                    // ── Gestión de clicks en tabs (capture phase) ────────────────────────────
+                    // Tabs NATIVOS (all / in_progress / completed / failed):
+                    //   → limpiar filtro custom, resetear display y dejar que Vue lo maneje.
+                    // Tabs CUSTOM (upcoming / expiring):
+                    //   → stopPropagation (MasterStudy no conoce esos status, devolvería 0)
+                    //   → cargar "all" programáticamente + filtrar client-side.
+                    blocks.addEventListener( 'click', function ( e ) {
+                        if ( programmaticStudentClick ) return;
+                        var b = e.target.closest( '[data-status]' );
+                        if ( ! b ) return;
+                        var s = b.dataset.status;
+
+                        // Tabs que Vue maneja correctamente vía AJAX nativo
+                        if ( s === 'all' || s === 'failed' ) {
+                            studentCustomFilter = null;
+                            var scope = document.querySelector( '.masterstudy-enrolled-courses' ) || document;
+                            scope.querySelectorAll(
+                                '.masterstudy-course-card, .masterstudy-enrolled-courses-list__item, .masterstudy-enrolled-courses__item'
+                            ).forEach( function ( card ) { card.style.display = ''; } );
+                            return; // sin stopPropagation: Vue lo recibe y hace su AJAX
+                        }
+
+                        // Todos los demás tabs: interceptar y aplicar filtro client-side.
+                        // Razón: MasterStudy filtra por status en DB, pero los cursos con
+                        // progress_percent=100 suelen tener status='in_progress' en DB, no
+                        // 'completed' → su AJAX devuelve 0 resultados para completed/in_progress.
+                        // Para upcoming/expiring directamente no existen en su API.
+                        e.stopPropagation();
+
+                        var filterType = 'ids';
+                        var filterIds  = [];
+                        if ( s === 'expiring' ) {
+                            filterIds = data.expiring_ids || [];
+                        } else if ( s === 'upcoming' ) {
+                            filterIds = data.upcoming_ids || [];
+                        } else if ( s === 'in_progress' ) {
+                            filterType = 'in_progress';
+                        } else if ( s === 'completed' ) {
+                            filterType = 'completed';
+                        } else {
+                            return; // status desconocido, ignorar
+                        }
+
+                        studentCustomFilter = { type: filterType, ids: filterIds, tabEl: b };
+                        var allTab = blocks.querySelector( '[data-status="all"]' );
+                        if ( allTab ) {
+                            programmaticStudentClick = true;
+                            allTab.click();
+                            programmaticStudentClick = false;
+                        }
+                        setTimeout( applyStudentCustomFilter, 150 );
+                    }, true );
+
+                    blocks.appendChild( upcoming );
+                    blocks.appendChild( expiring );
+
+                    // MutationObserver en la lista de cursos para re-aplicar filtro tras re-render de Vue
+                    if ( ! studentCardObsSetup ) {
+                        studentCardObsSetup = true;
+                        var courseList = document.querySelector( '.masterstudy-enrolled-courses' );
+                        if ( courseList ) {
+                            var filterTimer = null;
+                            new MutationObserver( function () {
+                                if ( studentCustomFilter ) {
+                                    clearTimeout( filterTimer );
+                                    filterTimer = setTimeout( applyStudentCustomFilter, 50 );
+                                }
+                            } ).observe( courseList, { childList: true, subtree: true } );
+                        }
+                    }
+                }
+
+                tryInject();
+                if ( ! tabsInjected ) {
+                    var obs = new MutationObserver( function () {
+                        tryInject();
+                        if ( tabsInjected ) obs.disconnect();
+                    } );
+                    obs.observe( document.body, { childList: true, subtree: true } );
+                    setTimeout( function () { obs.disconnect(); }, 15000 );
+                }
+            }
+
+            /**
+             * Instructor: agrega tab "Por Vencer" a la lista nativa
+             * .masterstudy-tabs justo antes del último <li> ("Próximo" ya existe).
+             */
+            function injectInstructorTab( data ) {
+                var tabsInjected = false;
+                function tryInject() {
+                    if ( tabsInjected ) return;
+                    var tabs = document.querySelector( '.masterstudy-instructor-courses__tabs .masterstudy-tabs' );
+                    if ( ! tabs ) return;
+                    if ( tabs.querySelector( '[data-id="expiring"]' ) ) { tabsInjected = true; return; }
+                    tabsInjected = true;
+
+                    var li = document.createElement( 'li' );
+                    li.className = 'masterstudy-tabs__item';
+                    li.dataset.id = 'expiring';
+                    li.textContent = 'Por Vencer';
+
+                    // ── Gestión unificada de tabs del instructor (capture phase) ────────────
+                    // Tab "expiring": stopPropagation para evitar AJAX incorrecto de MasterStudy
+                    // (devolvería 0 resultados y rompería el estado de Vue).
+                    // Tabs nativos: limpiar filtro y resetear display; Vue los maneja.
+                    tabs.addEventListener( 'click', function ( e ) {
+                        if ( programmaticInstrClick ) return;
+                        var item = e.target.closest( '[data-id]' );
+                        if ( ! item ) return;
+                        var id = item.dataset.id;
+
+                        if ( id === 'expiring' ) {
+                            e.stopPropagation();
+                            instrCustomFilter = { ids: data.expiring_ids || [], tabEl: item };
+                            var allLi = tabs.querySelector( '[data-id="all"]' );
+                            if ( allLi ) {
+                                programmaticInstrClick = true;
+                                allLi.click();
+                                programmaticInstrClick = false;
+                            }
+                            setTimeout( applyInstrCustomFilter, 150 );
+                            return;
+                        }
+
+                        // Tab nativo: limpiar filtro y resetear display; Vue lo maneja
+                        instrCustomFilter = null;
+                        var scope = document.querySelector( '.masterstudy-analytics-short-report-page' ) || document;
+                        scope.querySelectorAll(
+                            '.masterstudy-course-card, .masterstudy-courses-list__item, .masterstudy-my-courses__item, .masterstudy-instructor-courses__item'
+                        ).forEach( function ( card ) { card.style.display = ''; } );
+                    }, true );
+
+                    var proximoLi = tabs.querySelector( '[data-id="coming_soon_status"]' );
+                    if ( proximoLi && proximoLi.nextSibling ) {
+                        tabs.insertBefore( li, proximoLi.nextSibling );
+                    } else {
+                        tabs.appendChild( li );
+                    }
+
+                    // MutationObserver en la lista de cursos del instructor
+                    if ( ! instrCardObsSetup ) {
+                        instrCardObsSetup = true;
+                        var instrList = document.querySelector( '.masterstudy-analytics-short-report-page' );
+                        if ( instrList ) {
+                            var filterTimer = null;
+                            new MutationObserver( function () {
+                                if ( instrCustomFilter ) {
+                                    clearTimeout( filterTimer );
+                                    filterTimer = setTimeout( applyInstrCustomFilter, 50 );
+                                }
+                            } ).observe( instrList, { childList: true, subtree: true } );
+                        }
+                    }
+                }
+                tryInject();
+                if ( ! tabsInjected ) {
+                    var obs = new MutationObserver( function () {
+                        tryInject();
+                        if ( tabsInjected ) obs.disconnect();
+                    } );
+                    obs.observe( document.body, { childList: true, subtree: true } );
+                    setTimeout( function () { obs.disconnect(); }, 15000 );
+                }
             }
 
             /* ── Helpers de bloque ───────────────────────────────────────────── */
@@ -1066,14 +1350,15 @@ class FairPlay_LMS_Plugin {
                 if ( ! searchInjected ) {
                     searchInjected = true;
                     injectSearchBar( el, {
-                        wrapperId:    'fplms-course-search-wrapper',
-                        inputId:      'fplms-course-search',
-                        noResultsId:  'fplms-no-results',
-                        placeholder:  'Buscar cursos inscritos...',
+                        wrapperId:     'fplms-course-search-wrapper',
+                        inputId:       'fplms-course-search',
+                        noResultsId:   'fplms-no-results',
+                        placeholder:   'Buscar cursos inscritos...',
                         cardSelectors: '.masterstudy-course-card, .masterstudy-enrolled-courses-list__item, .masterstudy-enrolled-courses__item',
                         scopeSelector: '.masterstudy-enrolled-courses'
                     } );
                 }
+                injectStudentTabs( data );
             }
 
             /* ── Render instructor ───────────────────────────────────────────── */
@@ -1090,15 +1375,16 @@ class FairPlay_LMS_Plugin {
                 if ( ! searchInjectedInstr ) {
                     searchInjectedInstr = true;
                     injectSearchBar( el, {
-                        wrapperId:    'fplms-instr-search-wrapper',
-                        inputId:      'fplms-instr-search',
-                        noResultsId:  'fplms-instr-no-results',
-                        placeholder:  'Buscar cursos creados...',
+                        wrapperId:     'fplms-instr-search-wrapper',
+                        inputId:       'fplms-instr-search',
+                        noResultsId:   'fplms-instr-no-results',
+                        placeholder:   'Buscar cursos creados...',
                         cardSelectors: '.masterstudy-course-card, .masterstudy-courses-list__item, .masterstudy-my-courses__item, .masterstudy-instructor-courses__item',
                         scopeSelector: '.masterstudy-analytics-short-report-page',
                         insertAnchor:  el.closest( '.masterstudy-analytics-short-report-page-stats' ) || el
                     } );
                 }
+                injectInstructorTab( data );
             }
 
             /* ── Fetch and render ────────────────────────────────────────────── */
