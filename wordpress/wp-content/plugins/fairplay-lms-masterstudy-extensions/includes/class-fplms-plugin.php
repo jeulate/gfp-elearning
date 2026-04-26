@@ -169,6 +169,9 @@ class FairPlay_LMS_Plugin {
         // Bloquear selector de unidad de tiempo en el course builder (forzar minutos)
         add_action( 'wp_footer', [ $this, 'inject_quiz_duration_unit_lock_script' ] );
 
+        // Ocultar pestaña "Ingresos" en /user-account/analytics/
+        add_action( 'wp_footer', [ $this, 'inject_analytics_revenue_hide_script' ] );
+
         // Forzar duration_measure = minutes en cada guardado de quiz (server-side)
         add_action( 'save_post_stm-quizzes', [ $this, 'enforce_quiz_duration_minutes' ], 20, 1 );
 
@@ -301,11 +304,15 @@ class FairPlay_LMS_Plugin {
         add_action( 'wp_ajax_fplms_save_survey_settings',                      [ $this->survey, 'ajax_save_survey_settings' ] );
 
         // FEATURE: AJAX helpers para gestión de estructuras (usados desde panel admin de cursos)
-        add_action( 'wp_ajax_fplms_get_frontend_structures',  [ $this->courses, 'ajax_get_frontend_structures' ] );
-        add_action( 'wp_ajax_fplms_get_branch_roles',         [ $this->courses, 'ajax_get_branch_roles' ] );
-        add_action( 'wp_ajax_fplms_save_frontend_structures', [ $this->courses, 'ajax_save_frontend_structures' ] );
+        add_action( 'wp_ajax_fplms_get_frontend_structures',       [ $this->courses, 'ajax_get_frontend_structures' ] );
+        add_action( 'wp_ajax_fplms_get_branch_roles',              [ $this->courses, 'ajax_get_branch_roles' ] );
+        add_action( 'wp_ajax_fplms_save_frontend_structures',      [ $this->courses, 'ajax_save_frontend_structures' ] );
+        add_action( 'wp_ajax_fplms_notify_enrolled_students',      [ $this->courses, 'ajax_notify_enrolled_students' ] );
+        add_action( 'wp_ajax_fplms_get_course_quizzes',            [ $this->courses, 'ajax_get_course_quizzes' ] );
+        add_action( 'wp_ajax_fplms_save_quiz_weights_frontend',    [ $this->courses, 'ajax_save_quiz_weights_frontend' ] );
+        add_action( 'wp_ajax_fplms_bulk_course_action',            [ $this->courses, 'ajax_bulk_course_action' ] );
         // Cascade multiselect en meta box de estructuras del editor clásico
-        add_action( 'wp_ajax_fplms_cascade_structures',       [ $this->courses, 'ajax_cascade_structures' ] );
+        add_action( 'wp_ajax_fplms_cascade_structures',            [ $this->courses, 'ajax_cascade_structures' ] );
         // Nota: render_frontend_structure_panel NO se usa (reemplazado por jerarquía de subcategorías nativa)
 
         // Administradores tienen control total sobre todos los cursos MasterStudy,
@@ -960,6 +967,7 @@ class FairPlay_LMS_Plugin {
             var programmaticStudentClick   = false; // bandera para click programático en tab "all"
             var programmaticInstrClick     = false;
             var instrCoursesData           = null;  // datos del instructor (courses_list, etc.)
+            var studentCalData             = null;  // datos del estudiante para calendario
 
             /* ── Helpers de filtrado por ID de curso ────────────────────────── */
 
@@ -1322,12 +1330,56 @@ class FairPlay_LMS_Plugin {
                         '.fplms-sm-save:disabled{opacity:.5;cursor:not-allowed;}' +
                         '.fplms-sm-msg{margin-top:10px;font-size:13px;text-align:center;font-weight:500;}' +
                         '.fplms-sm-msg.ok{color:#27ae60;}.fplms-sm-msg.err{color:#e74c3c;}' +
-                        '@media(max-width:640px){#fplms-icp-table thead{display:none;}' +
-                        '#fplms-icp-table tr{display:block;margin-bottom:14px;border:1px solid #eee;' +
-                        'border-radius:10px;padding:12px;}' +
-                        '#fplms-icp-table td{display:block;padding:4px 8px;border:none;}' +
-                        '#fplms-icp-table td:before{content:attr(data-label);font-weight:600;color:#666;' +
-                        'display:block;font-size:11px;margin-bottom:2px;}}';
+                        /* Modal ponderación */
+                        '#fplms-pond-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99999;' +
+                        'align-items:center;justify-content:center;}' +
+                        '#fplms-pond-overlay.open{display:flex;}' +
+                        '#fplms-pond-modal{background:#fff;border-radius:12px;padding:28px 28px 22px;width:96%;max-width:620px;' +
+                        'max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.18);}' +
+                        '#fplms-pond-modal h3{margin:0 0 6px;font-size:17px;font-weight:700;color:#222;}' +
+                        '#fplms-pond-modal .fplms-pm-sub{font-size:12px;color:#999;margin:0 0 18px;}' +
+                        '.fplms-pm-quiz{border:1px solid #eee;border-radius:8px;margin-bottom:14px;overflow:hidden;}' +
+                        '.fplms-pm-quiz-head{background:#f8f8f8;padding:10px 14px;font-weight:700;font-size:13px;' +
+                        'display:flex;align-items:center;justify-content:space-between;gap:8px;}' +
+                        '.fplms-pm-mode-sel{font-size:12px;padding:3px 8px;border-radius:5px;border:1px solid #ddd;' +
+                        'background:#fff;color:#333;cursor:pointer;}' +
+                        '.fplms-pm-questions{padding:12px 14px;}' +
+                        '.fplms-pm-q-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;}' +
+                        '.fplms-pm-q-title{flex:1;color:#444;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+                        '.fplms-pm-q-weight{width:70px;padding:4px 6px;border:1px solid #ddd;border-radius:5px;' +
+                        'font-size:12px;text-align:center;}' +
+                        '.fplms-pm-q-auto{color:#aaa;font-size:11px;min-width:60px;text-align:right;}' +
+                        '.fplms-pm-sum{font-size:11px;text-align:right;color:#888;margin-top:4px;padding-right:4px;}' +
+                        '.fplms-pm-sum.err{color:#e74c3c;font-weight:700;}' +
+                        '.fplms-pm-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;' +
+                        'padding-top:14px;border-top:1px solid #f0f0f0;}' +
+                        '.fplms-pm-cancel{padding:9px 18px;border-radius:8px;border:1.5px solid #ddd;' +
+                        'background:#fff;color:#555;font-size:13px;cursor:pointer;font-weight:500;}' +
+                        '.fplms-pm-save{padding:9px 22px;border-radius:8px;border:none;' +
+                        'background:#ffa800;color:#fff;font-size:13px;cursor:pointer;font-weight:700;transition:opacity .15s;}' +
+                        '.fplms-pm-save:disabled{opacity:.5;cursor:not-allowed;}' +
+                        '.fplms-pm-msg{margin-top:10px;font-size:13px;text-align:center;font-weight:500;}' +
+                        '.fplms-pm-msg.ok{color:#27ae60;}.fplms-pm-msg.err{color:#e74c3c;}' +
+                        /* Bulk actions */
+                        '#fplms-icp-bulk-action{padding:5px 10px;border:1px solid #d0d0d0;border-radius:6px;' +
+                        'font-size:12px;color:#333;background:#fff;cursor:pointer;height:30px;}' +
+                        '#fplms-icp-bulk-apply{padding:5px 12px;border-radius:6px;border:1.5px solid #ddd;' +
+                        'background:#fff;color:#555;font-size:12px;font-weight:600;cursor:pointer;height:30px;' +
+                        'transition:all .15s;white-space:nowrap;}' +
+                        '#fplms-icp-bulk-apply:hover{border-color:#e74c3c;color:#e74c3c;}' +
+                        '#fplms-icp-sel-bar{flex-wrap:wrap;gap:6px;}' +
+                        /* Tabla responsive: scroll horizontal en móvil */
+                        '@media(max-width:700px){' +
+                        '.fplms-icp-tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}' +
+                        '#fplms-icp-table{min-width:580px;}' +
+                        '#fplms-icp-toolbar > div:first-child{flex:0 0 100%;}' +
+                        '.fplms-icp-filter{flex:1;justify-content:center;}' +
+                        '}' +
+                        '@media(max-width:480px){' +
+                        '#fplms-icp-bottom-bar{flex-direction:column;align-items:flex-start;}' +
+                        '#fplms-icp-sel-bar{flex-direction:column;align-items:flex-start;}' +
+                        '}' +
+                        '@media print{body>*:not(#fplms-mis-cursos-page){display:none!important;}}';
                     document.head.appendChild( style );
                 }
 
@@ -1350,6 +1402,11 @@ class FairPlay_LMS_Plugin {
                     '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>' +
                     '<polyline points="14 2 14 8 20 8"/></svg>' +
                     'Exportar PDF</button>' +
+                    '<select id="fplms-icp-bulk-action"><option value="">Acción masiva...</option>' +
+                    '<option value="activate">Activar</option>' +
+                    '<option value="deactivate">Desactivar</option>' +
+                    '<option value="delete">Eliminar</option></select>' +
+                    '<button class="fplms-icp-export-btn" id="fplms-icp-bulk-apply">Aplicar</button>' +
                     '<button class="fplms-icp-export-btn" id="fplms-icp-desel" style="margin-left:auto;font-size:12px;color:#000000;">' +
                     '✕ Deseleccionar todo</button>' +
                     '</div>' +
@@ -1361,9 +1418,16 @@ class FairPlay_LMS_Plugin {
                     '</div>' +
                     '<button class="fplms-icp-filter active" data-filter="all">Todos (' + courses.length + ')</button>' +
                     '<button class="fplms-icp-filter" data-filter="expiring">Por Vencer (' + expCount + ')</button>' +
+                    '<select id="fplms-icp-sort" title="Ordenar por" style="height:34px;border:1px solid #ddd;border-radius:6px;padding:0 8px;font-size:13px;background:#fff;cursor:pointer;">' +
+                    '<option value="date_desc">Más recientes</option>' +
+                    '<option value="date_asc">Más antiguos</option>' +
+                    '<option value="title_asc">Nombre A→Z</option>' +
+                    '<option value="title_desc">Nombre Z→A</option>' +
+                    '<option value="students_desc">Más estudiantes</option>' +
+                    '</select>' +
                     '</div>' +
                     // tabla
-                    '<div style="overflow-x:auto;">' +
+                    '<div class="fplms-icp-tbl-wrap">' +
                     '<table id="fplms-icp-table">' +
                     '<thead><tr>' +
                     '<th class="fplms-icp-th-chk"><input type="checkbox" class="fplms-icp-chk" id="fplms-icp-chk-all"></th>' +
@@ -1395,7 +1459,19 @@ class FairPlay_LMS_Plugin {
                     '<p class="fplms-sm-msg" id="fplms-sm-msg"></p>' +
                     '<div class="fplms-sm-footer">' +
                     '<button class="fplms-sm-cancel" id="fplms-sm-cancel">Cancelar</button>' +
-                    '<button class="fplms-sm-save"  id="fplms-sm-save">Guardar</button>' +
+                    '<button class="fplms-sm-save"  id="fplms-sm-save">Guardar y Notificar</button>' +
+                    '</div>' +
+                    '</div></div>' +
+                    // modal ponderación
+                    '<div id="fplms-pond-overlay">' +
+                    '<div id="fplms-pond-modal">' +
+                    '<h3>Ponderación de Tests</h3>' +
+                    '<p class="fplms-pm-sub" id="fplms-pm-sub"></p>' +
+                    '<div id="fplms-pm-body"><div class="fplms-sm-loading">Cargando tests...</div></div>' +
+                    '<p class="fplms-pm-msg" id="fplms-pm-msg"></p>' +
+                    '<div class="fplms-pm-footer">' +
+                    '<button class="fplms-pm-cancel" id="fplms-pm-cancel">Cancelar</button>' +
+                    '<button class="fplms-pm-save"   id="fplms-pm-save">Guardar</button>' +
                     '</div>' +
                     '</div></div>';
 
@@ -1407,10 +1483,14 @@ class FairPlay_LMS_Plugin {
                 var selCount   = container.querySelector( '#fplms-icp-sel-count' );
                 var btnExpXls  = container.querySelector( '#fplms-icp-exp-xls' );
                 var btnExpPdf  = container.querySelector( '#fplms-icp-exp-pdf' );
-                var btnDesel   = container.querySelector( '#fplms-icp-desel' );
-                var perpageSel = container.querySelector( '#fplms-icp-perpage' );
-                var activeFilter = 'all';
-                var searchQuery  = '';
+                var btnDesel      = container.querySelector( '#fplms-icp-desel' );
+                var bulkActionSel = container.querySelector( '#fplms-icp-bulk-action' );
+                var btnBulkApply  = container.querySelector( '#fplms-icp-bulk-apply' );
+                var perpageSel    = container.querySelector( '#fplms-icp-perpage' );
+                var sortSel       = container.querySelector( '#fplms-icp-sort' );
+                var activeFilter  = 'all';
+                var activeSortBy  = 'date_desc';
+                var searchQuery   = '';
                 var selectedIds  = [];   // IDs de cursos marcados
 
                 // ── helpers de selección ──────────────────────────────────────────────
@@ -1447,6 +1527,62 @@ class FairPlay_LMS_Plugin {
                     } );
                     chkAll.checked = false;
                     updateSelBar();
+                } );
+
+                // ── Acciones masivas ──────────────────────────────────────────────────
+                btnBulkApply.addEventListener( 'click', function () {
+                    var action = bulkActionSel.value;
+                    if ( ! action ) { alert( 'Selecciona una acción.' ); return; }
+                    if ( ! selectedIds.length ) { alert( 'Selecciona al menos un curso.' ); return; }
+
+                    var labels = { activate: 'activar', deactivate: 'desactivar', delete: 'eliminar' };
+                    if ( action === 'delete' ) {
+                        if ( ! confirm( '¿Eliminar ' + selectedIds.length + ' curso(s)? Esta acción no se puede deshacer.' ) ) return;
+                    } else {
+                        if ( ! confirm( '¿' + labels[ action ] + ' ' + selectedIds.length + ' curso(s)?' ) ) return;
+                    }
+
+                    btnBulkApply.disabled = true;
+                    btnBulkApply.textContent = 'Aplicando...';
+
+                    var fd = new FormData();
+                    fd.append( 'action',      'fplms_bulk_course_action' );
+                    fd.append( 'nonce',       STRUCT_NONCE );
+                    fd.append( 'bulk_action', action );
+                    selectedIds.forEach( function ( id ) { fd.append( 'course_ids[]', id ); } );
+
+                    fetch( AJAX_URL, { method: 'POST', body: fd } )
+                        .then( function ( r ) { return r.json(); } )
+                        .then( function ( res ) {
+                            btnBulkApply.disabled   = false;
+                            btnBulkApply.textContent = 'Aplicar';
+                            if ( res && res.success ) {
+                                alert( '✓ ' + ( res.data && res.data.message ? res.data.message : 'Acción realizada.' ) );
+                                // Actualizar vista: eliminar filas o cambiar estado
+                                if ( action === 'delete' ) {
+                                    selectedIds.forEach( function ( sid ) {
+                                        courses = courses.filter( function ( c ) { return c.id !== sid; } );
+                                    } );
+                                } else {
+                                    var newStatus = action === 'activate' ? 'publish' : 'draft';
+                                    selectedIds.forEach( function ( sid ) {
+                                        var c = courses.filter( function ( x ) { return x.id === sid; } )[0];
+                                        if ( c ) c.status = newStatus;
+                                    } );
+                                }
+                                bulkActionSel.value = '';
+                                chkAll.checked = false;
+                                currentPage = 1;
+                                applyFilters();
+                            } else {
+                                alert( '✗ ' + ( res && res.data ? res.data : 'Error al aplicar acción.' ) );
+                            }
+                        } )
+                        .catch( function () {
+                            btnBulkApply.disabled   = false;
+                            btnBulkApply.textContent = 'Aplicar';
+                            alert( '✗ Error de red.' );
+                        } );
                 } );
 
                 // ── Exportar XLS (tabla visible en selección) ─────────────────────────
@@ -1690,7 +1826,7 @@ class FairPlay_LMS_Plugin {
 
                 smSave.addEventListener( 'click', function () {
                     smSave.disabled = true;
-                    smMsg.textContent = 'Guardando...';
+                    smMsg.textContent = 'Guardando y notificando...';
                     smMsg.className   = 'fplms-sm-msg';
                     var branchIds = getSelectedBranches();
                     var roleIds   = getSelectedRoles();
@@ -1703,14 +1839,26 @@ class FairPlay_LMS_Plugin {
                     fetch( AJAX_URL, { method: 'POST', body: fd } )
                         .then( function ( r ) { return r.json(); } )
                         .then( function ( res ) {
-                            smSave.disabled = false;
                             if ( res && res.success ) {
-                                smMsg.textContent = '✓ ' + ( res.data && res.data.message ? res.data.message : 'Guardado correctamente.' );
-                                smMsg.className   = 'fplms-sm-msg ok';
-                                // Actualizar los tags de la fila en la tabla
                                 updateCourseStructTags( modalCourseId, branchIds, roleIds );
-                                setTimeout( function () { overlay.classList.remove( 'open' ); }, 1800 );
+                                // Notificar estudiantes automáticamente
+                                var fd2 = new FormData();
+                                fd2.append( 'action',    'fplms_notify_enrolled_students' );
+                                fd2.append( 'nonce',     STRUCT_NONCE );
+                                fd2.append( 'course_id', modalCourseId );
+                                return fetch( AJAX_URL, { method: 'POST', body: fd2 } )
+                                    .then( function ( r2 ) { return r2.json(); } )
+                                    .then( function ( res2 ) {
+                                        smSave.disabled = false;
+                                        var baseMsg = res.data && res.data.message ? res.data.message : 'Guardado.';
+                                        var notifMsg = ( res2 && res2.success && res2.data )
+                                            ? res2.data.message : '';
+                                        smMsg.textContent = '✓ ' + baseMsg + ( notifMsg ? ' ' + notifMsg : '' );
+                                        smMsg.className   = 'fplms-sm-msg ok';
+                                        setTimeout( function () { overlay.classList.remove( 'open' ); }, 2200 );
+                                    } );
                             } else {
+                                smSave.disabled   = false;
                                 smMsg.textContent = '✗ ' + ( res && res.data ? res.data : 'Error al guardar.' );
                                 smMsg.className   = 'fplms-sm-msg err';
                             }
@@ -1728,15 +1876,183 @@ class FairPlay_LMS_Plugin {
                     if ( ! row ) return;
                     var td = row.querySelector( 'td[data-label="Estructuras"]' );
                     if ( ! td ) return;
-                    // Reconstruir nombres desde los IDs en caché local de courses[]
                     var c = courses.filter( function ( x ) { return x.id === courseId; } )[0];
-                    if ( c ) {
-                        // Marcar el curso para re-consulta en el próximo load
-                        c._struct_updated = true;
-                    }
-                    // Mensaje simple hasta próxima carga
+                    if ( c ) { c._struct_updated = true; }
                     td.innerHTML = '<span class="fplms-icp-tag" style="background:#e8f5e9;color:#27ae60;">Actualizado ✓</span>';
                 }
+
+                // ── Modal ponderación ─────────────────────────────────────────────────
+                var pondOverlay  = container.querySelector( '#fplms-pond-overlay' );
+                var pmSub        = container.querySelector( '#fplms-pm-sub' );
+                var pmBody       = container.querySelector( '#fplms-pm-body' );
+                var pmMsg        = container.querySelector( '#fplms-pm-msg' );
+                var pmSave       = container.querySelector( '#fplms-pm-save' );
+                var pmCancel     = container.querySelector( '#fplms-pm-cancel' );
+                var pondCourseId = 0;
+
+                pmCancel.addEventListener( 'click', function () { pondOverlay.classList.remove( 'open' ); } );
+                pondOverlay.addEventListener( 'click', function ( e ) {
+                    if ( e.target === pondOverlay ) pondOverlay.classList.remove( 'open' );
+                } );
+
+                function openPondModal( courseId, courseTitle ) {
+                    pondCourseId    = courseId;
+                    pmSub.textContent = courseTitle;
+                    pmMsg.textContent = '';
+                    pmMsg.className   = 'fplms-pm-msg';
+                    pmBody.innerHTML  = '<div class="fplms-sm-loading">Cargando tests...</div>';
+                    pmSave.disabled   = true;
+                    pondOverlay.classList.add( 'open' );
+
+                    var fd = new FormData();
+                    fd.append( 'action',    'fplms_get_course_quizzes' );
+                    fd.append( 'nonce',     STRUCT_NONCE );
+                    fd.append( 'course_id', courseId );
+                    fetch( AJAX_URL, { method: 'POST', body: fd } )
+                        .then( function ( r ) { return r.json(); } )
+                        .then( function ( res ) {
+                            if ( ! res || ! res.success ) {
+                                pmBody.innerHTML = '<p style="color:#e74c3c;text-align:center;">' +
+                                    escH( res && res.data ? res.data : 'Error al cargar.' ) + '</p>';
+                                return;
+                            }
+                            var quizzes = res.data || [];
+                            if ( ! quizzes.length ) {
+                                pmBody.innerHTML = '<p style="color:#aaa;text-align:center;">Este curso no tiene tests.</p>';
+                                return;
+                            }
+                            renderPondBody( quizzes );
+                            pmSave.disabled = false;
+                        } )
+                        .catch( function () {
+                            pmBody.innerHTML = '<p style="color:#e74c3c;text-align:center;">Error de red.</p>';
+                        } );
+                }
+
+                function renderPondBody( quizzes ) {
+                    pmBody.innerHTML = '';
+                    quizzes.forEach( function ( quiz ) {
+                        var qDiv = document.createElement( 'div' );
+                        qDiv.className     = 'fplms-pm-quiz';
+                        qDiv.dataset.quizId = quiz.id;
+                        var autoEq = quiz.questions.length > 0
+                            ? Math.round( 100 / quiz.questions.length * 100 ) / 100 : 0;
+
+                        var headHtml =
+                            '<div class="fplms-pm-quiz-head">' +
+                            '<span>' + escH( quiz.title ) + '</span>' +
+                            '<select class="fplms-pm-mode-sel" data-quiz-id="' + quiz.id + '">' +
+                            '<option value="auto"' + ( quiz.mode === 'auto' ? ' selected' : '' ) + '>Automático (equitativo)</option>' +
+                            '<option value="manual"' + ( quiz.mode === 'manual' ? ' selected' : '' ) + '>Manual</option>' +
+                            '</select></div>';
+
+                        var questHtml = '<div class="fplms-pm-questions">';
+                        quiz.questions.forEach( function ( q ) {
+                            var w = ( q.weight !== null && q.weight !== undefined ) ? q.weight : '';
+                            questHtml +=
+                                '<div class="fplms-pm-q-row" data-qid="' + q.id + '">' +
+                                '<span class="fplms-pm-q-title" title="' + escH( q.title ) + '">' + escH( q.title ) + '</span>' +
+                                '<input type="number" class="fplms-pm-q-weight" min="0" max="100" step="0.01"' +
+                                ' value="' + escH( String( w ) ) + '" placeholder="pts">' +
+                                '<span class="fplms-pm-q-auto">auto: ' + autoEq + '</span>' +
+                                '</div>';
+                        } );
+                        questHtml += '<div class="fplms-pm-sum" id="fplms-pm-sum-' + quiz.id + '"></div></div>';
+
+                        qDiv.innerHTML = headHtml + questHtml;
+
+                        // Toggle visibility of weight inputs based on mode
+                        var modeSel = qDiv.querySelector( '.fplms-pm-mode-sel' );
+                        function toggleModeView() {
+                            var isManual = modeSel.value === 'manual';
+                            qDiv.querySelectorAll( '.fplms-pm-q-weight' ).forEach( function ( inp ) {
+                                inp.disabled = ! isManual;
+                                inp.style.opacity = isManual ? '1' : '.35';
+                            } );
+                            updateSum( quiz.id, qDiv );
+                        }
+                        modeSel.addEventListener( 'change', toggleModeView );
+                        toggleModeView();
+
+                        qDiv.querySelectorAll( '.fplms-pm-q-weight' ).forEach( function ( inp ) {
+                            inp.addEventListener( 'input', function () { updateSum( quiz.id, qDiv ); } );
+                        } );
+                        pmBody.appendChild( qDiv );
+                        updateSum( quiz.id, qDiv );
+                    } );
+                }
+
+                function updateSum( quizId, qDiv ) {
+                    var sumEl   = document.getElementById( 'fplms-pm-sum-' + quizId );
+                    var modeSel = qDiv.querySelector( '.fplms-pm-mode-sel' );
+                    if ( ! sumEl || ! modeSel || modeSel.value !== 'manual' ) {
+                        if ( sumEl ) sumEl.textContent = '';
+                        return;
+                    }
+                    var total = 0;
+                    qDiv.querySelectorAll( '.fplms-pm-q-weight' ).forEach( function ( inp ) {
+                        total += parseFloat( inp.value ) || 0;
+                    } );
+                    total = Math.round( total * 100 ) / 100;
+                    sumEl.textContent = 'Total: ' + total + ' / 100';
+                    sumEl.className = 'fplms-pm-sum' + ( Math.abs( total - 100 ) > 0.01 ? ' err' : '' );
+                }
+
+                pmSave.addEventListener( 'click', function () {
+                    pmSave.disabled   = true;
+                    pmMsg.textContent = 'Guardando...';
+                    pmMsg.className   = 'fplms-pm-msg';
+
+                    var quizDivs = pmBody.querySelectorAll( '.fplms-pm-quiz' );
+                    var saves    = [];
+                    quizDivs.forEach( function ( qDiv ) {
+                        var quizId  = parseInt( qDiv.dataset.quizId );
+                        var modeSel = qDiv.querySelector( '.fplms-pm-mode-sel' );
+                        var mode    = modeSel ? modeSel.value : 'auto';
+                        var weights = {};
+                        qDiv.querySelectorAll( '.fplms-pm-q-row' ).forEach( function ( row ) {
+                            var qid = parseInt( row.dataset.qid );
+                            var inp = row.querySelector( '.fplms-pm-q-weight' );
+                            if ( qid && inp ) { weights[ qid ] = parseFloat( inp.value ) || 0; }
+                        } );
+
+                        // Validar suma si es manual
+                        if ( mode === 'manual' ) {
+                            var sum = Object.values( weights ).reduce( function ( a, b ) { return a + b; }, 0 );
+                            if ( Math.abs( sum - 100 ) > 0.01 ) {
+                                pmSave.disabled   = false;
+                                pmMsg.textContent = '✗ La suma de pesos debe ser 100. Revisa: ' +
+                                    escH( qDiv.querySelector( '.fplms-pm-quiz-head span' ).textContent );
+                                pmMsg.className = 'fplms-pm-msg err';
+                                return;
+                            }
+                        }
+
+                        var fd = new FormData();
+                        fd.append( 'action',   'fplms_save_quiz_weights_frontend' );
+                        fd.append( 'nonce',    STRUCT_NONCE );
+                        fd.append( 'quiz_id',  quizId );
+                        fd.append( 'mode',     mode );
+                        Object.keys( weights ).forEach( function ( qid ) {
+                            fd.append( 'weights[' + qid + ']', weights[ qid ] );
+                        } );
+                        saves.push( fetch( AJAX_URL, { method: 'POST', body: fd } ).then( function ( r ) { return r.json(); } ) );
+                    } );
+
+                    Promise.all( saves )
+                        .then( function ( results ) {
+                            pmSave.disabled = false;
+                            var allOk = results.every( function ( r ) { return r && r.success; } );
+                            pmMsg.textContent = allOk ? '✓ Ponderación guardada correctamente.' : '✗ Algún test no se pudo guardar.';
+                            pmMsg.className   = 'fplms-pm-msg ' + ( allOk ? 'ok' : 'err' );
+                            if ( allOk ) { setTimeout( function () { pondOverlay.classList.remove( 'open' ); }, 1800 ); }
+                        } )
+                        .catch( function () {
+                            pmSave.disabled   = false;
+                            pmMsg.textContent = '✗ Error de red.';
+                            pmMsg.className   = 'fplms-pm-msg err';
+                        } );
+                } );
 
                 // ── Render de filas ───────────────────────────────────────────────────
                 function renderRow( c ) {
@@ -1764,7 +2080,7 @@ class FairPlay_LMS_Plugin {
                         structs_html = '<span style="color:#bbb;font-size:12px;">—</span>';
                     }
 
-                    // Botón Editar (lápiz) → edit_url
+                    // Botón Editar (lápiz)
                     var edit_btn = c.edit_url
                         ? '<a href="' + c.edit_url + '" class="fplms-icp-btn" title="Editar curso">' +
                           '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
@@ -1774,14 +2090,26 @@ class FairPlay_LMS_Plugin {
                           '<path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></a>'
                         : '';
 
-                    // Botón Estructuras (árbol)
+                    // Botón Estructuras + Notificar (ola)
                     var struct_btn =
                         '<button type="button" class="fplms-icp-btn fplms-icp-struct-btn" ' +
-                        'title="Asignar estructuras" data-id="' + c.id + '" data-title="' + escH( c.title ) + '">' +
+                        'title="Asignar estructuras y notificar" data-id="' + c.id + '" data-title="' + escH( c.title ) + '">' +
                         '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
                         ' fill="none" stroke="#555" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"' +
                         ' style="display:block;flex-shrink:0;">' +
                         '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></button>';
+
+                    // Botón Ponderación (balanza)
+                    var pond_btn =
+                        '<button type="button" class="fplms-icp-btn fplms-icp-pond-btn" ' +
+                        'title="Asignar ponderación a tests" data-id="' + c.id + '" data-title="' + escH( c.title ) + '">' +
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
+                        ' fill="none" stroke="#555" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"' +
+                        ' style="display:block;flex-shrink:0;">' +
+                        '<line x1="12" y1="3" x2="12" y2="21"/>' +
+                        '<path d="M3 12h6l-3-7-3 7z"/>' +
+                        '<path d="M15 12h6l-3-7-3 7z"/>' +
+                        '<line x1="3" y1="21" x2="21" y2="21"/></svg></button>';
 
                     var tr = document.createElement( 'tr' );
                     tr.dataset.id  = c.id;
@@ -1795,7 +2123,9 @@ class FairPlay_LMS_Plugin {
                         '<td data-label="Modificación">'  + c.modified + '</td>' +
                         '<td data-label="Estructuras">'   + structs_html + '</td>' +
                         '<td data-label="Estudiantes" style="text-align:center;">' + ( c.students || 0 ) + '</td>' +
-                        '<td data-label="Acciones"><div class="fplms-icp-actions">' + edit_btn + struct_btn + '</div></td>';
+                        '<td data-label="Acciones"><div class="fplms-icp-actions">' +
+                        edit_btn + struct_btn + pond_btn +
+                        '</div></td>';
                     return tr;
                 }
 
@@ -1812,6 +2142,20 @@ class FairPlay_LMS_Plugin {
                         if ( q && c.title.toLowerCase().indexOf( q ) === -1 ) return false;
                         return true;
                     } );
+
+                    // Ordenar según la selección del usuario
+                    filtered = filtered.slice(); // copia para no mutar el array original
+                    if ( activeSortBy === 'date_asc' ) {
+                        filtered.sort( function ( a, b ) { return ( a.date_start || '' ) > ( b.date_start || '' ) ? 1 : -1; } );
+                    } else if ( activeSortBy === 'date_desc' ) {
+                        filtered.sort( function ( a, b ) { return ( a.date_start || '' ) < ( b.date_start || '' ) ? 1 : -1; } );
+                    } else if ( activeSortBy === 'title_asc' ) {
+                        filtered.sort( function ( a, b ) { return a.title.localeCompare( b.title ); } );
+                    } else if ( activeSortBy === 'title_desc' ) {
+                        filtered.sort( function ( a, b ) { return b.title.localeCompare( a.title ); } );
+                    } else if ( activeSortBy === 'students_desc' ) {
+                        filtered.sort( function ( a, b ) { return ( b.students || 0 ) - ( a.students || 0 ); } );
+                    }
 
                     var totalPages = Math.max( 1, Math.ceil( filtered.length / perPage ) );
                     if ( currentPage > totalPages ) currentPage = 1;
@@ -1836,6 +2180,11 @@ class FairPlay_LMS_Plugin {
                     tbody.querySelectorAll( '.fplms-icp-struct-btn' ).forEach( function ( btn ) {
                         btn.addEventListener( 'click', function () {
                             openStructModal( parseInt( btn.dataset.id ), btn.dataset.title );
+                        } );
+                    } );
+                    tbody.querySelectorAll( '.fplms-icp-pond-btn' ).forEach( function ( btn ) {
+                        btn.addEventListener( 'click', function () {
+                            openPondModal( parseInt( btn.dataset.id ), btn.dataset.title );
                         } );
                     } );
 
@@ -1904,6 +2253,14 @@ class FairPlay_LMS_Plugin {
                     } );
                 }
 
+                if ( sortSel ) {
+                    sortSel.addEventListener( 'change', function () {
+                        activeSortBy = sortSel.value;
+                        currentPage  = 1;
+                        applyFilters();
+                    } );
+                }
+
                 applyFilters();
             }
 
@@ -1911,25 +2268,30 @@ class FairPlay_LMS_Plugin {
              * Muestra la página "Mis Cursos" (oculta el contenido Vue del instructor).
              */
             function showMisCursosPage() {
-                // Construir la página si no existe aún
+                var acctContainer = document.querySelector( '.masterstudy-account-container' );
+                if ( ! acctContainer ) return;
+
                 if ( ! document.getElementById( 'fplms-mis-cursos-page' ) && instrCoursesData ) {
-                    var vuePage = document.querySelector( '.masterstudy-analytics-short-report-page' );
-                    if ( vuePage && vuePage.parentNode ) {
-                        var container = document.createElement( 'div' );
-                        container.id  = 'fplms-mis-cursos-page';
-                        container.style.cssText = 'display:none;';
-                        vuePage.parentNode.insertBefore( container, vuePage.nextSibling );
-                        buildInstructorCoursePanel( container, instrCoursesData.courses_list || [] );
-                    }
+                    var container = document.createElement( 'div' );
+                    container.id  = 'fplms-mis-cursos-page';
+                    container.style.cssText = 'display:none;flex:1;min-width:0;overflow:auto;';
+                    acctContainer.appendChild( container );
+                    buildInstructorCoursePanel( container, instrCoursesData.courses_list || [] );
                 }
-                var vuePage   = document.querySelector( '.masterstudy-analytics-short-report-page' );
-                var statsWrap = document.querySelector( '.masterstudy-analytics-short-report-page-stats__wrapper' );
+
+                // Ocultar todos los hijos del contenedor excepto el menú y nuestra página
+                Array.prototype.forEach.call( acctContainer.children, function ( child ) {
+                    if ( child.id !== 'fplms-mis-cursos-page' &&
+                         ! child.classList.contains( 'masterstudy-account-menu' ) &&
+                         ! child.classList.contains( 'masterstudy-account-sidebar' ) ) {
+                        child.style.display = 'none';
+                        child.setAttribute( 'data-fplms-hidden', '1' );
+                    }
+                } );
+
                 var miCursosP = document.getElementById( 'fplms-mis-cursos-page' );
-                if ( vuePage )   vuePage.style.display   = 'none';
-                if ( statsWrap ) statsWrap.style.display = 'none';
                 if ( miCursosP ) miCursosP.style.display = '';
 
-                // Estado activo en sidebar
                 document.querySelectorAll( '.masterstudy-account-menu__list-item' ).forEach( function ( el ) {
                     el.classList.remove( 'masterstudy-account-menu__list-item_active' );
                 } );
@@ -1938,33 +2300,534 @@ class FairPlay_LMS_Plugin {
             }
 
             /**
-             * Oculta la página "Mis Cursos" y restaura el contenido Vue del instructor.
+             * Oculta la página "Mis Cursos" y restaura el contenido del contenedor.
              */
             function hideMisCursosPage() {
                 var miCursosP = document.getElementById( 'fplms-mis-cursos-page' );
-                var vuePage   = document.querySelector( '.masterstudy-analytics-short-report-page' );
-                var statsWrap = document.querySelector( '.masterstudy-analytics-short-report-page-stats__wrapper' );
                 if ( miCursosP ) miCursosP.style.display = 'none';
-                if ( vuePage )   vuePage.style.display   = '';
-                if ( statsWrap ) statsWrap.style.display = '';
+
+                var acctContainer = document.querySelector( '.masterstudy-account-container' );
+                if ( acctContainer ) {
+                    Array.prototype.forEach.call( acctContainer.children, function ( child ) {
+                        if ( child.getAttribute( 'data-fplms-hidden' ) === '1' ) {
+                            child.style.display = '';
+                            child.removeAttribute( 'data-fplms-hidden' );
+                        }
+                    } );
+                }
+
                 var nav = document.getElementById( 'fplms-mis-cursos-nav' );
                 if ( nav ) nav.classList.remove( 'masterstudy-account-menu__list-item_active' );
             }
 
             /**
-             * Inyecta el ítem "Mis Cursos" en el menú lateral del instructor
-             * justo después de "Curso Nuevo".
+             * Construye el panel de calendario (instructor y estudiante).
+             */
+            function buildCalendarPanel( container, courses, isInstructor ) {
+                if ( ! document.getElementById( 'fplms-cal-styles' ) ) {
+                    var calSt = document.createElement( 'style' );
+                    calSt.id = 'fplms-cal-styles';
+                    calSt.textContent =
+                        '#fplms-cal-page{font-family:inherit;padding:0;}' +
+                        '#fplms-cal-page h2{font-size:20px;font-weight:700;color:#222;margin:0 0 20px;}' +
+                        '.fplms-cal-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px;}' +
+                        '.fplms-cal-nav{display:flex;align-items:center;gap:8px;}' +
+                        '.fplms-cal-nav-btn{width:32px;height:32px;border-radius:7px;border:1.5px solid #ddd;background:#fff;cursor:pointer;font-size:18px;line-height:1;color:#555;display:inline-flex;align-items:center;justify-content:center;transition:all .15s;}' +
+                        '.fplms-cal-nav-btn:hover{border-color:#ffa800;color:#ffa800;}' +
+                        '.fplms-cal-title{font-size:15px;font-weight:700;color:#222;min-width:180px;text-align:center;}' +
+                        '.fplms-cal-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}' +
+                        '.fplms-cal-ctrl-btn{padding:6px 14px;border-radius:20px;border:1.5px solid #ddd;background:#f5f5f5;color:#555;font-size:12px;cursor:pointer;font-weight:500;transition:all .15s;white-space:nowrap;}' +
+                        '.fplms-cal-ctrl-btn.active{border-color:#ffa800;background:#ffa800;color:#fff;}' +
+                        '.fplms-cal-ctrl-btn:hover:not(.active){border-color:#ffa800;color:#ffa800;}' +
+                        '#fplms-cal-filter-panel{background:#fafafa;border:1.5px solid #e0e0e0;border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:18px;}' +
+                        '.fplms-cal-fp-group{flex:1 1 180px;}' +
+                        '.fplms-cal-fp-title{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#666;margin-bottom:8px;}' +
+                        '.fplms-cal-fp-checks{display:flex;flex-wrap:wrap;gap:5px;}' +
+                        '.fplms-cal-fp-check{display:inline-flex;align-items:center;font-size:12px;color:#444;cursor:pointer;padding:4px 10px;border:1.5px solid #ddd;border-radius:14px;background:#fff;transition:all .15s;user-select:none;}' +
+                        '.fplms-cal-fp-check.checked{border-color:#ffa800;background:#fff8ec;color:#b45309;}' +
+                        '.fplms-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);border-left:1px solid #e8e8e8;border-top:1px solid #e8e8e8;}' +
+                        '.fplms-cal-grid-hdr{background:#f8f8f8;padding:7px 0;text-align:center;font-size:11px;font-weight:700;color:#666;text-transform:uppercase;border-right:1px solid #e8e8e8;border-bottom:1px solid #e8e8e8;}' +
+                        '.fplms-cal-day{min-height:88px;padding:5px 5px 3px;border-right:1px solid #e8e8e8;border-bottom:1px solid #e8e8e8;background:#fff;overflow:hidden;}' +
+                        '.fplms-cal-day.other-month{background:#fafafa;}' +
+                        '.fplms-cal-day.today{background:#fffaf0;}' +
+                        '.fplms-cal-day-num{font-size:12px;font-weight:600;color:#444;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;margin-bottom:2px;}' +
+                        '.fplms-cal-day.today .fplms-cal-day-num{background:#ffa800;color:#fff;}' +
+                        '.fplms-cal-event{display:block;font-size:10px;color:#fff;border-radius:3px;padding:1px 5px;margin-bottom:2px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+                        '.fplms-cal-event:hover{opacity:.8;}' +
+                        '.fplms-cal-grid.week .fplms-cal-day{min-height:130px;}' +
+                        '#fplms-cal-popup{position:fixed;background:#fff;border-radius:10px;box-shadow:0 6px 32px rgba(0,0,0,.2);padding:16px 18px 14px;min-width:230px;max-width:300px;z-index:99998;display:none;}' +
+                        '#fplms-cal-popup-close{position:absolute;top:8px;right:10px;background:none;border:none;font-size:20px;cursor:pointer;color:#aaa;line-height:1;padding:0;}' +
+                        '.fplms-cal-pop-hdr{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;}' +
+                        '.fplms-cal-pop-dot{flex-shrink:0;width:12px;height:12px;border-radius:50%;margin-top:3px;}' +
+                        '.fplms-cal-pop-title{margin:0;font-size:14px;font-weight:700;color:#222;line-height:1.3;}' +
+                        '.fplms-cal-pop-dates{font-size:12px;color:#888;margin:0 0 4px;}' +
+                        '.fplms-cal-pop-structs{font-size:11px;color:#666;margin:0;}' +
+                        '@media print{.masterstudy-account-menu,#fplms-cal-popup,.fplms-cal-controls,#fplms-cal-filter-panel,.fplms-cal-nav-btn{display:none!important;}.fplms-cal-header{justify-content:center;}.fplms-cal-day{min-height:60px;}}' +
+                        '@media(max-width:640px){.fplms-cal-day{min-height:58px;}.fplms-cal-event{font-size:9px;}.fplms-cal-title{min-width:120px;font-size:13px;}}';
+                    document.head.appendChild( calSt );
+                }
+
+                var PALETTE = [ '#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac' ];
+                courses = ( courses || [] ).slice();
+                courses.forEach( function ( c, i ) { c._color = PALETTE[ i % PALETTE.length ]; } );
+
+                function esc( s ) { return String( s ).replace( /&/g, '&amp;' ).replace( /</g, '&lt;' ).replace( />/g, '&gt;' ); }
+                function pad( n ) { return n < 10 ? '0' + n : '' + n; }
+                function toISO( d ) { return d.getFullYear() + '-' + pad( d.getMonth() + 1 ) + '-' + pad( d.getDate() ); }
+                function parseISO( s ) { if ( ! s ) return null; var p = s.split( '-' ); return new Date( +p[0], +p[1] - 1, +p[2] ); }
+                function fmtDate( d ) { return d ? pad( d.getDate() ) + '/' + pad( d.getMonth() + 1 ) + '/' + d.getFullYear() : '\u2014'; }
+
+                var MONTHS   = [ 'Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre' ];
+                var DAYS_HDR = [ 'Lun','Mar','Mi\u00e9','Jue','Vie','S\u00e1b','Dom' ];
+
+                // Unique branches + roles for instructor filters
+                var allBranches = [], allRoles = [];
+                if ( isInstructor ) {
+                    var bSet = {}, rSet = {};
+                    courses.forEach( function ( c ) {
+                        ( c.branches || [] ).forEach( function ( b ) { if ( ! bSet[ b ] ) { bSet[ b ] = 1; allBranches.push( b ); } } );
+                        ( c.roles    || [] ).forEach( function ( r ) { if ( ! rSet[ r ] ) { rSet[ r ] = 1; allRoles.push( r );    } } );
+                    } );
+                }
+
+                var now      = new Date();
+                var viewDate = new Date( now.getFullYear(), now.getMonth(), 1 );
+                var calView  = 'month';
+                var filterBranches = [], filterRoles = [];
+
+                // Filter panel (instructor only)
+                var filterPanelHTML = '';
+                if ( isInstructor ) {
+                    var bChips = allBranches.map( function ( b ) { return '<span class="fplms-cal-fp-check" data-type="branch" data-val="' + esc( b ) + '">' + esc( b ) + '</span>'; } ).join( '' );
+                    var rChips = allRoles.map( function ( r ) { return '<span class="fplms-cal-fp-check" data-type="role" data-val="' + esc( r ) + '">' + esc( r ) + '</span>'; } ).join( '' );
+                    filterPanelHTML =
+                        '<div id="fplms-cal-filter-panel" style="display:none;">' +
+                        ( allBranches.length ? '<div class="fplms-cal-fp-group"><span class="fplms-cal-fp-title">Sucursal</span><div class="fplms-cal-fp-checks">' + bChips + '</div></div>' : '' ) +
+                        ( allRoles.length    ? '<div class="fplms-cal-fp-group"><span class="fplms-cal-fp-title">Cargo</span><div class="fplms-cal-fp-checks">'    + rChips + '</div></div>' : '' ) +
+                        '</div>';
+                }
+
+                var instrBtns = isInstructor
+                    ? '<button class="fplms-cal-ctrl-btn" id="fplms-cal-filter-btn">' +
+                      '<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="#555" stroke-width="2.5" style="display:inline-block;margin-right:3px;vertical-align:middle;"><line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="11" y1="18" x2="13" y2="18"/></svg>Filtros</button>' +
+                      '<button class="fplms-cal-ctrl-btn" id="fplms-cal-pdf-btn">' +
+                      '<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="#555" stroke-width="2.5" style="display:inline-block;margin-right:3px;vertical-align:middle;"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>PDF</button>'
+                    : '';
+
+                container.innerHTML =
+                    '<h2>Mi Calendario</h2>' +
+                    '<div class="fplms-cal-header">' +
+                      '<div class="fplms-cal-nav">' +
+                        '<button class="fplms-cal-nav-btn" id="fplms-cal-prev">&#8249;</button>' +
+                        '<span class="fplms-cal-title" id="fplms-cal-title"></span>' +
+                        '<button class="fplms-cal-nav-btn" id="fplms-cal-next">&#8250;</button>' +
+                        '<button class="fplms-cal-ctrl-btn" id="fplms-cal-today">Hoy</button>' +
+                      '</div>' +
+                      '<div class="fplms-cal-controls">' +
+                        '<button class="fplms-cal-ctrl-btn active" id="fplms-cal-month-btn" data-view="month">Mes</button>' +
+                        '<button class="fplms-cal-ctrl-btn" id="fplms-cal-week-btn" data-view="week">Semana</button>' +
+                        instrBtns +
+                      '</div>' +
+                    '</div>' +
+                    filterPanelHTML +
+                    '<div id="fplms-cal-grid-wrap" style="overflow-x:auto;"></div>' +
+                    '<div id="fplms-cal-popup">' +
+                      '<button id="fplms-cal-popup-close">&#215;</button>' +
+                      '<div class="fplms-cal-pop-hdr"><span class="fplms-cal-pop-dot" id="fplms-cal-pop-dot"></span>' +
+                      '<p class="fplms-cal-pop-title" id="fplms-cal-pop-title"></p></div>' +
+                      '<p class="fplms-cal-pop-dates" id="fplms-cal-pop-dates"></p>' +
+                      '<p class="fplms-cal-pop-structs" id="fplms-cal-pop-structs"></p>' +
+                    '</div>';
+
+                var gridWrap   = container.querySelector( '#fplms-cal-grid-wrap' );
+                var titleEl    = container.querySelector( '#fplms-cal-title' );
+                var popup      = container.querySelector( '#fplms-cal-popup' );
+                var popDot     = container.querySelector( '#fplms-cal-pop-dot' );
+                var popTitle   = container.querySelector( '#fplms-cal-pop-title' );
+                var popDates   = container.querySelector( '#fplms-cal-pop-dates' );
+                var popStructs = container.querySelector( '#fplms-cal-pop-structs' );
+                var filterPanel = container.querySelector( '#fplms-cal-filter-panel' );
+
+                function getFiltered() {
+                    if ( ! isInstructor || ( ! filterBranches.length && ! filterRoles.length ) ) return courses;
+                    return courses.filter( function ( c ) {
+                        var okB = ! filterBranches.length || ( c.branches || [] ).some( function ( b ) { return filterBranches.indexOf( b ) >= 0; } );
+                        var okR = ! filterRoles.length    || ( c.roles    || [] ).some( function ( r ) { return filterRoles.indexOf( r ) >= 0; } );
+                        return okB && okR;
+                    } );
+                }
+
+                function onDay( c, d ) {
+                    var s = parseISO( c.date_start ); if ( ! s ) return false;
+                    var e = parseISO( c.date_end ) || s;
+                    var sd = new Date( s.getFullYear(), s.getMonth(), s.getDate() );
+                    var ed = new Date( e.getFullYear(), e.getMonth(), e.getDate() );
+                    var dd = new Date( d.getFullYear(), d.getMonth(), d.getDate() );
+                    return dd >= sd && dd <= ed;
+                }
+
+                function buildGrid( days, weekHdrDates ) {
+                    var filtered = getFiltered();
+                    var todayStr = toISO( new Date() );
+                    var headers  = DAYS_HDR.map( function ( lbl, i ) {
+                        return '<div class="fplms-cal-grid-hdr">' + lbl +
+                            ( weekHdrDates ? '<br><span style="font-size:12px;font-weight:400;">' + pad( weekHdrDates[ i ].getDate() ) + '</span>' : '' ) +
+                            '</div>';
+                    } ).join( '' );
+                    var cells = days.map( function ( info ) {
+                        var cls = 'fplms-cal-day' + ( info.out ? ' other-month' : '' ) + ( toISO( info.d ) === todayStr ? ' today' : '' );
+                        var evs = '';
+                        filtered.forEach( function ( c ) {
+                            if ( onDay( c, info.d ) ) {
+                                evs += '<span class="fplms-cal-event" style="background:' + c._color + ';" data-cid="' + c.id + '">' +
+                                    esc( c.title.length > 19 ? c.title.slice( 0, 17 ) + '\u2026' : c.title ) + '</span>';
+                            }
+                        } );
+                        return '<div class="' + cls + '" data-date="' + toISO( info.d ) + '">' +
+                            '<span class="fplms-cal-day-num">' + info.d.getDate() + '</span>' + evs + '</div>';
+                    } ).join( '' );
+                    return '<div class="fplms-cal-grid' + ( calView === 'week' ? ' week' : '' ) + '">' + headers + cells + '</div>';
+                }
+
+                function renderMonth() {
+                    var yr = viewDate.getFullYear(), mo = viewDate.getMonth();
+                    titleEl.textContent = MONTHS[ mo ] + ' ' + yr;
+                    var first  = new Date( yr, mo, 1 );
+                    var offset = ( first.getDay() + 6 ) % 7;
+                    var daysIn = new Date( yr, mo + 1, 0 ).getDate();
+                    var total  = Math.ceil( ( offset + daysIn ) / 7 ) * 7;
+                    var days   = [];
+                    for ( var i = 0; i < total; i++ ) {
+                        var d = new Date( yr, mo, 1 - offset + i );
+                        days.push( { d: d, out: d.getMonth() !== mo } );
+                    }
+                    gridWrap.innerHTML = buildGrid( days, null );
+                    bindEvents();
+                }
+
+                function renderWeek() {
+                    var base = new Date( viewDate );
+                    var dow  = ( base.getDay() + 6 ) % 7;
+                    var mon  = new Date( base.getFullYear(), base.getMonth(), base.getDate() - dow );
+                    var sun  = new Date( mon.getFullYear(),  mon.getMonth(),  mon.getDate() + 6 );
+                    titleEl.textContent =
+                        pad( mon.getDate() ) + ' ' + MONTHS[ mon.getMonth() ].slice( 0, 3 ) + ' \u2013 ' +
+                        pad( sun.getDate() ) + ' ' + MONTHS[ sun.getMonth() ].slice( 0, 3 ) + ' ' + mon.getFullYear();
+                    var days = [], hdrs = [];
+                    for ( var i = 0; i < 7; i++ ) {
+                        var d = new Date( mon.getFullYear(), mon.getMonth(), mon.getDate() + i );
+                        days.push( { d: d, out: false } );
+                        hdrs.push( d );
+                    }
+                    gridWrap.innerHTML = buildGrid( days, hdrs );
+                    bindEvents();
+                }
+
+                function render() { calView === 'month' ? renderMonth() : renderWeek(); }
+
+                function bindEvents() {
+                    gridWrap.querySelectorAll( '.fplms-cal-event' ).forEach( function ( ev ) {
+                        ev.addEventListener( 'click', function ( e ) {
+                            e.stopPropagation();
+                            var cid = parseInt( ev.dataset.cid );
+                            var co  = courses.filter( function ( c ) { return c.id === cid; } )[ 0 ];
+                            if ( ! co ) return;
+                            popDot.style.background  = co._color;
+                            popTitle.textContent     = co.title;
+                            popDates.textContent     = 'Vigencia: ' + fmtDate( parseISO( co.date_start ) ) +
+                                ( co.date_end ? ' \u2013 ' + fmtDate( parseISO( co.date_end ) ) : '' );
+                            if ( isInstructor ) {
+                                var structs = ( co.branches || [] ).concat( co.roles || [] );
+                                popStructs.textContent = structs.length ? structs.join( ', ' ) : '';
+                            } else {
+                                popStructs.textContent = '';
+                            }
+                            var left = Math.min( e.clientX + 14, window.innerWidth  - 310 );
+                            var top  = Math.min( e.clientY + 14, window.innerHeight - 160 );
+                            popup.style.cssText = 'display:block;left:' + left + 'px;top:' + top + 'px;';
+                        } );
+                    } );
+                }
+
+                // Navigation
+                container.querySelector( '#fplms-cal-prev' ).addEventListener( 'click', function () {
+                    if ( calView === 'month' ) viewDate = new Date( viewDate.getFullYear(), viewDate.getMonth() - 1, 1 );
+                    else viewDate = new Date( viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - 7 );
+                    render();
+                } );
+                container.querySelector( '#fplms-cal-next' ).addEventListener( 'click', function () {
+                    if ( calView === 'month' ) viewDate = new Date( viewDate.getFullYear(), viewDate.getMonth() + 1, 1 );
+                    else viewDate = new Date( viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() + 7 );
+                    render();
+                } );
+                container.querySelector( '#fplms-cal-today' ).addEventListener( 'click', function () {
+                    var n = new Date();
+                    viewDate = calView === 'month' ? new Date( n.getFullYear(), n.getMonth(), 1 ) : new Date( n.getFullYear(), n.getMonth(), n.getDate() );
+                    render();
+                } );
+
+                // View toggle
+                [ 'month', 'week' ].forEach( function ( v ) {
+                    var btn = container.querySelector( '#fplms-cal-' + v + '-btn' );
+                    if ( ! btn ) return;
+                    btn.addEventListener( 'click', function () {
+                        calView = v;
+                        container.querySelector( '#fplms-cal-month-btn' ).classList.toggle( 'active', v === 'month' );
+                        container.querySelector( '#fplms-cal-week-btn'  ).classList.toggle( 'active', v === 'week'  );
+                        var n = new Date();
+                        viewDate = v === 'month' ? new Date( n.getFullYear(), n.getMonth(), 1 ) : new Date( n.getFullYear(), n.getMonth(), n.getDate() );
+                        render();
+                    } );
+                } );
+
+                // Filters (instructor)
+                var filterBtn = container.querySelector( '#fplms-cal-filter-btn' );
+                if ( filterBtn && filterPanel ) {
+                    filterBtn.addEventListener( 'click', function () {
+                        var open = filterPanel.style.display !== 'none';
+                        filterPanel.style.display = open ? 'none' : 'flex';
+                        filterBtn.classList.toggle( 'active', ! open );
+                    } );
+                    filterPanel.querySelectorAll( '.fplms-cal-fp-check' ).forEach( function ( chip ) {
+                        chip.addEventListener( 'click', function () {
+                            chip.classList.toggle( 'checked' );
+                            var arr = chip.dataset.type === 'branch' ? filterBranches : filterRoles;
+                            var idx = arr.indexOf( chip.dataset.val );
+                            if ( idx >= 0 ) arr.splice( idx, 1 ); else arr.push( chip.dataset.val );
+                            render();
+                        } );
+                    } );
+                }
+
+                // PDF export — imprime solo el calendario en una nueva ventana
+                var pdfBtn = container.querySelector( '#fplms-cal-pdf-btn' );
+                if ( pdfBtn ) pdfBtn.addEventListener( 'click', function () {
+                    var titleText = titleEl ? titleEl.textContent : 'Mi Calendario';
+                    var gridHTML  = gridWrap ? gridWrap.innerHTML : '';
+                    var w = window.open( '', '_blank', 'width=1060,height=760' );
+                    if ( ! w ) return;
+                    w.document.write(
+                        '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+                        '<title>Mi Calendario \u2013 ' + titleText + '</title>' +
+                        '<style>' +
+                        'body{font-family:Arial,sans-serif;margin:24px;font-size:12px;}' +
+                        'h1{font-size:16px;margin-bottom:14px;color:#222;}' +
+                        '.fplms-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);border-left:1px solid #ccc;border-top:1px solid #ccc;}' +
+                        '.fplms-cal-grid.week .fplms-cal-day{min-height:110px;}' +
+                        '.fplms-cal-grid-hdr{background:#f0f0f0;padding:6px 0;text-align:center;font-size:11px;font-weight:700;color:#555;border-right:1px solid #ccc;border-bottom:1px solid #ccc;}' +
+                        '.fplms-cal-day{min-height:72px;padding:4px;border-right:1px solid #ccc;border-bottom:1px solid #ccc;background:#fff;overflow:hidden;}' +
+                        '.fplms-cal-day.other-month{background:#f9f9f9;}' +
+                        '.fplms-cal-day-num{font-size:11px;font-weight:600;color:#444;display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;border-radius:50%;margin-bottom:2px;}' +
+                        '.fplms-cal-day.today .fplms-cal-day-num{background:#ffa800;color:#fff;}' +
+                        '.fplms-cal-event{display:block;font-size:9px;color:#fff;border-radius:2px;padding:1px 4px;margin-bottom:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+                        '</style></head><body>' +
+                        '<h1>Mi Calendario \u2013 ' + titleText + '</h1>' +
+                        gridHTML +
+                        '</body></html>'
+                    );
+                    w.document.close();
+                    w.print();
+                } );
+
+                // Close popup
+                container.querySelector( '#fplms-cal-popup-close' ).addEventListener( 'click', function () { popup.style.display = 'none'; } );
+                document.addEventListener( 'click', function ( e ) {
+                    if ( popup.style.display !== 'none' && ! popup.contains( e.target ) ) popup.style.display = 'none';
+                } );
+
+                render();
+            }
+
+            /**
+             * Muestra el calendario del instructor.
+             */
+            function showInstructorCalendarPage() {
+                var acctContainer = document.querySelector( '.masterstudy-account-container' );
+                if ( ! acctContainer ) return;
+
+                if ( ! document.getElementById( 'fplms-cal-instr-page' ) && instrCoursesData ) {
+                    var cont = document.createElement( 'div' );
+                    cont.id = 'fplms-cal-instr-page';
+                    cont.style.cssText = 'display:none;flex:1;min-width:0;overflow:auto;';
+                    acctContainer.appendChild( cont );
+                    buildCalendarPanel( cont, instrCoursesData.courses_list || [], true );
+                }
+
+                // Ocultar todos los hijos del contenedor excepto el menú y nuestro calendario
+                Array.prototype.forEach.call( acctContainer.children, function ( child ) {
+                    if ( child.id !== 'fplms-cal-instr-page' &&
+                         ! child.classList.contains( 'masterstudy-account-menu' ) &&
+                         ! child.classList.contains( 'masterstudy-account-sidebar' ) ) {
+                        child.style.display = 'none';
+                        child.setAttribute( 'data-fplms-hidden', '1' );
+                    }
+                } );
+
+                var calInstrP = document.getElementById( 'fplms-cal-instr-page' );
+                if ( calInstrP ) calInstrP.style.display = '';
+
+                document.querySelectorAll( '.masterstudy-account-menu__list-item' ).forEach( function ( el ) {
+                    el.classList.remove( 'masterstudy-account-menu__list-item_active' );
+                } );
+                var nav = document.getElementById( 'fplms-mi-calendario-instr-nav' );
+                if ( nav ) nav.classList.add( 'masterstudy-account-menu__list-item_active' );
+            }
+
+            /**
+             * Oculta el calendario del instructor.
+             */
+            function hideInstructorCalendarPage() {
+                var calInstrP = document.getElementById( 'fplms-cal-instr-page' );
+                if ( calInstrP ) calInstrP.style.display = 'none';
+
+                var acctContainer = document.querySelector( '.masterstudy-account-container' );
+                if ( acctContainer ) {
+                    Array.prototype.forEach.call( acctContainer.children, function ( child ) {
+                        if ( child.getAttribute( 'data-fplms-hidden' ) === '1' ) {
+                            child.style.display = '';
+                            child.removeAttribute( 'data-fplms-hidden' );
+                        }
+                    } );
+                }
+
+                var nav = document.getElementById( 'fplms-mi-calendario-instr-nav' );
+                if ( nav ) nav.classList.remove( 'masterstudy-account-menu__list-item_active' );
+            }
+
+            /**
+             * Muestra el calendario del estudiante.
+             */
+            function showStudentCalendarPage() {
+                var acctContainer = document.querySelector( '.masterstudy-account-container' );
+                if ( ! acctContainer ) return;
+
+                if ( ! document.getElementById( 'fplms-cal-student-page' ) && studentCalData ) {
+                    var cont = document.createElement( 'div' );
+                    cont.id = 'fplms-cal-student-page';
+                    cont.style.cssText = 'display:none;flex:1;min-width:0;overflow:auto;';
+                    acctContainer.appendChild( cont );
+                    buildCalendarPanel( cont, ( studentCalData.courses_list || [] ), false );
+                }
+
+                // Ocultar todos los hijos del contenedor excepto el menú y nuestro calendario
+                Array.prototype.forEach.call( acctContainer.children, function ( child ) {
+                    if ( child.id !== 'fplms-cal-student-page' &&
+                         ! child.classList.contains( 'masterstudy-account-menu' ) &&
+                         ! child.classList.contains( 'masterstudy-account-sidebar' ) ) {
+                        child.style.display = 'none';
+                        child.setAttribute( 'data-fplms-hidden', '1' );
+                    }
+                } );
+
+                var calStudP = document.getElementById( 'fplms-cal-student-page' );
+                if ( calStudP ) calStudP.style.display = '';
+
+                document.querySelectorAll( '.masterstudy-account-menu__list-item' ).forEach( function ( el ) {
+                    el.classList.remove( 'masterstudy-account-menu__list-item_active' );
+                } );
+                var nav = document.getElementById( 'fplms-mi-calendario-student-nav' );
+                if ( nav ) nav.classList.add( 'masterstudy-account-menu__list-item_active' );
+            }
+
+            /**
+             * Oculta el calendario del estudiante.
+             */
+            function hideStudentCalendarPage() {
+                var calStudP = document.getElementById( 'fplms-cal-student-page' );
+                if ( calStudP ) calStudP.style.display = 'none';
+
+                var acctContainer = document.querySelector( '.masterstudy-account-container' );
+                if ( acctContainer ) {
+                    Array.prototype.forEach.call( acctContainer.children, function ( child ) {
+                        if ( child.getAttribute( 'data-fplms-hidden' ) === '1' ) {
+                            child.style.display = '';
+                            child.removeAttribute( 'data-fplms-hidden' );
+                        }
+                    } );
+                }
+
+                var nav = document.getElementById( 'fplms-mi-calendario-student-nav' );
+                if ( nav ) nav.classList.remove( 'masterstudy-account-menu__list-item_active' );
+            }
+
+            /**
+             * Inyecta el botón "Mi Calendario" en el sidebar del estudiante.
+             * Usa un observer persistente para re-inyectarlo cada vez que Vue
+             * re-renderiza el menú lateral al navegar entre páginas.
+             */
+            function injectStudentCalendarSidebarLink() {
+                function tryBuild() {
+                    // Si ya existe, nada que hacer
+                    if ( document.getElementById( 'fplms-mi-calendario-student-nav' ) ) return;
+
+                    var items = document.querySelectorAll( '.masterstudy-account-menu__list-item' );
+                    if ( ! items.length ) return;
+
+                    // Insertar antes de la sección AJUSTES DE CUENTA
+                    var anchor = null;
+                    items.forEach( function ( a ) {
+                        var txt = ( a.textContent || '' ).trim();
+                        if ( txt.indexOf( 'Ajustes' ) === -1 && txt.indexOf( 'Salir' ) === -1 ) anchor = a;
+                    } );
+                    if ( ! anchor ) anchor = items[ items.length - 1 ];
+                    if ( ! anchor ) return;
+
+                    var link = document.createElement( 'a' );
+                    link.id        = 'fplms-mi-calendario-student-nav';
+                    link.className = 'masterstudy-account-menu__list-item';
+                    link.href      = '#';
+                    link.setAttribute( 'data-menu-place', 'main' );
+                    link.setAttribute( 'data-menu-mode',  'on' );
+                    link.innerHTML =
+                        '<i class="stmlms-menu-enrolled-courses"></i>' +
+                        '<span class="masterstudy-account-menu__list-item-label">Mi Calendario</span>';
+                    anchor.parentNode.insertBefore( link, anchor.nextSibling );
+
+                    link.addEventListener( 'click', function ( e ) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        showStudentCalendarPage();
+                    } );
+
+                    // Ocultar calendario al pulsar cualquier otro ítem del menú
+                    var menu = anchor.closest( '.masterstudy-account-menu' );
+                    if ( menu && ! menu.dataset.fplmsStudentCalListened ) {
+                        menu.dataset.fplmsStudentCalListened = '1';
+                        menu.addEventListener( 'click', function ( e ) {
+                            var item = e.target.closest( '.masterstudy-account-menu__list-item' );
+                            if ( item && item.id !== 'fplms-mi-calendario-student-nav' ) hideStudentCalendarPage();
+                        } );
+                    }
+                }
+
+                // Primer intento inmediato
+                tryBuild();
+
+                // Observer persistente: re-inyecta si el menú se re-renderiza
+                var debounceTimer;
+                var sidebarObs = new MutationObserver( function () {
+                    clearTimeout( debounceTimer );
+                    debounceTimer = setTimeout( tryBuild, 80 );
+                } );
+                sidebarObs.observe( document.body, { childList: true, subtree: true } );
+            }
+
+            /**
+             * Inyecta los ítems "Mis Cursos" y "Mi Calendario" en el menú lateral
+             * del instructor. Observer persistente — sobrevive a re-renders de Vue.
              */
             function injectMisCursosSidebarLink() {
                 function tryBuild() {
-                    if ( document.getElementById( 'fplms-mis-cursos-nav' ) ) return true;
+                    // Ya inyectados: nada que hacer
+                    if ( document.getElementById( 'fplms-mis-cursos-nav' ) ) return;
+
                     // Buscar el enlace "Curso Nuevo" (edit-course)
                     var items  = document.querySelectorAll( '.masterstudy-account-menu__list-item' );
                     var anchor = null;
                     items.forEach( function ( a ) {
                         if ( a.href && a.href.indexOf( 'edit-course' ) !== -1 ) anchor = a;
                     } );
-                    if ( ! anchor ) return false;
+                    if ( ! anchor ) return;
 
                     var link = document.createElement( 'a' );
                     link.id        = 'fplms-mis-cursos-nav';
@@ -1978,34 +2841,58 @@ class FairPlay_LMS_Plugin {
 
                     anchor.parentNode.insertBefore( link, anchor.nextSibling );
 
-                    // Clic en "Mis Cursos" → mostrar página personalizada
+                    var calLink = document.createElement( 'a' );
+                    calLink.id        = 'fplms-mi-calendario-instr-nav';
+                    calLink.className = 'masterstudy-account-menu__list-item';
+                    calLink.href      = '#';
+                    calLink.setAttribute( 'data-menu-place', 'main' );
+                    calLink.setAttribute( 'data-menu-mode',  'on' );
+                    calLink.innerHTML =
+                        '<i class="stmlms-menu-enrolled-courses"></i>' +
+                        '<span class="masterstudy-account-menu__list-item-label">Mi Calendario</span>';
+                    anchor.parentNode.insertBefore( calLink, link.nextSibling );
+
                     link.addEventListener( 'click', function ( e ) {
                         e.preventDefault();
                         e.stopPropagation();
+                        hideInstructorCalendarPage();
                         showMisCursosPage();
                     } );
 
-                    // Clic en cualquier otro ítem del menú → restaurar vista Vue
-                    var menu = document.querySelector( '.masterstudy-account-menu' );
-                    if ( menu ) {
+                    calLink.addEventListener( 'click', function ( e ) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        showInstructorCalendarPage();
+                    } );
+
+                    // Ocultar páginas custom al navegar a otra sección
+                    var menu = anchor.closest( '.masterstudy-account-menu' );
+                    if ( menu && ! menu.dataset.fplmsInstrListened ) {
+                        menu.dataset.fplmsInstrListened = '1';
                         menu.addEventListener( 'click', function ( e ) {
                             var item = e.target.closest( '.masterstudy-account-menu__list-item' );
-                            if ( item && item.id !== 'fplms-mis-cursos-nav' ) {
+                            if ( ! item ) return;
+                            var id = item.id;
+                            if ( id !== 'fplms-mis-cursos-nav' && id !== 'fplms-mi-calendario-instr-nav' ) {
                                 hideMisCursosPage();
+                                hideInstructorCalendarPage();
                             }
+                            if ( id === 'fplms-mis-cursos-nav'          ) hideInstructorCalendarPage();
+                            if ( id === 'fplms-mi-calendario-instr-nav' ) hideMisCursosPage();
                         } );
                     }
-
-                    return true;
                 }
 
-                if ( ! tryBuild() ) {
-                    var obs = new MutationObserver( function () {
-                        if ( tryBuild() ) obs.disconnect();
-                    } );
-                    obs.observe( document.body, { childList: true, subtree: true } );
-                    setTimeout( function () { obs.disconnect(); }, 15000 );
-                }
+                // Primer intento inmediato
+                tryBuild();
+
+                // Observer persistente: re-inyecta cada vez que Vue re-renderiza el menú
+                var debounceTimer;
+                var sidebarObs = new MutationObserver( function () {
+                    clearTimeout( debounceTimer );
+                    debounceTimer = setTimeout( tryBuild, 80 );
+                } );
+                sidebarObs.observe( document.body, { childList: true, subtree: true } );
             }
 
             /* ── Helpers de bloque ───────────────────────────────────────────── */
@@ -2042,6 +2929,7 @@ class FairPlay_LMS_Plugin {
                          + mkStudentBlock( 'certificates', 'Certificados',       data.certificates  || 0 )
                          + mkStudentBlock( 'groups',       'Horas de Formación', hrs                    );
                 el.innerHTML = html;
+                studentCalData  = data;
                 renderedStudent = true;
                 if ( ! searchInjected ) {
                     searchInjected = true;
@@ -2055,6 +2943,7 @@ class FairPlay_LMS_Plugin {
                     } );
                 }
                 injectStudentTabs( data );
+                injectStudentCalendarSidebarLink();
             }
 
             /* ── Render instructor ───────────────────────────────────────────── */
@@ -2137,6 +3026,89 @@ class FairPlay_LMS_Plugin {
                 document.addEventListener( 'DOMContentLoaded', init );
             } else {
                 init();
+            }
+        })();
+        </script>
+        <?php
+    }
+
+    /**
+     * Oculta la pestaña "Ingresos" (data-id="revenue") en la página
+     * /user-account/analytics/ y activa "Participación" por defecto.
+     */
+    public function inject_analytics_revenue_hide_script(): void {
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        // Solo en /user-account/analytics/
+        if ( false === strpos( $request_uri, '/user-account/analytics' ) ) {
+            return;
+        }
+        ?>
+        <style id="fplms-analytics-revenue-css">
+        /*
+         * Ocultar pestaña "Ingresos" en la barra de navegación principal de analytics.
+         * El selector cubre cualquier página de analytics (revenue, engagement,
+         * instructor-students) porque Vue reemplaza el contenedor raíz al cambiar de tab.
+         */
+        .masterstudy-tabs.masterstudy-tabs_style-nav-sm li[data-id="revenue"] {
+            display: none !important;
+        }
+        </style>
+        <script id="fplms-analytics-revenue-hide">
+        (function () {
+            'use strict';
+
+            var done = false;
+            var obs;
+
+            function patchTabs() {
+                if ( done ) return true;
+
+                /*
+                 * Buscar la lista de tabs de navegación principal de analytics.
+                 * Puede estar dentro de cualquier página (__revenue-page__tabs,
+                 * __engagement-page__tabs, etc.) porque Vue la re-monta al cambiar tab.
+                 */
+                var navList = document.querySelector(
+                    'ul.masterstudy-tabs.masterstudy-tabs_style-nav-sm'
+                );
+                if ( ! navList ) return false;
+
+                var revenueTab = navList.querySelector( 'li[data-id="revenue"]' );
+                if ( ! revenueTab ) return false;
+
+                // Ocultar (el CSS ya lo hace; esto es por si el estilo inline de Vue lo sobreescribe)
+                revenueTab.style.setProperty( 'display', 'none', 'important' );
+
+                // Si revenue está activo, activar engagement UNA sola vez
+                if ( revenueTab.classList.contains( 'masterstudy-tabs__item_active' ) ) {
+                    done = true; // marcar antes del click para evitar re-entrada
+
+                    // Desconectar el observer ANTES del click para que el re-render
+                    // de Vue no dispare patchTabs de nuevo
+                    if ( obs ) { obs.disconnect(); obs = null; }
+
+                    var engTab = navList.querySelector( 'li[data-id="engagement"]' );
+                    if ( engTab ) {
+                        setTimeout( function () { engTab.click(); }, 30 );
+                    }
+                } else {
+                    // Revenue ya no está activo: solo desconectar
+                    done = true;
+                    if ( obs ) { obs.disconnect(); obs = null; }
+                }
+
+                return true;
+            }
+
+            if ( ! patchTabs() ) {
+                obs = new MutationObserver( function () { patchTabs(); } );
+                obs.observe( document.body, { childList: true, subtree: true } );
+                setTimeout( function () {
+                    if ( obs ) { obs.disconnect(); obs = null; }
+                }, 15000 );
             }
         })();
         </script>

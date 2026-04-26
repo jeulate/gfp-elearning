@@ -132,7 +132,7 @@ class FairPlay_LMS_Progress_Service {
     public function get_student_dashboard_stats( int $user_id ): array {
         global $wpdb;
 
-        $cache_key = 'fplms_sdash_v7_' . $user_id;
+        $cache_key = 'fplms_sdash_v8_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
@@ -149,6 +149,7 @@ class FairPlay_LMS_Progress_Service {
             'expiring_ids'      => [],
             'upcoming_count'    => 0,
             'upcoming_ids'      => [],
+            'courses_list'      => [],
         ];
 
         // 1. Matrículas — tabla custom MasterStudy o usermeta como fallback
@@ -306,6 +307,35 @@ class FairPlay_LMS_Progress_Service {
         }
         $stats['certificates'] = $cert_count;
 
+        // Lista de cursos inscritos para la vista de calendario del estudiante
+        if ( ! empty( $enrolled_ids ) ) {
+            $cids_safe = implode( ',', array_map( 'intval', array_keys( $enrolled_ids ) ) );
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $cal_dur_rows = (array) $wpdb->get_results(
+                "SELECT post_id, meta_value FROM {$wpdb->postmeta}
+                 WHERE post_id IN ($cids_safe) AND meta_key = 'course_duration'
+                   AND meta_value != '' AND meta_value > 0"
+            );
+            $cal_dur_map = [];
+            foreach ( $cal_dur_rows as $dr ) {
+                $cal_dur_map[ (int) $dr->post_id ] = (int) $dr->meta_value;
+            }
+            foreach ( array_keys( $enrolled_ids ) as $cid ) {
+                $post = get_post( $cid );
+                if ( ! $post ) continue;
+                $start_iso = get_the_date( 'Y-m-d', $cid );
+                $stats['courses_list'][] = [
+                    'id'         => $cid,
+                    'title'      => get_the_title( $cid ),
+                    'view_url'   => (string) get_permalink( $cid ),
+                    'date_start' => $start_iso,
+                    'date_end'   => isset( $cal_dur_map[ $cid ] )
+                        ? wp_date( 'Y-m-d', strtotime( $start_iso ) + $cal_dur_map[ $cid ] * DAY_IN_SECONDS )
+                        : null,
+                ];
+            }
+        }
+
         set_transient( $cache_key, $stats, 5 * MINUTE_IN_SECONDS );
         return $stats;
     }
@@ -334,10 +364,11 @@ class FairPlay_LMS_Progress_Service {
             'courses_list'         => [],
         ];
 
-        // 1. Cursos publicados del instructor
+        // 1. Cursos publicados del instructor — ordenados por fecha de creación descendente
         $course_ids = array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare(
             "SELECT ID FROM {$wpdb->posts}
-             WHERE post_type = %s AND post_author = %d AND post_status = 'publish'",
+             WHERE post_type = %s AND post_author = %d AND post_status = 'publish'
+             ORDER BY post_date DESC",
             FairPlay_LMS_Config::MS_PT_COURSE,
             $user_id
         ) ) );
@@ -451,6 +482,18 @@ class FairPlay_LMS_Progress_Service {
 
             $account_base = rtrim( home_url( '/user-account/edit-course/' ), '/' );
 
+            // Duración de acceso por curso (días) — para calcular fecha de fin de vigencia
+            $duration_map = [];
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $dur_rows = (array) $wpdb->get_results(
+                "SELECT post_id, meta_value FROM {$wpdb->postmeta}
+                 WHERE post_id IN ($in) AND meta_key = 'course_duration'
+                   AND meta_value != '' AND meta_value > 0"
+            );
+            foreach ( $dur_rows as $dr ) {
+                $duration_map[ (int) $dr->post_id ] = (int) $dr->meta_value;
+            }
+
             foreach ( $course_ids as $cid ) {
                 $post = get_post( $cid );
                 if ( ! $post ) continue;
@@ -470,6 +513,11 @@ class FairPlay_LMS_Progress_Service {
                     FairPlay_LMS_Config::TAX_ROLE
                 );
 
+                $start_iso = get_the_date( 'Y-m-d', $cid );
+                $end_iso   = isset( $duration_map[ $cid ] )
+                    ? wp_date( 'Y-m-d', strtotime( $start_iso ) + $duration_map[ $cid ] * DAY_IN_SECONDS )
+                    : null;
+
                 $stats['courses_list'][] = [
                     'id'          => $cid,
                     'title'       => get_the_title( $cid ),
@@ -483,6 +531,8 @@ class FairPlay_LMS_Progress_Service {
                     'roles'       => $roles,
                     'is_expiring' => in_array( $cid, $exp_ids, true ),
                     'status'      => $post->post_status,
+                    'date_start'  => $start_iso,
+                    'date_end'    => $end_iso,
                 ];
             }
         }

@@ -5677,9 +5677,16 @@ class FairPlay_LMS_Courses_Controller {
 	public function ajax_get_frontend_structures(): void {
 		check_ajax_referer( 'fplms_frontend_structures', 'nonce' );
 
-		$course_id = absint( $_POST['course_id'] ?? 0 );
-		if ( ! $course_id || ! current_user_can( 'edit_post', $course_id ) ) {
-			wp_send_json_error( 'Permiso denegado o curso no válido.' );
+		$course_id   = absint( $_POST['course_id'] ?? 0 );
+		$course_post = $course_id ? get_post( $course_id ) : null;
+		$can_manage  = $course_post && (
+			current_user_can( 'edit_post', $course_id ) ||
+			(int) $course_post->post_author === get_current_user_id()
+		);
+		if ( ! $can_manage ) {
+			wp_send_json_error( ! $course_post
+				? 'Curso no encontrado.'
+				: 'Sin permisos para este curso. Contacte al administrador.' );
 		}
 
 		$channels = array_filter( array_map( 'absint', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true ) ) );
@@ -5782,9 +5789,16 @@ class FairPlay_LMS_Courses_Controller {
 	public function ajax_save_frontend_structures(): void {
 		check_ajax_referer( 'fplms_frontend_structures', 'nonce' );
 
-		$course_id = absint( $_POST['course_id'] ?? 0 );
-		if ( ! $course_id || ! current_user_can( 'edit_post', $course_id ) ) {
-			wp_send_json_error( 'Permiso denegado o curso no válido.' );
+		$course_id   = absint( $_POST['course_id'] ?? 0 );
+		$course_post = $course_id ? get_post( $course_id ) : null;
+		$can_manage  = $course_post && (
+			current_user_can( 'edit_post', $course_id ) ||
+			(int) $course_post->post_author === get_current_user_id()
+		);
+		if ( ! $can_manage ) {
+			wp_send_json_error( ! $course_post
+				? 'Curso no encontrado.'
+				: 'Sin permisos para este curso. Contacte al administrador.' );
 		}
 
 		$branch_ids = isset( $_POST['branch_ids'] )
@@ -5837,6 +5851,290 @@ class FairPlay_LMS_Courses_Controller {
 				count( $cascaded['roles'] )
 			),
 		] );
+	}
+
+	/**
+	 * Notifica a todos los estudiantes inscritos en un curso que el curso está disponible.
+	 * Acción AJAX: fplms_notify_enrolled_students
+	 */
+	public function ajax_notify_enrolled_students(): void {
+		check_ajax_referer( 'fplms_frontend_structures', 'nonce' );
+
+		$course_id   = absint( $_POST['course_id'] ?? 0 );
+		$course_post = $course_id ? get_post( $course_id ) : null;
+		$can_manage  = $course_post && (
+			current_user_can( 'edit_post', $course_id ) ||
+			(int) $course_post->post_author === get_current_user_id()
+		);
+		if ( ! $can_manage ) {
+			wp_send_json_error( 'Permiso denegado o curso no válido.' );
+		}
+
+		global $wpdb;
+
+		$course_title = get_the_title( $course_id );
+		$course_url   = get_permalink( $course_id );
+		if ( ! $course_title ) {
+			wp_send_json_error( 'Curso no encontrado.' );
+		}
+
+		// Obtener estudiantes inscritos desde la tabla MasterStudy
+		$ms_table = null;
+		foreach ( [ $wpdb->prefix . 'stm_lms_user_courses', $wpdb->prefix . 'stm_lms_users' ] as $t ) {
+			if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t ) {
+				$ms_table = $t;
+				break;
+			}
+		}
+
+		$user_ids = [];
+		if ( $ms_table ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$user_ids = array_map( 'intval', (array) $wpdb->get_col(
+				$wpdb->prepare( "SELECT DISTINCT user_id FROM `{$ms_table}` WHERE course_id = %d", $course_id )
+			) );
+		}
+
+		if ( empty( $user_ids ) ) {
+			wp_send_json_success( [ 'message' => 'No hay estudiantes inscritos en este curso.', 'sent' => 0 ] );
+		}
+
+		$sent  = 0;
+		$from_name  = get_bloginfo( 'name' );
+		$from_email = get_bloginfo( 'admin_email' );
+		$headers    = [ 'Content-Type: text/plain; charset=UTF-8', "From: {$from_name} <{$from_email}>" ];
+
+		foreach ( $user_ids as $uid ) {
+			$user = get_user_by( 'id', $uid );
+			if ( ! $user ) {
+				continue;
+			}
+			$subject = sprintf( 'Curso disponible: %s', $course_title );
+			$message = sprintf(
+				"Hola %s,\n\n" .
+				"Te informamos que el siguiente curso ya se encuentra disponible para ti:\n\n" .
+				"📚 %s\n" .
+				"🔗 Acceder: %s\n\n" .
+				"¡Esperamos que disfrutes este contenido!\n\n" .
+				"Saludos,\n%s",
+				$user->display_name,
+				$course_title,
+				$course_url,
+				$from_name
+			);
+			if ( wp_mail( $user->user_email, $subject, $message, $headers ) ) {
+				$sent++;
+			}
+		}
+
+		wp_send_json_success( [
+			'message' => sprintf( 'Notificación enviada a %d estudiante(s).', $sent ),
+			'sent'    => $sent,
+		] );
+	}
+
+	/**
+	 * Devuelve los quizzes de un curso con sus ponderaciones actuales.
+	 * Acción AJAX: fplms_get_course_quizzes
+	 */
+	public function ajax_get_course_quizzes(): void {
+		check_ajax_referer( 'fplms_frontend_structures', 'nonce' );
+
+		$course_id   = absint( $_POST['course_id'] ?? 0 );
+		$course_post = $course_id ? get_post( $course_id ) : null;
+		$can_manage  = $course_post && (
+			current_user_can( 'edit_post', $course_id ) ||
+			(int) $course_post->post_author === get_current_user_id()
+		);
+		if ( ! $can_manage ) {
+			wp_send_json_error( 'Permiso denegado.' );
+		}
+
+		$curriculum = get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_CURRICULUM, true );
+		if ( ! is_array( $curriculum ) ) {
+			$curriculum = [];
+		}
+
+		// Recopilar IDs de quizzes desde el curriculum
+		$quiz_ids = [];
+		foreach ( $curriculum as $section ) {
+			if ( ! is_array( $section ) ) continue;
+			$materials = $section['materials'] ?? ( $section['lessons'] ?? [] );
+			foreach ( (array) $materials as $item ) {
+				$item_id   = is_array( $item ) ? ( $item['id'] ?? 0 ) : (int) $item;
+				$item_type = is_array( $item ) ? ( $item['type'] ?? '' ) : '';
+				if ( ! $item_id ) continue;
+				if ( $item_type === 'stm-quizzes' || get_post_type( $item_id ) === 'stm-quizzes' ) {
+					$quiz_ids[] = (int) $item_id;
+				}
+			}
+		}
+
+		// Fallback: quizzes vinculados por post_parent (incluye cualquier estado)
+		if ( empty( $quiz_ids ) ) {
+			$quiz_ids = array_map( 'intval', get_posts( [
+				'post_type'      => 'stm-quizzes',
+				'post_parent'    => $course_id,
+				'posts_per_page' => -1,
+				'fields'         => 'ids',
+				'post_status'    => 'any',
+			] ) );
+		}
+
+		// Segunda búsqueda: quizzes cuyo meta 'course_id' apunta al curso actual
+		if ( empty( $quiz_ids ) ) {
+			$quiz_ids = array_map( 'intval', get_posts( [
+				'post_type'      => 'stm-quizzes',
+				'posts_per_page' => -1,
+				'fields'         => 'ids',
+				'post_status'    => 'any',
+				'meta_query'     => [ [ 'key' => 'course_id', 'value' => $course_id, 'compare' => '=' ] ],
+			] ) );
+		}
+
+		$quiz_ids = array_unique( array_filter( $quiz_ids ) );
+		$quizzes  = [];
+
+		foreach ( $quiz_ids as $qid ) {
+			$post = get_post( $qid );
+			if ( ! $post ) continue;
+
+			$mode        = (string) get_post_meta( $qid, FairPlay_LMS_Quiz_Weights::META_MODE, true );
+			$saved_json  = (string) get_post_meta( $qid, FairPlay_LMS_Quiz_Weights::META_WEIGHTS, true );
+			$saved_w     = ( '' !== $saved_json ) ? json_decode( $saved_json, true ) : [];
+			if ( ! is_array( $saved_w ) ) $saved_w = [];
+
+			$q_ids = FairPlay_LMS_Quiz_Weights::get_question_ids( $qid );
+			$questions = [];
+			foreach ( $q_ids as $qid2 ) {
+				$qp = get_post( $qid2 );
+				$questions[] = [
+					'id'     => $qid2,
+					'title'  => $qp ? $qp->post_title : '#' . $qid2,
+					'weight' => isset( $saved_w[ $qid2 ] ) ? (float) $saved_w[ $qid2 ] : null,
+				];
+			}
+
+			$quizzes[] = [
+				'id'        => $qid,
+				'title'     => $post->post_title,
+				'mode'      => $mode ?: FairPlay_LMS_Quiz_Weights::get_default_mode(),
+				'questions' => $questions,
+			];
+		}
+
+		wp_send_json_success( $quizzes );
+	}
+
+	/**
+	 * Guarda ponderación de un quiz desde el panel del instructor.
+	 * Acción AJAX: fplms_save_quiz_weights_frontend
+	 */
+	public function ajax_save_quiz_weights_frontend(): void {
+		check_ajax_referer( 'fplms_frontend_structures', 'nonce' );
+
+		$quiz_id   = absint( $_POST['quiz_id'] ?? 0 );
+		$quiz_post = $quiz_id ? get_post( $quiz_id ) : null;
+		if ( ! $quiz_post ) {
+			wp_send_json_error( 'Quiz no encontrado.' );
+		}
+		// Verificar permiso: puede editar el quiz directamente, o es el autor del quiz,
+		// o es el autor del curso padre (post_parent) o del curso vinculado (meta course_id).
+		$uid = get_current_user_id();
+		$can_manage = current_user_can( 'edit_post', $quiz_id ) ||
+		              (int) $quiz_post->post_author === $uid;
+		if ( ! $can_manage && $quiz_post->post_parent > 0 ) {
+			$can_manage = (int) get_post_field( 'post_author', $quiz_post->post_parent ) === $uid;
+		}
+		if ( ! $can_manage ) {
+			$meta_course_id = (int) get_post_meta( $quiz_id, 'course_id', true );
+			if ( $meta_course_id > 0 ) {
+				$can_manage = (int) get_post_field( 'post_author', $meta_course_id ) === $uid;
+			}
+		}
+		if ( ! $can_manage ) {
+			wp_send_json_error( 'Permiso denegado.' );
+		}
+
+		$mode = sanitize_text_field( (string) ( $_POST['mode'] ?? '' ) );
+		if ( ! in_array( $mode, [ '', 'auto', 'manual' ], true ) ) {
+			$mode = '';
+		}
+		update_post_meta( $quiz_id, FairPlay_LMS_Quiz_Weights::META_MODE, $mode );
+
+		$raw = isset( $_POST['weights'] ) ? (array) wp_unslash( $_POST['weights'] ) : [];
+		$clean = [];
+		foreach ( $raw as $q_id_raw => $val_raw ) {
+			$q_id_int = absint( $q_id_raw );
+			$val      = round( (float) $val_raw, 2 );
+			if ( $q_id_int > 0 && $val >= 0 ) {
+				$clean[ $q_id_int ] = $val;
+			}
+		}
+		update_post_meta( $quiz_id, FairPlay_LMS_Quiz_Weights::META_WEIGHTS, wp_json_encode( $clean ) );
+
+		wp_send_json_success( [ 'message' => 'Ponderación guardada correctamente.' ] );
+	}
+
+	/**
+	 * Aplica acciones masivas sobre cursos del instructor.
+	 * Acción AJAX: fplms_bulk_course_action
+	 * Acciones soportadas: activate, deactivate, delete
+	 */
+	public function ajax_bulk_course_action(): void {
+		check_ajax_referer( 'fplms_frontend_structures', 'nonce' );
+
+		$action     = sanitize_text_field( (string) ( $_POST['bulk_action'] ?? '' ) );
+		$course_ids = isset( $_POST['course_ids'] )
+			? array_values( array_filter( array_map( 'absint', (array) wp_unslash( $_POST['course_ids'] ) ) ) )
+			: [];
+
+		if ( empty( $course_ids ) || ! in_array( $action, [ 'activate', 'deactivate', 'delete' ], true ) ) {
+			wp_send_json_error( 'Parámetros inválidos.' );
+		}
+
+		$current_uid = get_current_user_id();
+		$done        = 0;
+		$denied      = 0;
+
+		foreach ( $course_ids as $cid ) {
+			$post = get_post( $cid );
+			if ( ! $post || $post->post_type !== FairPlay_LMS_Config::MS_PT_COURSE ) {
+				continue;
+			}
+
+			// Verificar que el usuario puede gestionar este curso
+			$can = current_user_can( 'edit_post', $cid ) ||
+			       ( (int) $post->post_author === $current_uid );
+
+			if ( ! $can ) {
+				$denied++;
+				continue;
+			}
+
+			if ( 'activate' === $action ) {
+				wp_update_post( [ 'ID' => $cid, 'post_status' => 'publish' ] );
+				$done++;
+			} elseif ( 'deactivate' === $action ) {
+				wp_update_post( [ 'ID' => $cid, 'post_status' => 'draft' ] );
+				$done++;
+			} elseif ( 'delete' === $action ) {
+				wp_trash_post( $cid );
+				$done++;
+			}
+		}
+
+		if ( $done === 0 && $denied > 0 ) {
+			wp_send_json_error( 'Sin permisos para los cursos seleccionados.' );
+		}
+
+		$labels = [ 'activate' => 'activado(s)', 'deactivate' => 'desactivado(s)', 'delete' => 'enviado(s) a la papelera' ];
+		$msg    = sprintf( '%d curso(s) %s.', $done, $labels[ $action ] ?? 'procesado(s)' );
+		if ( $denied > 0 ) {
+			$msg .= sprintf( ' %d omitido(s) por falta de permisos.', $denied );
+		}
+
+		wp_send_json_success( [ 'message' => $msg, 'done' => $done ] );
 	}
 
 	/**
