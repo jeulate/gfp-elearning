@@ -323,7 +323,11 @@ class FairPlay_LMS_Progress_Service {
             foreach ( array_keys( $enrolled_ids ) as $cid ) {
                 $post = get_post( $cid );
                 if ( ! $post ) continue;
-                $start_iso = get_the_date( 'Y-m-d', $cid );
+                $start_iso   = get_the_date( 'Y-m-d', $cid );
+                $prog_data   = $enrolled_ids[ $cid ];
+                $progress    = (float) ( $prog_data['progress'] ?? 0 );
+                $status      = strtolower( (string) ( $prog_data['status'] ?? '' ) );
+                $is_complete = ( 'completed' === $status || $progress >= 99.9 );
                 $stats['courses_list'][] = [
                     'id'         => $cid,
                     'title'      => get_the_title( $cid ),
@@ -332,6 +336,8 @@ class FairPlay_LMS_Progress_Service {
                     'date_end'   => isset( $cal_dur_map[ $cid ] )
                         ? wp_date( 'Y-m-d', strtotime( $start_iso ) + $cal_dur_map[ $cid ] * DAY_IN_SECONDS )
                         : null,
+                    'progress'   => (int) round( $progress ),
+                    'completed'  => $is_complete,
                 ];
             }
         }

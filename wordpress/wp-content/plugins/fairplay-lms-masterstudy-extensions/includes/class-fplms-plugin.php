@@ -1140,7 +1140,8 @@ class FairPlay_LMS_Plugin {
                 input.addEventListener( 'blur',  function () { this.style.borderColor = '#e0e0e0'; } );
 
                 // Limpiar filtro de texto cuando Vue re-renderiza (cambio de tab nativo)
-                var listContainer = cfg.observeScope || ( cfg.scopeSelector ? ( statsEl.closest( cfg.scopeSelector ) || parent ) : parent );
+                var _anchor = cfg.insertAnchor || statsEl;
+                var listContainer = cfg.observeScope || ( cfg.scopeSelector ? ( statsEl.closest( cfg.scopeSelector ) || _anchor.parentNode ) : _anchor.parentNode );
                 new MutationObserver( function () {
                     if ( input.value.trim() ) doSearch();
                 } ).observe( listContainer, { childList: true, subtree: true } );
@@ -2382,7 +2383,12 @@ class FairPlay_LMS_Plugin {
                         '.fplms-cal-pop-hdr{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;}' +
                         '.fplms-cal-pop-dot{flex-shrink:0;width:12px;height:12px;border-radius:50%;margin-top:3px;}' +
                         '.fplms-cal-pop-title{margin:0;font-size:14px;font-weight:700;color:#222;line-height:1.3;}' +
+                        '.fplms-cal-pop-title a{color:#222;text-decoration:none;}' +
+                        '.fplms-cal-pop-title a:hover{color:#ffa800;text-decoration:underline;}' +
                         '.fplms-cal-pop-dates{font-size:12px;color:#888;margin:0 0 4px;}' +
+                        '.fplms-cal-pop-progress{font-size:12px;font-weight:600;margin:4px 0 2px;}' +
+                        '.fplms-cal-pop-progress.done{color:#27ae60;}' +
+                        '.fplms-cal-pop-progress.inprog{color:#ffa800;}' +
                         '.fplms-cal-pop-structs{font-size:11px;color:#666;margin:0;}' +
                         '@media print{.masterstudy-account-menu,#fplms-cal-popup,.fplms-cal-controls,#fplms-cal-filter-panel,.fplms-cal-nav-btn{display:none!important;}.fplms-cal-header{justify-content:center;}.fplms-cal-day{min-height:60px;}}' +
                         '@media(max-width:640px){.fplms-cal-day{min-height:58px;}.fplms-cal-event{font-size:9px;}.fplms-cal-title{min-width:120px;font-size:13px;}}';
@@ -2458,16 +2464,18 @@ class FairPlay_LMS_Plugin {
                       '<div class="fplms-cal-pop-hdr"><span class="fplms-cal-pop-dot" id="fplms-cal-pop-dot"></span>' +
                       '<p class="fplms-cal-pop-title" id="fplms-cal-pop-title"></p></div>' +
                       '<p class="fplms-cal-pop-dates" id="fplms-cal-pop-dates"></p>' +
+                      '<p class="fplms-cal-pop-progress" id="fplms-cal-pop-progress"></p>' +
                       '<p class="fplms-cal-pop-structs" id="fplms-cal-pop-structs"></p>' +
                     '</div>';
 
                 var gridWrap   = container.querySelector( '#fplms-cal-grid-wrap' );
                 var titleEl    = container.querySelector( '#fplms-cal-title' );
                 var popup      = container.querySelector( '#fplms-cal-popup' );
-                var popDot     = container.querySelector( '#fplms-cal-pop-dot' );
-                var popTitle   = container.querySelector( '#fplms-cal-pop-title' );
-                var popDates   = container.querySelector( '#fplms-cal-pop-dates' );
-                var popStructs = container.querySelector( '#fplms-cal-pop-structs' );
+                var popDot      = container.querySelector( '#fplms-cal-pop-dot' );
+                var popTitle    = container.querySelector( '#fplms-cal-pop-title' );
+                var popDates    = container.querySelector( '#fplms-cal-pop-dates' );
+                var popProgress = container.querySelector( '#fplms-cal-pop-progress' );
+                var popStructs  = container.querySelector( '#fplms-cal-pop-structs' );
                 var filterPanel = container.querySelector( '#fplms-cal-filter-panel' );
 
                 function getFiltered() {
@@ -2554,10 +2562,32 @@ class FairPlay_LMS_Plugin {
                             var cid = parseInt( ev.dataset.cid );
                             var co  = courses.filter( function ( c ) { return c.id === cid; } )[ 0 ];
                             if ( ! co ) return;
-                            popDot.style.background  = co._color;
-                            popTitle.textContent     = co.title;
-                            popDates.textContent     = 'Vigencia: ' + fmtDate( parseISO( co.date_start ) ) +
+                            popDot.style.background = co._color;
+
+                            // Título clicable (si tiene view_url)
+                            if ( co.view_url ) {
+                                popTitle.innerHTML = '<a href="' + esc( co.view_url ) + '" target="_blank" rel="noopener">' + esc( co.title ) + '</a>';
+                            } else {
+                                popTitle.textContent = co.title;
+                            }
+
+                            popDates.textContent = 'Vigencia: ' + fmtDate( parseISO( co.date_start ) ) +
                                 ( co.date_end ? ' \u2013 ' + fmtDate( parseISO( co.date_end ) ) : '' );
+
+                            // Progreso (solo estudiante; instructor no tiene campo progress)
+                            if ( ! isInstructor && typeof co.progress !== 'undefined' ) {
+                                if ( co.completed ) {
+                                    popProgress.textContent = '\u2713 Completado';
+                                    popProgress.className   = 'fplms-cal-pop-progress done';
+                                } else {
+                                    popProgress.textContent = 'Progreso: ' + co.progress + '%';
+                                    popProgress.className   = 'fplms-cal-pop-progress inprog';
+                                }
+                            } else {
+                                popProgress.textContent = '';
+                                popProgress.className   = 'fplms-cal-pop-progress';
+                            }
+
                             if ( isInstructor ) {
                                 var structs = ( co.branches || [] ).concat( co.roles || [] );
                                 popStructs.textContent = structs.length ? structs.join( ', ' ) : '';
@@ -2621,12 +2651,52 @@ class FairPlay_LMS_Plugin {
                     } );
                 }
 
-                // PDF export — imprime solo el calendario en una nueva ventana
+                // PDF export — calendario + tabla de cursos del período visible
                 var pdfBtn = container.querySelector( '#fplms-cal-pdf-btn' );
                 if ( pdfBtn ) pdfBtn.addEventListener( 'click', function () {
                     var titleText = titleEl ? titleEl.textContent : 'Mi Calendario';
                     var gridHTML  = gridWrap ? gridWrap.innerHTML : '';
-                    var w = window.open( '', '_blank', 'width=1060,height=760' );
+
+                    // Determinar rango de fechas visible según la vista actual
+                    var rangeStart, rangeEnd;
+                    if ( calView === 'week' ) {
+                        var dow  = ( viewDate.getDay() + 6 ) % 7;
+                        rangeStart = new Date( viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate() - dow );
+                        rangeEnd   = new Date( rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate() + 6 );
+                    } else {
+                        var yr = viewDate.getFullYear(), mo = viewDate.getMonth();
+                        rangeStart = new Date( yr, mo, 1 );
+                        rangeEnd   = new Date( yr, mo + 1, 0 );
+                    }
+
+                    // Filtrar cursos visibles en ese rango
+                    var filtered = getFiltered().filter( function ( c ) {
+                        var s = parseISO( c.date_start ); if ( ! s ) return false;
+                        var e = parseISO( c.date_end ) || s;
+                        var sd = new Date( s.getFullYear(), s.getMonth(), s.getDate() );
+                        var ed = new Date( e.getFullYear(), e.getMonth(), e.getDate() );
+                        var rs = new Date( rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate() );
+                        var re = new Date( rangeEnd.getFullYear(),   rangeEnd.getMonth(),   rangeEnd.getDate() );
+                        return ed >= rs && sd <= re;
+                    } );
+
+                    // Construir filas de la tabla
+                    var tableRows = filtered.map( function ( c ) {
+                        var prog = '';
+                        if ( ! isInstructor && typeof c.progress !== 'undefined' ) {
+                            prog = c.completed ? 'Completado' : ( c.progress + '%' );
+                        } else if ( isInstructor ) {
+                            prog = ( c.students || 0 ) + ' estudiante(s)';
+                        }
+                        return '<tr>' +
+                            '<td>' + c.id + '</td>' +
+                            '<td>' + esc( c.title ) + '</td>' +
+                            '<td>' + prog + '</td>' +
+                            '<td>' + ( c.date_start ? fmtDate( parseISO( c.date_start ) ) : '' ) + '</td>' +
+                            '</tr>';
+                    } ).join( '' );
+
+                    var w = window.open( '', '_blank', 'width=1060,height=820' );
                     if ( ! w ) return;
                     w.document.write(
                         '<!DOCTYPE html><html><head><meta charset="utf-8">' +
@@ -2634,6 +2704,7 @@ class FairPlay_LMS_Plugin {
                         '<style>' +
                         'body{font-family:Arial,sans-serif;margin:24px;font-size:12px;}' +
                         'h1{font-size:16px;margin-bottom:14px;color:#222;}' +
+                        'h2{font-size:13px;font-weight:700;margin:24px 0 10px;color:#444;border-bottom:1px solid #ddd;padding-bottom:4px;}' +
                         '.fplms-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);border-left:1px solid #ccc;border-top:1px solid #ccc;}' +
                         '.fplms-cal-grid.week .fplms-cal-day{min-height:110px;}' +
                         '.fplms-cal-grid-hdr{background:#f0f0f0;padding:6px 0;text-align:center;font-size:11px;font-weight:700;color:#555;border-right:1px solid #ccc;border-bottom:1px solid #ccc;}' +
@@ -2642,9 +2713,22 @@ class FairPlay_LMS_Plugin {
                         '.fplms-cal-day-num{font-size:11px;font-weight:600;color:#444;display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;border-radius:50%;margin-bottom:2px;}' +
                         '.fplms-cal-day.today .fplms-cal-day-num{background:#ffa800;color:#fff;}' +
                         '.fplms-cal-event{display:block;font-size:9px;color:#fff;border-radius:2px;padding:1px 4px;margin-bottom:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+                        'table.pdf-tbl{width:100%;border-collapse:collapse;margin-top:6px;}' +
+                        'table.pdf-tbl th{background:#f0f0f0;font-size:11px;font-weight:700;color:#444;padding:6px 10px;text-align:left;border:1px solid #ccc;}' +
+                        'table.pdf-tbl td{padding:6px 10px;font-size:11px;border:1px solid #ccc;color:#333;}' +
+                        'table.pdf-tbl tr:nth-child(even) td{background:#f9f9f9;}' +
                         '</style></head><body>' +
                         '<h1>Mi Calendario \u2013 ' + titleText + '</h1>' +
                         gridHTML +
+                        '<h2>Cursos del per\u00edodo</h2>' +
+                        ( filtered.length ? (
+                        '<table class="pdf-tbl"><thead><tr>' +
+                        '<th>ID</th><th>Nombre del curso</th>' +
+                        ( isInstructor ? '<th>Estudiantes</th>' : '<th>Progreso</th>' ) +
+                        '<th>Fecha de inicio</th></tr></thead><tbody>' +
+                        tableRows +
+                        '</tbody></table>'
+                        ) : '<p style="color:#aaa;font-size:12px;">No hay cursos en este per\u00edodo.</p>' ) +
                         '</body></html>'
                     );
                     w.document.close();
