@@ -521,7 +521,7 @@ class FairPlay_LMS_Progress_Service {
                 $stats['courses_list'][] = [
                     'id'          => $cid,
                     'title'       => get_the_title( $cid ),
-                    'edit_url'    => $account_base . '?course_id=' . $cid,
+                    'edit_url'    => $account_base . '/' . $cid . '/',
                     'view_url'    => (string) get_permalink( $cid ),
                     'created'     => get_the_date( 'd/m/Y', $cid ),
                     'modified'    => get_the_modified_date( 'd/m/Y', $cid ),

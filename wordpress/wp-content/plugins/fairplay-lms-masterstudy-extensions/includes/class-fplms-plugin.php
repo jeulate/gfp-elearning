@@ -1092,10 +1092,30 @@ class FairPlay_LMS_Plugin {
                 noResults.style.cssText = 'display:none;text-align:center;color:#888;padding:24px 0;font-size:14px;margin:0;';
                 noResults.textContent   = 'No se encontraron cursos.';
 
-                var anchor = cfg.insertAnchor || statsEl;
-                var parent = anchor.parentNode;
-                parent.insertBefore( wrapper,   anchor.nextSibling );
-                parent.insertBefore( noResults, wrapper.nextSibling );
+                // Insertar en el DOM: antes de un selector dado o después del anchor
+                function doInsert() {
+                    if ( cfg.insertBeforeSel ) {
+                        var target = document.querySelector( cfg.insertBeforeSel );
+                        if ( ! target ) return false;
+                        target.parentNode.insertBefore( noResults, target );
+                        target.parentNode.insertBefore( wrapper,   noResults );
+                        return true;
+                    }
+                    var anchor = cfg.insertAnchor || statsEl;
+                    var parent = anchor.parentNode;
+                    parent.insertBefore( wrapper,   anchor.nextSibling );
+                    parent.insertBefore( noResults, wrapper.nextSibling );
+                    return true;
+                }
+
+                if ( ! doInsert() ) {
+                    // Target aún no está en el DOM: esperar con observer
+                    var insertObs = new MutationObserver( function () {
+                        if ( doInsert() ) insertObs.disconnect();
+                    } );
+                    insertObs.observe( document.body, { childList: true, subtree: true } );
+                    setTimeout( function () { insertObs.disconnect(); }, 10000 );
+                }
 
                 var input = wrapper.querySelector( 'input' );
                 function doSearch() {
@@ -1104,6 +1124,8 @@ class FairPlay_LMS_Plugin {
                     var cards = scope.querySelectorAll( cfg.cardSelectors );
                     var found = 0;
                     cards.forEach( function ( card ) {
+                        // Omitir tarjetas dentro de paneles excluidos (ej: #fplms-mis-cursos-page)
+                        if ( cfg.excludeSelector && card.closest( cfg.excludeSelector ) ) return;
                         var titleEl = card.querySelector( '.masterstudy-course-card__title, .masterstudy-course-card__name, h3, h4' );
                         var title = titleEl ? titleEl.textContent.toLowerCase() : card.textContent.toLowerCase();
                         var visible = ! q || title.indexOf( q ) !== -1;
@@ -1118,7 +1140,7 @@ class FairPlay_LMS_Plugin {
                 input.addEventListener( 'blur',  function () { this.style.borderColor = '#e0e0e0'; } );
 
                 // Limpiar filtro de texto cuando Vue re-renderiza (cambio de tab nativo)
-                var listContainer = cfg.scopeSelector ? ( statsEl.closest( cfg.scopeSelector ) || parent ) : parent;
+                var listContainer = cfg.observeScope || ( cfg.scopeSelector ? ( statsEl.closest( cfg.scopeSelector ) || parent ) : parent );
                 new MutationObserver( function () {
                     if ( input.value.trim() ) doSearch();
                 } ).observe( listContainer, { childList: true, subtree: true } );
@@ -2958,6 +2980,22 @@ class FairPlay_LMS_Plugin {
                          + mkInstructorBlock( 'certificates_created', 'Certificados Emitidos', data.total_certificates || 0 );
                 el.innerHTML = html;
                 renderedInstructor = true;
+
+                // Barra de búsqueda en la vista "Escritorio" del instructor
+                if ( ! searchInjectedInstr ) {
+                    searchInjectedInstr = true;
+                    injectSearchBar( el, {
+                        wrapperId:        'fplms-instr-search-wrapper',
+                        inputId:          'fplms-instr-search',
+                        noResultsId:      'fplms-instr-no-results',
+                        placeholder:      'Buscar cursos...',
+                        cardSelectors:    '.masterstudy-course-card',
+                        excludeSelector:  '#fplms-mis-cursos-page',
+                        observeScope:     document.body,
+                        insertBeforeSel:  '.masterstudy-instructor-courses__tabs',
+                    } );
+                }
+
                 injectMisCursosSidebarLink();
             }
 
@@ -3001,10 +3039,36 @@ class FairPlay_LMS_Plugin {
                 }
             }
 
+            /* ── Parche botón "Reportes Detallados" ─────────────────────────── */
+            /*
+             * Intercepta el clic en [data-id="user-detailed-report"] para navegar
+             * directamente a /analytics/engagement/ en lugar de /analytics/ (que
+             * muestra revenue por defecto antes del redirect de nuestro script).
+             */
+            function patchAnalyticsButton() {
+                function tryPatch() {
+                    var btn = document.querySelector( '[data-id="user-detailed-report"]' );
+                    if ( ! btn || btn._fplmsPatched ) return;
+                    btn._fplmsPatched = true;
+                    btn.addEventListener( 'click', function ( e ) {
+                        e.preventDefault();
+                        var base = window.location.protocol + '//' + window.location.host;
+                        window.location.assign( base + '/user-account/analytics/engagement/' );
+                    }, true /* fase de captura: antes que Vue Router */ );
+                }
+                tryPatch();
+                var debounce;
+                new MutationObserver( function () {
+                    clearTimeout( debounce );
+                    debounce = setTimeout( tryPatch, 80 );
+                } ).observe( document.body, { childList: true, subtree: true } );
+            }
+
             /* ── Init ────────────────────────────────────────────────────────── */
 
             function init() {
                 tryRender();
+                patchAnalyticsButton();
                 var checkTimer;
                 var observer = new MutationObserver( function () {
                     clearTimeout( checkTimer );
