@@ -189,6 +189,7 @@ class FairPlay_LMS_Plugin {
 
         // Exportaciones / informes
         add_action( 'admin_init', [ $this->reports, 'handle_export' ] );
+        $this->reports->register_ajax_hooks();
 
         // Auto-enrolar usuario en cursos al crear o actualizar su estructura
         add_action( 'fplms_user_created',          [ $this->courses, 'auto_enroll_user_in_matching_courses' ] );
@@ -1001,6 +1002,7 @@ class FairPlay_LMS_Plugin {
             /* ── Helpers de filtrado por ID de curso ────────────────────────── */
 
             function extractCourseIdFromCard( card ) {
+                if ( card.dataset && card.dataset.fplmsCid ) return parseInt( card.dataset.fplmsCid );
                 if ( card.dataset && card.dataset.id )       return parseInt( card.dataset.id );
                 if ( card.dataset && card.dataset.courseId ) return parseInt( card.dataset.courseId );
                 var attr = card.querySelector( '[data-id]' );
@@ -1264,6 +1266,34 @@ class FairPlay_LMS_Plugin {
                         blocks.parentNode.insertBefore( wrap, blocks );
                     }
 
+                    // Mapa URL → course_id para anotar tarjetas que no tienen ID en la URL
+                    var _urlToId = {};
+                    if ( data.courses_list ) {
+                        data.courses_list.forEach( function ( c ) {
+                            if ( c.view_url && c.id ) {
+                                _urlToId[ c.view_url.replace( /\/$/, '' ).toLowerCase() ] = c.id;
+                            }
+                        } );
+                    }
+                    function annotateCardsWithId() {
+                        var _scope = document.querySelector( '.masterstudy-enrolled-courses' ) || document;
+                        var _cards = _scope.querySelectorAll(
+                            '.masterstudy-course-card, .masterstudy-enrolled-courses-list__item, .masterstudy-enrolled-courses__item'
+                        );
+                        _cards.forEach( function ( _card ) {
+                            if ( _card.dataset.fplmsCid ) return;
+                            var _links = _card.querySelectorAll( 'a[href]' );
+                            for ( var _i = 0; _i < _links.length; _i++ ) {
+                                var _href = _links[ _i ].href.replace( /\/$/, '' ).toLowerCase();
+                                if ( _urlToId[ _href ] ) {
+                                    _card.dataset.fplmsCid = _urlToId[ _href ];
+                                    break;
+                                }
+                            }
+                        } );
+                    }
+                    annotateCardsWithId();
+
                     // MutationObserver: re-aplicar filtro cuando Vue re-renderiza la lista
                     // (p.ej. carga de página siguiente o recarga al volver al tab "Todos")
                     if ( ! studentCardObsSetup ) {
@@ -1272,6 +1302,7 @@ class FairPlay_LMS_Plugin {
                         if ( courseList ) {
                             var filterTimer = null;
                             new MutationObserver( function () {
+                                annotateCardsWithId();
                                 if ( studentCustomFilter ) {
                                     clearTimeout( filterTimer );
                                     filterTimer = setTimeout( applyStudentCustomFilter, 80 );
