@@ -209,6 +209,14 @@ class FairPlay_LMS_Plugin {
         add_filter( 'rest_' . FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY . '_query', [ $this, 'restrict_categories_rest_query' ], 10, 2 );
         add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE,   [ $this, 'enforce_instructor_category_on_save' ], 8, 3 );
 
+        // Invalidar caché del dashboard de estudiante al completar o actualizar progreso de un curso
+        add_action( 'stm_lms_course_passed',                  [ $this, 'bust_student_dashboard_cache' ], 10, 2 );
+        add_action( 'stm_lms_lesson_passed',                  [ $this, 'bust_student_dashboard_cache' ], 10, 2 );
+        add_action( 'stm_lms_quiz_passed',                    [ $this, 'bust_student_dashboard_cache' ], 10, 2 );
+        add_action( 'stm_lms_user_course_progress_updated',   [ $this, 'bust_student_dashboard_cache' ], 10, 2 );
+        // Fallback: detectar actualizaciones a la tabla stm_lms_user_courses vía updated_user_meta
+        add_action( 'updated_user_meta',                      [ $this, 'bust_student_cache_on_meta' ], 10, 3 );
+
         // Visualización de cursos en frontend (estructuras, ocultar ratings/estudiantes)
         $this->course_display->register_hooks();
 
@@ -843,6 +851,27 @@ class FairPlay_LMS_Plugin {
     }
 
     /**
+     * Invalida la caché del dashboard de estudiante cuando MasterStudy dispara un hook
+     * de progreso/completado. Firma: ( $user_id, $course_id ) o solo ( $user_id ).
+     */
+    public function bust_student_dashboard_cache( $user_id = 0, $course_id = 0 ): void {
+        $uid = (int) $user_id;
+        if ( $uid > 0 ) {
+            delete_transient( 'fplms_sdash_v8_' . $uid );
+        }
+    }
+
+    /**
+     * Fallback: detecta actualizaciones a usermeta de progreso de MasterStudy
+     * (stm_lms_course_NNN o stm_lms_course_progress_NNN) y borra el transient del usuario.
+     */
+    public function bust_student_cache_on_meta( $meta_id, $user_id, $meta_key ): void {
+        if ( preg_match( '/^stm_lms_course(?:_progress)?_\d+$/', (string) $meta_key ) ) {
+            delete_transient( 'fplms_sdash_v8_' . (int) $user_id );
+        }
+    }
+
+    /**
      * Endpoint AJAX: devuelve estadísticas del panel /user-account/ según el tipo solicitado.
      * type=student  → FairPlay_LMS_Progress_Service::get_student_dashboard_stats()
      * type=instructor → FairPlay_LMS_Progress_Service::get_instructor_dashboard_stats()
@@ -862,7 +891,7 @@ class FairPlay_LMS_Plugin {
             global $wpdb;
             $stats   = $this->progress->get_student_dashboard_stats( $user_id );
             // Forzar recálculo limpio sin transient
-            delete_transient( 'fplms_sdash_v4_' . $user_id );
+            delete_transient( 'fplms_sdash_v8_' . $user_id );
             $stats2  = $this->progress->get_student_dashboard_stats( $user_id );
             // Obtener IDs de cursos completados directamente
             $ms_table = null;
@@ -2391,7 +2420,10 @@ class FairPlay_LMS_Plugin {
                         '.fplms-cal-pop-progress.inprog{color:#ffa800;}' +
                         '.fplms-cal-pop-structs{font-size:11px;color:#666;margin:0;}' +
                         '@media print{.masterstudy-account-menu,#fplms-cal-popup,.fplms-cal-controls,#fplms-cal-filter-panel,.fplms-cal-nav-btn{display:none!important;}.fplms-cal-header{justify-content:center;}.fplms-cal-day{min-height:60px;}}' +
-                        '@media(max-width:640px){.fplms-cal-day{min-height:58px;}.fplms-cal-event{font-size:9px;}.fplms-cal-title{min-width:120px;font-size:13px;}}';
+                        '@media(max-width:640px){.fplms-cal-day{min-height:58px;}.fplms-cal-event{font-size:9px;}.fplms-cal-title{min-width:120px;font-size:13px;}}' +
+                        '.fplms-cal-event.expiring{box-shadow:0 0 0 2px #ff6c00,0 0 0 4px rgba(255,108,0,.2);}' +
+                        '.fplms-cal-ctrl-btn.expiring-on{background:#ff6c00!important;color:#fff!important;border-color:#e05d00!important;}' +
+                        '.fplms-cal-ctrl-btn.expiring-on svg{stroke:#fff!important;}';
                     document.head.appendChild( calSt );
                 }
 
@@ -2422,6 +2454,8 @@ class FairPlay_LMS_Plugin {
                 var viewDate = new Date( now.getFullYear(), now.getMonth(), 1 );
                 var calView  = 'month';
                 var filterBranches = [], filterRoles = [];
+                var filterExpiring  = false;
+                var EXPIRING_DAYS   = 30;
 
                 // Filter panel (instructor only)
                 var filterPanelHTML = '';
@@ -2441,6 +2475,10 @@ class FairPlay_LMS_Plugin {
                       '<button class="fplms-cal-ctrl-btn" id="fplms-cal-pdf-btn">' +
                       '<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="#555" stroke-width="2.5" style="display:inline-block;margin-right:3px;vertical-align:middle;"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>PDF</button>'
                     : '';
+                var expiringBtnHTML =
+                    '<button class="fplms-cal-ctrl-btn" id="fplms-cal-expiring-btn" title="Mostrar solo cursos pr\u00f3ximos a vencer (30 d\u00edas)">' +
+                    '<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="display:inline-block;margin-right:3px;vertical-align:middle;"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+                    'Por vencer</button>';
 
                 container.innerHTML =
                     '<h2>Mi Calendario</h2>' +
@@ -2455,6 +2493,7 @@ class FairPlay_LMS_Plugin {
                         '<button class="fplms-cal-ctrl-btn active" id="fplms-cal-month-btn" data-view="month">Mes</button>' +
                         '<button class="fplms-cal-ctrl-btn" id="fplms-cal-week-btn" data-view="week">Semana</button>' +
                         instrBtns +
+                        expiringBtnHTML +
                       '</div>' +
                     '</div>' +
                     filterPanelHTML +
@@ -2478,22 +2517,43 @@ class FairPlay_LMS_Plugin {
                 var popStructs  = container.querySelector( '#fplms-cal-pop-structs' );
                 var filterPanel = container.querySelector( '#fplms-cal-filter-panel' );
 
+                function isExpiringSoon( c ) {
+                    if ( ! c.date_end ) return false;
+                    if ( ! isInstructor && c.completed ) return false;
+                    var _today = new Date(); _today.setHours( 0, 0, 0, 0 );
+                    var _e = parseISO( c.date_end ); if ( ! _e ) return false;
+                    var _ed = new Date( _e.getFullYear(), _e.getMonth(), _e.getDate() );
+                    // Resaltar cualquier curso que tenga end_time registrado y aún esté vigente
+                    return _ed.getTime() >= _today.getTime();
+                }
+
                 function getFiltered() {
-                    if ( ! isInstructor || ( ! filterBranches.length && ! filterRoles.length ) ) return courses;
-                    return courses.filter( function ( c ) {
-                        var okB = ! filterBranches.length || ( c.branches || [] ).some( function ( b ) { return filterBranches.indexOf( b ) >= 0; } );
-                        var okR = ! filterRoles.length    || ( c.roles    || [] ).some( function ( r ) { return filterRoles.indexOf( r ) >= 0; } );
-                        return okB && okR;
-                    } );
+                    var result = courses;
+                    if ( isInstructor && ( filterBranches.length || filterRoles.length ) ) {
+                        result = result.filter( function ( c ) {
+                            var okB = ! filterBranches.length || ( c.branches || [] ).some( function ( b ) { return filterBranches.indexOf( b ) >= 0; } );
+                            var okR = ! filterRoles.length    || ( c.roles    || [] ).some( function ( r ) { return filterRoles.indexOf( r ) >= 0; } );
+                            return okB && okR;
+                        } );
+                    }
+                    if ( filterExpiring ) {
+                        result = result.filter( isExpiringSoon );
+                    }
+                    return result;
                 }
 
                 function onDay( c, d ) {
+                    // Curso completado (estudiante): no aparece en el calendario
+                    if ( ! isInstructor && c.completed ) return false;
                     var s = parseISO( c.date_start ); if ( ! s ) return false;
-                    var e = parseISO( c.date_end ) || s;
                     var sd = new Date( s.getFullYear(), s.getMonth(), s.getDate() );
-                    var ed = new Date( e.getFullYear(), e.getMonth(), e.getDate() );
                     var dd = new Date( d.getFullYear(), d.getMonth(), d.getDate() );
-                    return dd >= sd && dd <= ed;
+                    if ( dd < sd ) return false;
+                    // Sin fecha de vencimiento: siempre activo — visible en todos los días
+                    if ( ! c.date_end ) return true;
+                    var e = parseISO( c.date_end );
+                    var ed = new Date( e.getFullYear(), e.getMonth(), e.getDate() );
+                    return dd <= ed;
                 }
 
                 function buildGrid( days, weekHdrDates ) {
@@ -2509,7 +2569,8 @@ class FairPlay_LMS_Plugin {
                         var evs = '';
                         filtered.forEach( function ( c ) {
                             if ( onDay( c, info.d ) ) {
-                                evs += '<span class="fplms-cal-event" style="background:' + c._color + ';" data-cid="' + c.id + '">' +
+                                var _expCls = isExpiringSoon( c ) ? ' expiring' : '';
+                                evs += '<span class="fplms-cal-event' + _expCls + '" style="background:' + c._color + ';" data-cid="' + c.id + '">' +
                                     esc( c.title.length > 19 ? c.title.slice( 0, 17 ) + '\u2026' : c.title ) + '</span>';
                             }
                         } );
@@ -2571,8 +2632,15 @@ class FairPlay_LMS_Plugin {
                                 popTitle.textContent = co.title;
                             }
 
-                            popDates.textContent = 'Vigencia: ' + fmtDate( parseISO( co.date_start ) ) +
-                                ( co.date_end ? ' \u2013 ' + fmtDate( parseISO( co.date_end ) ) : '' );
+                            var _pDateEnd = co.date_end ? parseISO( co.date_end ) : null;
+                            var _pDatesText = 'Vigencia: ' + fmtDate( parseISO( co.date_start ) ) +
+                                ( _pDateEnd ? ' \u2013 ' + fmtDate( _pDateEnd ) : '' );
+                            if ( isExpiringSoon( co ) ) {
+                                var _pToday = new Date(); _pToday.setHours( 0, 0, 0, 0 );
+                                var _pDaysLeft = Math.round( ( _pDateEnd.getTime() - _pToday.getTime() ) / 86400000 );
+                                _pDatesText += ' \u2014 \u26a0 Vence en ' + _pDaysLeft + ( _pDaysLeft !== 1 ? ' d\u00edas' : ' d\u00eda' );
+                            }
+                            popDates.textContent = _pDatesText;
 
                             // Progreso (solo estudiante; instructor no tiene campo progress)
                             if ( ! isInstructor && typeof co.progress !== 'undefined' ) {
@@ -2648,6 +2716,17 @@ class FairPlay_LMS_Plugin {
                             if ( idx >= 0 ) arr.splice( idx, 1 ); else arr.push( chip.dataset.val );
                             render();
                         } );
+                    } );
+                }
+
+                // Filtro "Por vencer" (disponible para estudiante e instructor)
+                var expiringBtnEl = container.querySelector( '#fplms-cal-expiring-btn' );
+                if ( expiringBtnEl ) {
+                    expiringBtnEl.addEventListener( 'click', function () {
+                        filterExpiring = ! filterExpiring;
+                        expiringBtnEl.classList.toggle( 'active',      filterExpiring );
+                        expiringBtnEl.classList.toggle( 'expiring-on', filterExpiring );
+                        render();
                     } );
                 }
 

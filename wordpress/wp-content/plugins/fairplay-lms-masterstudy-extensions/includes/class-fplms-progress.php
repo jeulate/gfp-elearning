@@ -48,7 +48,7 @@ class FairPlay_LMS_Progress_Service {
                             }
                         }
 
-                        if ( 'completed' === $status || $percent >= 99.9 ) {
+                        if ( 'completed' === $status || $percent >= 100.0 ) {
                             $detail['completed']++;
                         } elseif ( in_array( $status, [ 'failed', 'failed_quiz', 'not_passed' ], true ) ) {
                             $detail['failed']++;
@@ -212,7 +212,7 @@ class FairPlay_LMS_Progress_Service {
                 $status   = strtolower( (string) ( $data['status'] ?? '' ) );
                 $total_progress += $progress;
 
-                if ( 'completed' === $status || $progress >= 99.9 ) {
+                if ( 'completed' === $status || $progress >= 100.0 ) {
                     $stats['completed']++;
                     $completed_ids[] = (int) $cid;
                 } elseif ( $progress > 1 ) {
@@ -264,9 +264,9 @@ class FairPlay_LMS_Progress_Service {
             $expiring_ids = array_map( 'intval', (array) $wpdb->get_col(
                 "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
                  WHERE post_id IN ($all_cids_safe)
-                   AND meta_key IN ('access_duration','expiration_course','status_dates_end')
+                   AND meta_key = 'end_time'
                    AND meta_value != ''
-                   AND meta_value IS NOT NULL"
+                   AND meta_value > 0"
             ) );
             $stats['expiring_count'] = count( $expiring_ids );
             $stats['expiring_ids']   = $expiring_ids;
@@ -313,7 +313,7 @@ class FairPlay_LMS_Progress_Service {
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $cal_dur_rows = (array) $wpdb->get_results(
                 "SELECT post_id, meta_value FROM {$wpdb->postmeta}
-                 WHERE post_id IN ($cids_safe) AND meta_key = 'course_duration'
+                 WHERE post_id IN ($cids_safe) AND meta_key = 'end_time'
                    AND meta_value != '' AND meta_value > 0"
             );
             $cal_dur_map = [];
@@ -327,7 +327,7 @@ class FairPlay_LMS_Progress_Service {
                 $prog_data   = $enrolled_ids[ $cid ];
                 $progress    = (float) ( $prog_data['progress'] ?? 0 );
                 $status      = strtolower( (string) ( $prog_data['status'] ?? '' ) );
-                $is_complete = ( 'completed' === $status || $progress >= 99.9 );
+                $is_complete = ( 'completed' === $status || $progress >= 100.0 );
                 $stats['courses_list'][] = [
                     'id'         => $cid,
                     'title'      => get_the_title( $cid ),
@@ -493,7 +493,7 @@ class FairPlay_LMS_Progress_Service {
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $dur_rows = (array) $wpdb->get_results(
                 "SELECT post_id, meta_value FROM {$wpdb->postmeta}
-                 WHERE post_id IN ($in) AND meta_key = 'course_duration'
+                 WHERE post_id IN ($in) AND meta_key = 'end_time'
                    AND meta_value != '' AND meta_value > 0"
             );
             foreach ( $dur_rows as $dr ) {
