@@ -107,7 +107,8 @@ class FairPlay_LMS_Reports_Controller {
     }
 
     private function render_section_head(string $title, string $url): string {
-        $btn = $url ? '<a href="'.esc_url($url).'" class="button fplms-rpt-export-btn" target="_blank">&#11015; Exportar Excel</a>' : '';
+        $ico = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+        $btn = $url ? '<a href="'.esc_url($url).'" class="button fplms-rpt-export-btn" target="_blank">'.$ico.'Exportar Excel</a>' : '';
         return '<div class="fplms-rpt-section-head"><h2 class="fplms-rpt-title">'.esc_html($title).'</h2>'.$btn.'</div>';
     }
     private function sub(string $t): string   { return '<h3 class="fplms-rpt-sub">'.esc_html($t).'</h3>'; }
@@ -116,6 +117,20 @@ class FairPlay_LMS_Reports_Controller {
     private function badge(string $text, string $color): string {
         return '<span class="fplms-badge '.esc_attr($color).'">'.esc_html($text).'</span>';
     }
+    private function translate_status(string $status): string {
+        $map = [
+            ''             => 'No iniciado',
+            'not_started'  => 'No iniciado',
+            'enrolled'     => 'Inscrito',
+            'in_progress'  => 'En progreso',
+            'completed'    => 'Completado',
+            'passed'       => 'Aprobado',
+            'failed'       => 'Reprobado',
+            'not_passed'   => 'Reprobado',
+            'pending'      => 'Pendiente',
+        ];
+        return $map[$status] ?? $status;
+    }
     private function table_open(array $heads): string {
         $ths = implode('', array_map(fn($h)=>'<th>'.esc_html($h).'</th>', $heads));
         return '<div class="fplms-rpt-table-wrap"><table class="widefat striped fplms-rpt-table"><thead><tr>'.$ths.'</tr></thead><tbody>';
@@ -123,6 +138,7 @@ class FairPlay_LMS_Reports_Controller {
     private function table_close(): string { return '</tbody></table></div>'; }
 
     private function build_export_url(string $report, array $f): string {
+        $uid_str = !empty($f['user_ids']) ? implode(',', array_map('intval', (array)$f['user_ids'])) : '';
         return add_query_arg( array_filter([
             'page'         => 'fplms-reports',
             'fplms_export' => $report.'_xls',
@@ -132,6 +148,7 @@ class FairPlay_LMS_Reports_Controller {
             'city_id'      => $f['city_id']    ?: '',
             'company_id'   => $f['company_id'] ?: '',
             'role_id'      => $f['role_id']    ?: '',
+            'user_ids'     => $uid_str,
             '_wpnonce'     => wp_create_nonce('fplms_export_nonce'),
         ]), admin_url('admin.php') );
     }
@@ -151,21 +168,21 @@ class FairPlay_LMS_Reports_Controller {
         $created = (array) $wpdb->get_results(
             "SELECT u.ID,u.display_name,u.user_email,u.user_registered,
                     um_ci.meta_value AS city_id, um_ch.meta_value AS channel_id,
-                    um_st.meta_value AS fplms_active
+                    um_st.meta_value AS user_status
              FROM {$wpdb->users} u
              LEFT JOIN {$wpdb->usermeta} um_ci ON u.ID=um_ci.user_id AND um_ci.meta_key='fplms_city'
              LEFT JOIN {$wpdb->usermeta} um_ch ON u.ID=um_ch.user_id AND um_ch.meta_key='fplms_channel'
-             LEFT JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id AND um_st.meta_key='fplms_active'
+             LEFT JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id AND um_st.meta_key='fplms_user_status'
              WHERE 1=1 $uid_w $date_w ORDER BY u.user_registered DESC LIMIT 1000"
         );
         $act=0; $inact=0;
-        foreach ($created as $r) { if (''===(string)$r->fplms_active||'1'===(string)$r->fplms_active) $act++; else $inact++; }
+        foreach ($created as $r) { if (empty($r->user_status) || 'active' === $r->user_status) $act++; else $inact++; }
         $html .= $this->sub('Usuarios Registrados ('.count($created).') — Activos:'.$act.' / Inactivos:'.$inact);
         $html .= $this->table_open(['Nombre','Email','Fecha Registro','Ciudad','Canal','Estado']);
         foreach ($created as $r) {
             $city    = $r->city_id    ? $this->structures->get_term_name_by_id((int)$r->city_id)    : '—';
             $channel = $r->channel_id ? $this->structures->get_term_name_by_id((int)$r->channel_id) : '—';
-            $isact   = ''===(string)$r->fplms_active||'1'===(string)$r->fplms_active;
+            $isact   = empty($r->user_status) || 'active' === $r->user_status;
             $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                    . '<td>'.esc_html(wp_date('d/m/Y',strtotime($r->user_registered))).'</td>'
                    . '<td>'.esc_html($city).'</td><td>'.esc_html($channel).'</td>'
@@ -224,7 +241,7 @@ class FairPlay_LMS_Reports_Controller {
                 foreach ($abandon as $r) {
                     $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                            . '<td>'.esc_html($r->course_name).'</td><td>'.(int)$r->progress_percent.'%</td>'
-                           . '<td>'.$this->badge($r->status?:'not_started','yellow').'</td></tr>';
+                           . '<td>'.$this->badge($this->translate_status($r->status??''),'yellow').'</td></tr>';
                 }
                 $html .= $this->table_close();
             }
@@ -236,7 +253,7 @@ class FairPlay_LMS_Reports_Controller {
             "SELECT u.ID,u.display_name,u.user_email,u.user_registered,
                     um_ci.meta_value AS city_id,um_ch.meta_value AS channel_id
              FROM {$wpdb->users} u
-             INNER JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id AND um_st.meta_key='fplms_active' AND um_st.meta_value='0'
+             INNER JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id AND um_st.meta_key='fplms_user_status' AND um_st.meta_value='inactive'
              LEFT JOIN {$wpdb->usermeta} um_ci ON u.ID=um_ci.user_id AND um_ci.meta_key='fplms_city'
              LEFT JOIN {$wpdb->usermeta} um_ch ON u.ID=um_ch.user_id AND um_ch.meta_key='fplms_channel'
              WHERE 1=1 $uid_w ORDER BY u.display_name LIMIT 500"
@@ -368,7 +385,7 @@ class FairPlay_LMS_Reports_Controller {
                     $cl=in_array($st,['passed','completed'],true)?'green':(in_array($st,['failed','not_passed'],true)?'red':'yellow');
                     $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                            . '<td>'.esc_html($r->course_name??'—').'</td><td>'.esc_html($r->quiz_name??'—').'</td>'
-                           . '<td>'.esc_html((string)$r->score).'</td><td>'.$this->badge($r->status??'—',$cl).'</td></tr>';
+                           . '<td>'.esc_html((string)$r->score).'</td><td>'.$this->badge($this->translate_status($r->status??''),$cl).'</td></tr>';
                 }
                 $html .= $this->table_close();
             } else { $html.=$this->empty_msg('Sin datos de evaluaciones.'); }
@@ -657,45 +674,555 @@ class FairPlay_LMS_Reports_Controller {
         if (!current_user_can(FairPlay_LMS_Config::CAP_VIEW_REPORTS)) return;
         if (!isset($_GET['_wpnonce'])||!wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])),'fplms_export_nonce')) return;
         $fmt=sanitize_text_field(wp_unslash($_GET['fplms_export']));
-        $f=['date_from'=>isset($_GET['date_from'])?sanitize_text_field(wp_unslash($_GET['date_from'])):'','date_to'=>isset($_GET['date_to'])?sanitize_text_field(wp_unslash($_GET['date_to'])):'','channel_id'=>isset($_GET['channel_id'])?(int)$_GET['channel_id']:0,'city_id'=>isset($_GET['city_id'])?(int)$_GET['city_id']:0,'company_id'=>isset($_GET['company_id'])?(int)$_GET['company_id']:0,'role_id'=>isset($_GET['role_id'])?(int)$_GET['role_id']:0,'user_ids'=>[]];
+        $raw_uids = isset($_GET['user_ids']) ? sanitize_text_field(wp_unslash($_GET['user_ids'])) : '';
+        $parsed_uids = '' !== $raw_uids
+            ? array_values(array_filter(array_map('intval', explode(',', $raw_uids))))
+            : [];
+        $f=[
+            'date_from'  => isset($_GET['date_from'])  ? sanitize_text_field(wp_unslash($_GET['date_from']))  : '',
+            'date_to'    => isset($_GET['date_to'])    ? sanitize_text_field(wp_unslash($_GET['date_to']))    : '',
+            'channel_id' => isset($_GET['channel_id']) ? (int)$_GET['channel_id'] : 0,
+            'city_id'    => isset($_GET['city_id'])    ? (int)$_GET['city_id']    : 0,
+            'company_id' => isset($_GET['company_id']) ? (int)$_GET['company_id'] : 0,
+            'role_id'    => isset($_GET['role_id'])    ? (int)$_GET['role_id']    : 0,
+            'user_ids'   => $parsed_uids,
+        ];
         $this->dispatch_xls_export($fmt,$f);
     }
 
     private function dispatch_xls_export(string $format, array $f): void {
         global $wpdb;
-        $uids=$this->get_user_ids_for_filters($f); $ms=$this->ms_table();
-        $mw=null!==$uids?(empty($uids)?'AND uc.user_id=0':'AND uc.user_id IN ('.implode(',',array_map('intval',$uids)).')'):'';
-        $uw=$this->uid_in($uids);
+        $uids = $this->get_user_ids_for_filters($f);
+        $ms   = $this->ms_table();
+        $mw   = null !== $uids ? (empty($uids) ? 'AND uc.user_id=0' : 'AND uc.user_id IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
+        $uw   = $this->uid_in($uids);
+        $u_in = null !== $uids ? (empty($uids) ? 'AND 1=0' : 'AND u.ID IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
+
         switch (true) {
-            case str_starts_with($format,'participation'):
-                $dw=$this->date_sql('u.user_registered',$f['date_from'],$f['date_to']);
+
+            // ── PARTICIPACION ──────────────────────────────────────────────
+            case str_starts_with($format, 'participation'):
+                $dw  = $this->date_sql('u.user_registered', $f['date_from'], $f['date_to']);
+                $ldw = $this->date_sql('l.login_time', $f['date_from'], $f['date_to']);
+                $lw  = null !== $uids ? (empty($uids) ? 'AND l.user_id=0' : 'AND l.user_id IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
+
+                // 1A – Usuarios registrados (date filter on registration)
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $rows=(array)$wpdb->get_results("SELECT u.display_name,u.user_email,u.user_registered,um_ci.meta_value AS city_id,um_ch.meta_value AS channel_id,um_st.meta_value AS fplms_active FROM {$wpdb->users} u LEFT JOIN {$wpdb->usermeta} um_ci ON u.ID=um_ci.user_id AND um_ci.meta_key='fplms_city' LEFT JOIN {$wpdb->usermeta} um_ch ON u.ID=um_ch.user_id AND um_ch.meta_key='fplms_channel' LEFT JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id AND um_st.meta_key='fplms_active' WHERE 1=1 $uw $dw ORDER BY u.user_registered DESC LIMIT 5000");
-                $this->output_xls('participacion','Reporte de Participacion',['Nombre','Email','Fecha Registro','Ciudad','Canal','Estado'],array_map(fn($r)=>[$r->display_name,$r->user_email,wp_date('d/m/Y',strtotime($r->user_registered)),$r->city_id?$this->structures->get_term_name_by_id((int)$r->city_id):'',$r->channel_id?$this->structures->get_term_name_by_id((int)$r->channel_id):'',''===(string)$r->fplms_active||'1'===(string)$r->fplms_active?'Activo':'Inactivo'],$rows),$f);
+                $reg = (array) $wpdb->get_results(
+                    "SELECT u.display_name,u.user_email,u.user_registered,
+                            um_ci.meta_value AS city_id,um_ch.meta_value AS channel_id,
+                            um_st.meta_value AS user_status
+                     FROM {$wpdb->users} u
+                     LEFT JOIN {$wpdb->usermeta} um_ci ON u.ID=um_ci.user_id AND um_ci.meta_key='fplms_city'
+                     LEFT JOIN {$wpdb->usermeta} um_ch ON u.ID=um_ch.user_id AND um_ch.meta_key='fplms_channel'
+                     LEFT JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id AND um_st.meta_key='fplms_user_status'
+                     WHERE 1=1 $uw $dw ORDER BY u.user_registered DESC LIMIT 5000"
+                );
+
+                // 1B – Login frequency (date filter on login_time)
+                $login_table  = $wpdb->prefix . 'fplms_user_logins';
+                $login_exists = ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $login_table)) === $login_table);
+                $logins = [];
+                if ($login_exists) {
+                    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $logins = (array) $wpdb->get_results(
+                        "SELECT u.display_name,u.user_email,COUNT(l.id) AS login_count,MAX(l.login_time) AS last_login
+                         FROM {$wpdb->users} u INNER JOIN `{$login_table}` l ON u.ID=l.user_id
+                         WHERE 1=1 $lw $ldw GROUP BY u.ID ORDER BY login_count DESC LIMIT 5000"
+                    );
+                }
+
+                // 1C – Abandonment (no date filter – all enrolled with 0 progress)
+                $abandon = [];
+                if ($ms) {
+                    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $abandon = (array) $wpdb->get_results(
+                        "SELECT u.display_name,u.user_email,p.post_title AS course_name,
+                                uc.progress_percent,uc.status
+                         FROM `{$ms}` uc
+                         INNER JOIN {$wpdb->users} u ON uc.user_id=u.ID
+                         INNER JOIN {$wpdb->posts} p ON uc.course_id=p.ID
+                         WHERE uc.progress_percent<1 AND uc.status NOT IN('completed','passed') $mw
+                         ORDER BY u.display_name,p.post_title LIMIT 5000"
+                    );
+                }
+
+                // 1D – Inactive / given-up users (no date filter)
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $inactive = (array) $wpdb->get_results(
+                    "SELECT u.display_name,u.user_email,u.user_registered,
+                            um_ci.meta_value AS city_id,um_ch.meta_value AS channel_id
+                     FROM {$wpdb->users} u
+                     INNER JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id
+                         AND um_st.meta_key='fplms_user_status' AND um_st.meta_value='inactive'
+                     LEFT JOIN {$wpdb->usermeta} um_ci ON u.ID=um_ci.user_id AND um_ci.meta_key='fplms_city'
+                     LEFT JOIN {$wpdb->usermeta} um_ch ON u.ID=um_ch.user_id AND um_ch.meta_key='fplms_channel'
+                     WHERE 1=1 $uw ORDER BY u.display_name LIMIT 5000"
+                );
+
+                $this->output_xls_multi('participacion', 'Reporte de Participacion', [
+                    [
+                        'title'   => 'Usuarios Registrados (' . count($reg) . ')',
+                        'headers' => ['Nombre', 'Email', 'Fecha Registro', 'Ciudad', 'Canal', 'Estado'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name,
+                            $r->user_email,
+                            wp_date('d/m/Y', strtotime($r->user_registered)),
+                            $r->city_id    ? $this->structures->get_term_name_by_id((int)$r->city_id)    : '',
+                            $r->channel_id ? $this->structures->get_term_name_by_id((int)$r->channel_id) : '',
+                            empty($r->user_status) || 'active' === $r->user_status ? 'Activo' : 'Inactivo',
+                        ], $reg),
+                    ],
+                    [
+                        'title'   => 'Frecuencia de Acceso / N. de Ingresos al Sistema',
+                        'headers' => ['Nombre', 'Email', 'N. de Ingresos', 'Ultimo Ingreso'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name,
+                            $r->user_email,
+                            (int)$r->login_count,
+                            $r->last_login ? wp_date('d/m/Y H:i', strtotime($r->last_login)) : '—',
+                        ], $logins),
+                    ],
+                    [
+                        'title'   => 'Tasa de Abandono — Inscritos sin Participacion o sin Completar (' . count($abandon) . ')',
+                        'headers' => ['Usuario', 'Email', 'Curso', 'Progreso %', 'Estado'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name,
+                            $r->user_email,
+                            $r->course_name,
+                            $r->progress_percent . '%',
+                            !$r->status || 'not_started' === $r->status ? 'No iniciado' : $r->status,
+                        ], $abandon),
+                    ],
+                    [
+                        'title'   => 'Usuarios Dados de Baja / Inactivos (' . count($inactive) . ')',
+                        'headers' => ['Nombre', 'Email', 'Fecha Registro', 'Ciudad', 'Canal'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name,
+                            $r->user_email,
+                            wp_date('d/m/Y', strtotime($r->user_registered)),
+                            $r->city_id    ? $this->structures->get_term_name_by_id((int)$r->city_id)    : '',
+                            $r->channel_id ? $this->structures->get_term_name_by_id((int)$r->channel_id) : '',
+                        ], $inactive),
+                    ],
+                ], $f);
                 break;
-            case str_starts_with($format,'progress'):
+
+            // ── PROGRESO ──────────────────────────────────────────────────
+            case str_starts_with($format, 'progress'):
                 if (!$ms) { echo 'Sin tabla.'; exit; }
+
+                // 2A – Per-course aggregates
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $rows=(array)$wpdb->get_results("SELECT u.display_name,u.user_email,p.post_title AS course,uc.progress_percent,uc.status FROM {$wpdb->users} u INNER JOIN `{$ms}` uc ON u.ID=uc.user_id INNER JOIN {$wpdb->posts} p ON uc.course_id=p.ID WHERE 1=1 $mw ORDER BY u.display_name LIMIT 5000");
-                $this->output_xls('progreso','Reporte de Progreso',['Usuario','Email','Curso','Progreso %','Estado'],array_map(fn($r)=>[$r->display_name,$r->user_email,$r->course,$r->progress_percent,$r->status],$rows),$f);
-                break;
-            case str_starts_with($format,'certificates'):
-                $u_in=null!==$uids?(empty($uids)?'AND 1=0':'AND pm_uid.meta_value IN ('.implode(',',array_map('intval',$uids)).')'):'';
-                $dw=$this->date_sql('p.post_date',$f['date_from'],$f['date_to']);
+                $cstats = (array) $wpdb->get_results(
+                    "SELECT p.post_title AS course_name,
+                            COUNT(uc.user_id) AS enrolled,
+                            ROUND(AVG(uc.progress_percent),1) AS avg_progress,
+                            SUM(CASE WHEN uc.status IN('completed','passed') OR uc.progress_percent>=100 THEN 1 ELSE 0 END) AS completed,
+                            SUM(CASE WHEN uc.progress_percent>0 AND uc.progress_percent<100 AND uc.status NOT IN('completed','passed') THEN 1 ELSE 0 END) AS in_progress,
+                            SUM(CASE WHEN uc.progress_percent<1 AND uc.status NOT IN('completed','passed') THEN 1 ELSE 0 END) AS not_started
+                     FROM {$wpdb->posts} p LEFT JOIN `{$ms}` uc ON p.ID=uc.course_id $mw
+                     WHERE p.post_type='stm-courses' AND p.post_status='publish'
+                     GROUP BY p.ID ORDER BY enrolled DESC, p.post_title"
+                );
+
+                // 2B – Top 10 abandono (computed from $cstats already fetched)
+                $top10_sorted = array_values(array_filter($cstats, fn($r) => (int)$r->enrolled > 0));
+                usort($top10_sorted, fn($a, $b) => (int)$b->not_started / max(1, (int)$b->enrolled) <=> (int)$a->not_started / max(1, (int)$a->enrolled));
+                $top10_xls = array_slice($top10_sorted, 0, 10);
+
+                // 2C – Per-user aggregate (matches HTML: total courses, avg progress, completed, pending)
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $rows=(array)$wpdb->get_results("SELECT u.display_name,u.user_email,pc.post_title AS course,p.post_date FROM {$wpdb->posts} p INNER JOIN {$wpdb->postmeta} pm_uid ON p.ID=pm_uid.post_id AND pm_uid.meta_key='user_id' INNER JOIN {$wpdb->users} u ON pm_uid.meta_value=u.ID LEFT JOIN {$wpdb->postmeta} pm_cid ON p.ID=pm_cid.post_id AND pm_cid.meta_key='course_id' LEFT JOIN {$wpdb->posts} pc ON pm_cid.meta_value=pc.ID WHERE p.post_type IN('stm-certificates','stm-certificate') AND p.post_status!='trash' $u_in $dw ORDER BY p.post_date DESC LIMIT 5000");
-                $this->output_xls('certificados','Reporte de Certificacion',['Usuario','Email','Curso','Fecha Emision'],array_map(fn($r)=>[$r->display_name,$r->user_email,$r->course?:'—',wp_date('d/m/Y',strtotime($r->post_date))],$rows),$f);
+                $uprg = (array) $wpdb->get_results(
+                    "SELECT u.display_name,u.user_email,
+                            COUNT(uc.course_id) AS total_courses,
+                            ROUND(AVG(uc.progress_percent),1) AS avg_progress,
+                            SUM(CASE WHEN uc.status IN('completed','passed') OR uc.progress_percent>=100 THEN 1 ELSE 0 END) AS completed
+                     FROM {$wpdb->users} u INNER JOIN `{$ms}` uc ON u.ID=uc.user_id
+                     WHERE 1=1 $u_in GROUP BY u.ID ORDER BY avg_progress DESC LIMIT 5000"
+                );
+
+                $this->output_xls_multi('progreso', 'Reporte de Progreso', [
+                    [
+                        'title'   => 'Porcentaje de Avance por Curso',
+                        'headers' => ['Curso', 'Inscritos', 'Avance Prom. %', 'Completados', 'Tasa Finalizacion %', 'En Progreso', 'No Iniciados', 'Tasa Abandono %'],
+                        'data'    => array_map(fn($r) => [
+                            $r->course_name,
+                            (int)$r->enrolled,
+                            $r->avg_progress . '%',
+                            (int)$r->completed,
+                            (int)$r->enrolled > 0 ? round((int)$r->completed  / (int)$r->enrolled * 100, 1) . '%' : '0%',
+                            (int)$r->in_progress,
+                            (int)$r->not_started,
+                            (int)$r->enrolled > 0 ? round((int)$r->not_started / (int)$r->enrolled * 100, 1) . '%' : '0%',
+                        ], $cstats),
+                    ],
+                    [
+                        'title'   => 'Capacitaciones con Mayor Abandono (Top 10)',
+                        'headers' => ['Curso', 'Inscritos', 'Sin Participacion', 'Tasa Abandono'],
+                        'data'    => array_map(fn($r) => [
+                            $r->course_name,
+                            (int)$r->enrolled,
+                            (int)$r->not_started,
+                            (int)$r->enrolled > 0 ? round((int)$r->not_started / (int)$r->enrolled * 100, 1) . '%' : '0%',
+                        ], $top10_xls),
+                    ],
+                    [
+                        'title'   => 'Progreso por Usuario',
+                        'headers' => ['Usuario', 'Email', 'Cursos Asignados', 'Avance Promedio', 'Completados', 'Pendientes'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name,
+                            $r->user_email,
+                            (int)$r->total_courses,
+                            $r->avg_progress . '%',
+                            (int)$r->completed,
+                            (int)$r->total_courses - (int)$r->completed,
+                        ], $uprg),
+                    ],
+                ], $f);
                 break;
-            case str_starts_with($format,'time'):
+
+            // ── DESEMPENO ────────────────────────────────────────────────
+            case str_starts_with($format, 'performance'):
+                $quiz_table = null;
+                if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->prefix . 'stm_lms_user_quizzes')) === $wpdb->prefix . 'stm_lms_user_quizzes') {
+                    $quiz_table = $wpdb->prefix . 'stm_lms_user_quizzes';
+                }
+                $qw = null !== $uids ? (empty($uids) ? 'AND uq.user_id=0' : 'AND uq.user_id IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
+                $quizzes = [];
+                if ($quiz_table) {
+                    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $quizzes = (array) $wpdb->get_results(
+                        "SELECT u.display_name,u.user_email,
+                                pc.post_title AS course_name,q.post_title AS quiz_name,
+                                uq.progress AS score,uq.status
+                         FROM `{$quiz_table}` uq
+                         INNER JOIN {$wpdb->users} u ON uq.user_id=u.ID
+                         LEFT JOIN {$wpdb->posts} q  ON uq.quiz_id=q.ID
+                         LEFT JOIN {$wpdb->posts} pc ON uq.course_id=pc.ID
+                         WHERE 1=1 $qw ORDER BY u.display_name,q.post_title LIMIT 5000"
+                    );
+                }
+                $expired = [];
+                if ($ms) {
+                    $today = wp_date('Y-m-d');
+                    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $expired = (array) $wpdb->get_results($wpdb->prepare(
+                        "SELECT u.display_name,u.user_email,p.post_title AS course_name,
+                                uc.progress_percent,pm.meta_value AS end_days,
+                                DATE_ADD(p.post_date,INTERVAL pm.meta_value DAY) AS expiry_date
+                         FROM {$wpdb->posts} p
+                         INNER JOIN {$wpdb->postmeta} pm ON p.ID=pm.post_id AND pm.meta_key='end_time' AND pm.meta_value>0
+                         INNER JOIN `{$ms}` uc ON p.ID=uc.course_id
+                         INNER JOIN {$wpdb->users} u ON uc.user_id=u.ID
+                         WHERE p.post_type='stm-courses'
+                           AND DATE_ADD(p.post_date,INTERVAL pm.meta_value DAY)<%s
+                           AND uc.status NOT IN('completed','passed') AND uc.progress_percent<100 $mw
+                         ORDER BY expiry_date ASC LIMIT 5000",
+                        $today
+                    ));
+                }
+                $this->output_xls_multi('desempeno', 'Reporte de Desempeno', [
+                    [
+                        'title'   => 'Resultados de Evaluaciones (' . count($quizzes) . ')',
+                        'headers' => ['Usuario', 'Email', 'Curso', 'Evaluacion', 'Puntaje', 'Estado'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name, $r->user_email,
+                            $r->course_name ?? '—', $r->quiz_name ?? '—',
+                            $r->score, $r->status ?? '—',
+                        ], $quizzes),
+                    ],
+                    [
+                        'title'   => 'Capacitaciones Vencidas sin Completar (' . count($expired) . ')',
+                        'headers' => ['Usuario', 'Email', 'Curso', 'Progreso %', 'Dias Vigencia', 'Fecha Vencimiento'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name, $r->user_email, $r->course_name,
+                            $r->progress_percent . '%',
+                            (int)$r->end_days . ' dias',
+                            wp_date('d/m/Y', strtotime($r->expiry_date)),
+                        ], $expired),
+                    ],
+                ], $f);
+                break;
+
+            // ── CERTIFICADOS ──────────────────────────────────────────────
+            case str_starts_with($format, 'certificates'):
+                $cert_in = null !== $uids ? (empty($uids) ? 'AND 1=0' : 'AND pm_uid.meta_value IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
+                $dw      = $this->date_sql('p.post_date', $f['date_from'], $f['date_to']);
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $certs = (array) $wpdb->get_results(
+                    "SELECT u.display_name,u.user_email,pc.post_title AS course,
+                            p.post_date,pm_dl.meta_value AS downloaded
+                     FROM {$wpdb->posts} p
+                     INNER JOIN {$wpdb->postmeta} pm_uid ON p.ID=pm_uid.post_id AND pm_uid.meta_key='user_id'
+                     INNER JOIN {$wpdb->users} u ON pm_uid.meta_value=u.ID
+                     LEFT JOIN {$wpdb->postmeta} pm_cid ON p.ID=pm_cid.post_id AND pm_cid.meta_key='course_id'
+                     LEFT JOIN {$wpdb->posts} pc ON pm_cid.meta_value=pc.ID
+                     LEFT JOIN {$wpdb->postmeta} pm_dl ON p.ID=pm_dl.post_id AND pm_dl.meta_key='certificate_downloaded'
+                     WHERE p.post_type IN('stm-certificates','stm-certificate') AND p.post_status!='trash'
+                     $cert_in $dw ORDER BY p.post_date DESC LIMIT 5000"
+                );
+                $this->output_xls_multi('certificados', 'Reporte de Certificacion', [
+                    [
+                        'title'   => 'Certificados Emitidos (' . count($certs) . ')',
+                        'headers' => ['Usuario', 'Email', 'Curso', 'Fecha Emision', 'Descargado'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name, $r->user_email,
+                            $r->course ?: '—',
+                            wp_date('d/m/Y', strtotime($r->post_date)),
+                            !empty($r->downloaded) ? 'Si' : 'No',
+                        ], $certs),
+                    ],
+                ], $f);
+                break;
+
+            // ── TIEMPO ───────────────────────────────────────────────────
+            case str_starts_with($format, 'time'):
                 if (!$ms) { echo 'Sin datos.'; exit; }
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $rows=(array)$wpdb->get_results("SELECT u.display_name,u.user_email,p.post_title AS course,COALESCE(CAST(pm_vd.meta_value AS DECIMAL(10,2)),0) AS vh,COALESCE(CAST(pm_di.meta_value AS DECIMAL(10,2)),0) AS dh FROM {$wpdb->users} u INNER JOIN `{$ms}` uc ON u.ID=uc.user_id INNER JOIN {$wpdb->posts} p ON uc.course_id=p.ID AND p.post_status='publish' LEFT JOIN {$wpdb->postmeta} pm_vd ON p.ID=pm_vd.post_id AND pm_vd.meta_key='video_duration' LEFT JOIN {$wpdb->postmeta} pm_di ON p.ID=pm_di.post_id AND pm_di.meta_key='duration_info' WHERE (uc.status IN('completed','passed') OR uc.progress_percent>=100) $mw ORDER BY u.display_name LIMIT 5000");
-                $this->output_xls('tiempo_capacitacion','Reporte de Tiempo de Capacitacion',['Usuario','Email','Curso','Horas'],array_map(fn($r)=>[$r->display_name,$r->user_email,$r->course,round(max((float)$r->vh,(float)$r->dh),1).' h'],$rows),$f);
+                $trows = (array) $wpdb->get_results(
+                    "SELECT u.display_name,u.user_email,p.post_title AS course,
+                            COALESCE(CAST(pm_vd.meta_value AS DECIMAL(10,2)),0) AS vh,
+                            COALESCE(CAST(pm_di.meta_value AS DECIMAL(10,2)),0) AS dh
+                     FROM {$wpdb->users} u
+                     INNER JOIN `{$ms}` uc ON u.ID=uc.user_id
+                     INNER JOIN {$wpdb->posts} p ON uc.course_id=p.ID AND p.post_status='publish'
+                     LEFT JOIN {$wpdb->postmeta} pm_vd ON p.ID=pm_vd.post_id AND pm_vd.meta_key='video_duration'
+                     LEFT JOIN {$wpdb->postmeta} pm_di ON p.ID=pm_di.post_id AND pm_di.meta_key='duration_info'
+                     WHERE (uc.status IN('completed','passed') OR uc.progress_percent>=100) $mw
+                     ORDER BY u.display_name LIMIT 5000"
+                );
+                $by = [];
+                foreach ($trows as $r) {
+                    $k = $r->display_name . '|' . $r->user_email;
+                    if (!isset($by[$k])) $by[$k] = ['name' => $r->display_name, 'email' => $r->user_email, 'hours' => 0.0, 'courses' => 0];
+                    $by[$k]['hours']   += max((float)$r->vh, (float)$r->dh);
+                    $by[$k]['courses'] ++;
+                }
+                uasort($by, fn($a, $b) => $b['hours'] <=> $a['hours']);
+                $this->output_xls_multi('tiempo_capacitacion', 'Reporte de Tiempo de Capacitacion', [
+                    [
+                        'title'   => 'Horas por Usuario (Cursos Aprobados)',
+                        'headers' => ['Usuario', 'Email', 'Cursos Aprobados', 'Horas Totales'],
+                        'data'    => array_map(fn($row) => [
+                            $row['name'], $row['email'], (int)$row['courses'], round($row['hours'], 1) . ' h',
+                        ], array_values($by)),
+                    ],
+                    [
+                        'title'   => 'Detalle por Usuario y Curso',
+                        'headers' => ['Usuario', 'Email', 'Curso', 'Horas'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name, $r->user_email, $r->course,
+                            round(max((float)$r->vh, (float)$r->dh), 1) . ' h',
+                        ], $trows),
+                    ],
+                ], $f);
                 break;
+
+            // ── SATISFACCION ─────────────────────────────────────────────
+            case str_starts_with($format, 'satisfaction'):
+                $st = $wpdb->prefix . 'fplms_survey_responses';
+                if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $st)) !== $st) {
+                    echo 'Sin datos de satisfaccion.'; exit;
+                }
+                $sw     = null !== $uids ? (empty($uids) ? 'AND sr.user_id=0' : 'AND sr.user_id IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
+                $dw_sat = $this->date_sql('sr.submitted_at', $f['date_from'], $f['date_to']);
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $srows = (array) $wpdb->get_results(
+                    "SELECT u.display_name,u.user_email,p.post_title AS course_name,sr.answers,sr.submitted_at
+                     FROM `{$st}` sr
+                     INNER JOIN {$wpdb->users} u ON sr.user_id=u.ID
+                     LEFT JOIN {$wpdb->posts} p ON sr.course_id=p.ID
+                     WHERE 1=1 $sw $dw_sat ORDER BY sr.submitted_at DESC LIMIT 5000"
+                );
+                $this->output_xls_multi('satisfaccion', 'Reporte de Satisfaccion', [
+                    [
+                        'title'   => 'Respuestas de Encuestas (' . count($srows) . ')',
+                        'headers' => ['Usuario', 'Email', 'Curso', 'Respuestas', 'Fecha'],
+                        'data'    => array_map(fn($r) => [
+                            $r->display_name, $r->user_email, $r->course_name ?? '—',
+                            is_array(maybe_unserialize($r->answers))
+                                ? implode(' | ', maybe_unserialize($r->answers))
+                                : $r->answers,
+                            wp_date('d/m/Y', strtotime($r->submitted_at)),
+                        ], $srows),
+                    ],
+                ], $f);
+                break;
+
+            // ── CANALES ──────────────────────────────────────────────────
+            case str_starts_with($format, 'channels'):
+                if (!$ms) { echo 'Sin datos.'; exit; }
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $ch_rows = (array) $wpdb->get_results(
+                    "SELECT t.name AS canal,
+                            COUNT(DISTINCT uc.user_id) AS inscritos,
+                            SUM(CASE WHEN uc.status IN('completed','passed') OR uc.progress_percent>=100 THEN 1 ELSE 0 END) AS completados,
+                            ROUND(SUM(CASE WHEN uc.status IN('completed','passed') OR uc.progress_percent>=100 THEN 1 ELSE 0 END)/COUNT(DISTINCT uc.user_id)*100,1) AS tasa,
+                            p.post_title AS curso
+                     FROM {$wpdb->term_taxonomy} tt
+                     INNER JOIN {$wpdb->terms} t ON tt.term_id=t.term_id
+                     INNER JOIN {$wpdb->postmeta} pm ON pm.meta_key='fplms_course_channels'
+                         AND pm.meta_value LIKE CONCAT('%\"',tt.term_id,'\"%')
+                     INNER JOIN {$wpdb->posts} p ON pm.post_id=p.ID
+                         AND p.post_type='stm-courses' AND p.post_status='publish'
+                     INNER JOIN `{$ms}` uc ON uc.course_id=p.ID
+                     WHERE tt.taxonomy='fplms_channel' $mw
+                     GROUP BY tt.term_id,p.ID ORDER BY t.name,p.post_title LIMIT 5000"
+                );
+                $this->output_xls_multi('canales', 'Reporte de Canales', [
+                    [
+                        'title'   => 'Cumplimiento por Canal y Curso',
+                        'headers' => ['Canal', 'Curso', 'Inscritos', 'Completados', 'Tasa Cumplimiento %'],
+                        'data'    => array_map(fn($r) => [
+                            $r->canal, $r->curso, (int)$r->inscritos, (int)$r->completados, $r->tasa,
+                        ], $ch_rows),
+                    ],
+                ], $f);
+                break;
+
+            // ── DEFAULT ──────────────────────────────────────────────────
             default:
-                $users=$this->users->get_users_filtered_by_structure(0,0,0,0);
-                $this->output_xls('usuarios_avance','Usuarios — Avance General',['ID','Nombre','Email','Roles','Ciudad','Canal','Sucursal','Cargo','Avance'],array_map(fn($u)=>[$u->ID,$u->display_name,$u->user_email,implode(', ',$u->roles),$this->structures->get_term_name_by_id(get_user_meta($u->ID,FairPlay_LMS_Config::USER_META_CITY,true)),$this->structures->get_term_name_by_id(get_user_meta($u->ID,FairPlay_LMS_Config::USER_META_CHANNEL,true)),$this->structures->get_term_name_by_id(get_user_meta($u->ID,FairPlay_LMS_Config::USER_META_BRANCH,true)),$this->structures->get_term_name_by_id(get_user_meta($u->ID,FairPlay_LMS_Config::USER_META_ROLE,true)),$this->progress->get_user_progress_summary($u->ID)],$users),$f);
+                $users = $this->users->get_users_filtered_by_structure(0, 0, 0, 0);
+                $this->output_xls_multi('usuarios_avance', 'Usuarios — Avance General', [
+                    [
+                        'title'   => 'Listado de Usuarios',
+                        'headers' => ['ID', 'Nombre', 'Email', 'Roles', 'Ciudad', 'Canal', 'Sucursal', 'Cargo'],
+                        'data'    => array_map(fn($u) => [
+                            $u->ID, $u->display_name, $u->user_email, implode(', ', $u->roles),
+                            $this->structures->get_term_name_by_id(get_user_meta($u->ID, FairPlay_LMS_Config::USER_META_CITY,    true)),
+                            $this->structures->get_term_name_by_id(get_user_meta($u->ID, FairPlay_LMS_Config::USER_META_CHANNEL, true)),
+                            $this->structures->get_term_name_by_id(get_user_meta($u->ID, FairPlay_LMS_Config::USER_META_BRANCH,  true)),
+                            $this->structures->get_term_name_by_id(get_user_meta($u->ID, FairPlay_LMS_Config::USER_META_ROLE,    true)),
+                        ], $users),
+                    ],
+                ], $f);
         }
+    }
+
+    /**
+     * Output a multi-section SpreadsheetML XLS.
+     * Each section = ['title'=>string, 'headers'=>string[], 'data'=>array[]]
+     * Section title row: #FFA800 bg (orange).
+     * Column header row: #CC8600 bg (dark orange).
+     * Data rows alternate white / #FFF8EE.
+     */
+    private function output_xls_multi(string $slug, string $report_title, array $sections, array $filters = []): void {
+        $xe = fn($v) => htmlspecialchars((string)$v, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+
+        // Build metadata line (filters + user names)
+        $fp = [];
+        if (!empty($filters['date_from'])) $fp[] = 'Desde: ' . $filters['date_from'];
+        if (!empty($filters['date_to']))   $fp[] = 'Hasta: ' . $filters['date_to'];
+        if (!empty($filters['user_ids'])) {
+            $uid_list = is_array($filters['user_ids'])
+                ? $filters['user_ids']
+                : array_values(array_filter(array_map('intval', explode(',', (string)$filters['user_ids']))));
+            $names = [];
+            foreach ($uid_list as $uid) {
+                $ud = get_userdata((int)$uid);
+                if ($ud) $names[] = $ud->display_name;
+            }
+            if (!empty($names)) $fp[] = 'Usuario: ' . implode(', ', $names);
+        }
+        $meta = 'Generado: ' . wp_date('d/m/Y H:i') . (empty($fp) ? '' : ' | ' . implode(' | ', $fp));
+
+        // Max columns (for title/meta merge span)
+        $max_cols = 1;
+        foreach ($sections as $s) $max_cols = max($max_cols, count($s['headers']));
+        $merge_all = max(0, $max_cols - 1);
+
+        $body  = '';
+        $body .= '<Row ss:Height="28"><Cell ss:StyleID="s_title" ss:MergeAcross="' . $merge_all . '">'
+               . '<Data ss:Type="String">' . $xe($report_title) . '</Data></Cell></Row>';
+        $body .= '<Row ss:Height="16"><Cell ss:StyleID="s_meta" ss:MergeAcross="' . $merge_all . '">'
+               . '<Data ss:Type="String">' . $xe($meta) . '</Data></Cell></Row>';
+
+        foreach ($sections as $s) {
+            $ncols = count($s['headers']);
+            $merge = max(0, $ncols - 1);
+
+            // Spacer
+            $body .= '<Row ss:Height="10"/>';
+
+            // Section heading (orange #FFA800)
+            $body .= '<Row ss:Height="22"><Cell ss:StyleID="s_sec" ss:MergeAcross="' . $merge . '">'
+                   . '<Data ss:Type="String">' . $xe($s['title']) . '</Data></Cell></Row>';
+
+            // Column headers (dark orange #CC8600)
+            $hdr = implode('', array_map(
+                fn($h) => '<Cell ss:StyleID="s_hdr"><Data ss:Type="String">' . $xe($h) . '</Data></Cell>',
+                $s['headers']
+            ));
+            $body .= '<Row ss:Height="20">' . $hdr . '</Row>';
+
+            // Data rows
+            if (empty($s['data'])) {
+                $body .= '<Row ss:Height="18"><Cell ss:StyleID="s_even" ss:MergeAcross="' . $merge . '">'
+                       . '<Data ss:Type="String">(Sin datos para los filtros seleccionados)</Data></Cell></Row>';
+            } else {
+                $i = 0;
+                foreach ($s['data'] as $row) {
+                    $sty  = ($i % 2 === 0) ? 's_even' : 's_odd';
+                    $body .= '<Row ss:Height="18">';
+                    foreach ((array)$row as $cell) {
+                        $v    = (string)$cell;
+                        $type = (is_numeric($v) && !preg_match('/^0\d/', $v) && $v !== '') ? 'Number' : 'String';
+                        $body .= '<Cell ss:StyleID="' . $sty . '"><Data ss:Type="' . $type . '">' . $xe($v) . '</Data></Cell>';
+                    }
+                    $body .= '</Row>';
+                    $i++;
+                }
+            }
+        }
+
+        $styles = '<Styles>'
+            . '<Style ss:ID="s_title"><Font ss:Bold="1" ss:Size="13" ss:Color="#333333"/>'
+            .   '<Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/>'
+            .   '<Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_meta"><Font ss:Italic="1" ss:Size="9" ss:Color="#888888"/>'
+            .   '<Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/></Style>'
+            . '<Style ss:ID="s_sec"><Font ss:Bold="1" ss:Size="11" ss:Color="#FFFFFF"/>'
+            .   '<Interior ss:Color="#FFA800" ss:Pattern="Solid"/>'
+            .   '<Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_hdr"><Font ss:Bold="1" ss:Size="10" ss:Color="#FFFFFF"/>'
+            .   '<Interior ss:Color="#CC8600" ss:Pattern="Solid"/>'
+            .   '<Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>'
+            .   '<Borders>'
+            .     '<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#AA6E00"/>'
+            .     '<Border ss:Position="Left"   ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#AA6E00"/>'
+            .     '<Border ss:Position="Right"  ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#AA6E00"/>'
+            .   '</Borders></Style>'
+            . '<Style ss:ID="s_even"><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/>'
+            .   '<Alignment ss:Vertical="Center"/>'
+            .   '<Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F0F0F0"/></Borders></Style>'
+            . '<Style ss:ID="s_odd"><Interior ss:Color="#FFF8EE" ss:Pattern="Solid"/>'
+            .   '<Alignment ss:Vertical="Center"/>'
+            .   '<Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F0E8D8"/></Borders></Style>'
+            . '</Styles>';
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+             . '<?mso-application progid="Excel.Sheet"?>' . "\n"
+             . '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"'
+             . ' xmlns:o="urn:schemas-microsoft-com:office:office"'
+             . ' xmlns:x="urn:schemas-microsoft-com:office:excel"'
+             . ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+             . $styles
+             . '<Worksheet ss:Name="Reporte"><Table>'
+             . $body
+             . '</Table></Worksheet></Workbook>';
+
+        // Flush all WordPress output buffers so no HTML contaminates the file
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="fairplay_' . $slug . '_' . gmdate('Ymd_His') . '.xls"');
+        header('Cache-Control: max-age=0');
+        header('Pragma: public');
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+        echo $xml;
+        exit;
     }
 
     private function output_xls(string $slug, string $title, array $headers, array $data, array $filters = []): void {
@@ -706,6 +1233,20 @@ class FairPlay_LMS_Reports_Controller {
         $fp = [];
         if (!empty($filters['date_from'])) $fp[] = 'Desde: ' . $filters['date_from'];
         if (!empty($filters['date_to']))   $fp[] = 'Hasta: ' . $filters['date_to'];
+
+        // Resolve filtered user names for the metadata row
+        if (!empty($filters['user_ids'])) {
+            $uid_list = is_array($filters['user_ids'])
+                ? $filters['user_ids']
+                : array_values(array_filter(array_map('intval', explode(',', (string)$filters['user_ids']))));
+            $names = [];
+            foreach ($uid_list as $uid) {
+                $u = get_userdata((int)$uid);
+                if ($u) $names[] = $u->display_name;
+            }
+            if (!empty($names)) $fp[] = 'Usuario: ' . implode(', ', $names);
+        }
+
         $meta = 'Generado: ' . wp_date('d/m/Y H:i') . (empty($fp) ? '' : ' | ' . implode(' | ', $fp));
 
         $hdr_xml = '';
@@ -776,11 +1317,19 @@ class FairPlay_LMS_Reports_Controller {
              . '</WorksheetOptions>'
              . '</Worksheet></Workbook>';
 
+        // Flush every output buffer WordPress (or plugins) may have opened so
+        // no HTML leaks into the file before our headers are sent.
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+
         header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
         header('Content-Disposition: attachment; filename="fairplay_' . $slug . '_' . gmdate('Ymd_His') . '.xls"');
         header('Cache-Control: max-age=0');
+        header('Pragma: public');
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
-        echo $xml; exit;
+        echo $xml;
+        exit;
     }
 
     // RENDER MAIN PAGE
@@ -795,10 +1344,18 @@ class FairPlay_LMS_Reports_Controller {
             'participation'=>'Participacion','progress'=>'Progreso','performance'=>'Desempeno',
             'certificates'=>'Certificados','time'=>'Tiempo','satisfaction'=>'Satisfaccion','channels'=>'Canales',
         ];
-        $icons=['participation'=>'📊','progress'=>'📈','performance'=>'🏆','certificates'=>'🎓','time'=>'⏱','satisfaction'=>'⭐','channels'=>'🏢'];
+        $icons = [
+            'participation' => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="18" y="3" width="4" height="18"/><rect x="10" y="8" width="4" height="13"/><rect x="2" y="13" width="4" height="8"/></svg>',
+            'progress'      => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>',
+            'performance'   => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2z"/></svg>',
+            'certificates'  => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></svg>',
+            'time'          => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+            'satisfaction'  => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+            'channels'      => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
+        ];
         ?>
         <div class="wrap fplms-reports-wrap">
-            <h1 class="wp-heading-inline">📋 Reportes FairPlay LMS</h1>
+            <h1 class="wp-heading-inline"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1d2327" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px;margin-right:6px"><rect x="9" y="2" width="6" height="4" rx="1"/><path d="M5 4H3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/><path d="M9 12h6M9 16h6"/></svg>Reportes FairPlay LMS</h1>
             <hr class="wp-header-end">
             <div class="fplms-rpt-filters">
                 <div class="fplms-rpt-filters-row">
@@ -828,17 +1385,25 @@ class FairPlay_LMS_Reports_Controller {
                     </div>
                 </div>
                 <div class="fplms-rpt-filters-actions">
-                    <button id="fplms-rpt-apply" class="button button-primary">🔍 Aplicar Filtros</button>
-                    <button id="fplms-rpt-reset" class="button">✖ Limpiar</button>
+                    <button id="fplms-rpt-apply" class="button button-primary"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Aplicar Filtros</button>
+                    <button id="fplms-rpt-reset" class="button"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Limpiar</button>
                 </div>
             </div>
             <div class="fplms-rpt-tabs-nav">
                 <?php foreach ($tabs as $slug=>$label): ?>
-                <button class="fplms-rpt-tab-btn" data-tab="<?php echo esc_attr($slug); ?>"><?php echo esc_html(($icons[$slug]??'').' '.$label); ?></button>
+                <button class="fplms-rpt-tab-btn" data-tab="<?php echo esc_attr($slug); ?>"><?php echo ($icons[$slug]??'') . esc_html($label); ?></button>
                 <?php endforeach; ?>
             </div>
             <div id="fplms-rpt-content" class="fplms-rpt-content">
-                <div class="fplms-rpt-placeholder"><p>👆 Selecciona un reporte para comenzar.</p></div>
+                <div class="fplms-rpt-placeholder"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:0 auto 12px"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 9h6M9 12h6M9 15h4"/></svg><p>Selecciona una pestana de reporte para comenzar.</p></div>
+            </div>
+        </div>
+        <div id="fplms-rpt-modal" style="display:none;position:fixed;inset:0;z-index:100000;align-items:center;justify-content:center;background:rgba(0,0,0,.48)">
+            <div style="background:#fff;border-radius:14px;padding:38px 40px 32px;max-width:420px;width:92%;text-align:center;box-shadow:0 16px 48px rgba(0,0,0,.22)">
+                <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="#FFA800" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:0 auto 16px"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/><circle cx="18" cy="18" r="5" fill="#fff" stroke="#22c55e" stroke-width="2"/><path d="m16 18 1.5 1.5L20 16" stroke="#22c55e" stroke-width="2"/></svg>
+                <h3 style="margin:0 0 10px;font-size:17px;color:#222;font-weight:700">Filtros Aplicados</h3>
+                <p style="color:#666;font-size:14px;line-height:1.6;margin:0 0 24px">Selecciona cada pestana para obtener la informacion de ese reporte de forma independiente segun los filtros seleccionados.</p>
+                <button id="fplms-rpt-modal-close" class="button button-primary" style="min-width:120px">Entendido</button>
             </div>
         </div>
         <style>
@@ -877,6 +1442,8 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-badge.green{background:#d4edda;color:#155724}
         .fplms-badge.yellow{background:#fff3cd;color:#856404}
         .fplms-badge.red{background:#f8d7da;color:#721c24}
+        .fplms-spin-dot{display:inline-block;width:16px;height:16px;border:2.5px solid #ffa80033;border-top-color:#ffa800;border-radius:50%;animation:fplms-spin .7s linear infinite;vertical-align:-4px;margin-right:6px}
+        @keyframes fplms-spin{to{transform:rotate(360deg)}}
         </style>
         <script>
         (function(){
@@ -888,7 +1455,7 @@ class FairPlay_LMS_Reports_Controller {
                 if(!tab)return; activeTab=tab;
                 var action=tabActions[tab]; if(!action)return;
                 var content=document.getElementById('fplms-rpt-content');
-                content.innerHTML='<div class="fplms-rpt-loading">⏳ Cargando reporte…</div>';
+                content.innerHTML='<div class="fplms-rpt-loading"><span class="fplms-spin-dot"></span>Cargando reporte…</div>';
                 var p=Object.assign({action:action,nonce:NONCE},getFilters());
                 var body=Object.keys(p).map(k=>encodeURIComponent(k)+'='+encodeURIComponent(p[k])).join('&');
                 fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
@@ -900,7 +1467,17 @@ class FairPlay_LMS_Reports_Controller {
                 document.querySelectorAll('.fplms-rpt-tab-btn').forEach(b=>b.classList.remove('active'));
                 btn.classList.add('active'); loadReport(btn.dataset.tab);
             });
-            document.getElementById('fplms-rpt-apply').addEventListener('click',function(){if(activeTab)loadReport(activeTab);});
+            document.getElementById('fplms-rpt-apply').addEventListener('click',function(){
+                var m=document.getElementById('fplms-rpt-modal');
+                m.style.display='flex';
+                if(activeTab) loadReport(activeTab);
+            });
+            document.getElementById('fplms-rpt-modal-close').addEventListener('click',function(){
+                document.getElementById('fplms-rpt-modal').style.display='none';
+            });
+            document.getElementById('fplms-rpt-modal').addEventListener('click',function(e){
+                if(e.target===this) this.style.display='none';
+            });
             document.getElementById('fplms-rpt-reset').addEventListener('click',function(){
                 ['fplms-rpt-date-from','fplms-rpt-date-to','fplms-rpt-city','fplms-rpt-company','fplms-rpt-channel','fplms-rpt-role'].forEach(id=>{var el=document.getElementById(id);if(el)el.value='';});
                 document.getElementById('fplms-rpt-user-ids').value='';document.getElementById('fplms-rpt-user-search').value='';
