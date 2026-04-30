@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
@@ -35,6 +35,9 @@ class FairPlay_LMS_Reports_Controller {
             'fplms_report_satisfaction'   => 'ajax_report_satisfaction',
             'fplms_report_channels'       => 'ajax_report_channels',
             'fplms_reports_user_search'   => 'ajax_reports_user_search',
+            'fplms_report_tests'          => 'ajax_report_tests',
+            'fplms_report_test_detail'    => 'ajax_report_test_detail',
+            'fplms_report_test_reset'     => 'ajax_report_test_reset',
         ];
         foreach ( $map as $action => $method ) {
             add_action( 'wp_ajax_' . $action, [ $this, $method ] );
@@ -666,6 +669,301 @@ class FairPlay_LMS_Reports_Controller {
         wp_send_json_success(['users'=>$users]);
     }
 
+    // TEST REPORT — LIST OF ALL QUIZZES WITH AGGREGATE STATS
+    public function ajax_report_tests(): void {
+        if (!$this->verify_request()) return;
+        global $wpdb;
+        $f    = $this->get_filters();
+        $uids = $this->get_user_ids_for_filters($f);
+        $html = $this->render_section_head('Reporte de Tests / Evaluaciones', $this->build_export_url('tests', $f));
+        $quiz_table = null;
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->prefix.'stm_lms_user_quizzes')) === $wpdb->prefix.'stm_lms_user_quizzes')
+            $quiz_table = $wpdb->prefix.'stm_lms_user_quizzes';
+        if (!$quiz_table) {
+            wp_send_json_success(['html' => $html.$this->empty_msg('Tabla de evaluaciones (stm_lms_user_quizzes) no encontrada.')]);
+            return;
+        }
+        $uw = $this->uid_in($uids, 'uq.user_id');
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $rows = (array)$wpdb->get_results(
+            "SELECT q.ID AS quiz_id, q.post_title AS quiz_name,
+                    MAX(pc.post_title) AS course_name,
+                    COUNT(uq.user_id) AS total_attempts,
+                    SUM(CASE WHEN uq.status IN('passed','completed') THEN 1 ELSE 0 END) AS approved,
+                    ROUND(AVG(CASE WHEN uq.progress > 0 THEN uq.progress ELSE NULL END), 2) AS avg_score
+             FROM {$wpdb->posts} q
+             LEFT JOIN `{$quiz_table}` uq ON q.ID = uq.quiz_id $uw
+             LEFT JOIN {$wpdb->posts} pc ON uq.course_id = pc.ID
+             WHERE q.post_type = 'stm-quizzes' AND q.post_status = 'publish'
+             GROUP BY q.ID, q.post_title
+             ORDER BY q.post_title"
+        );
+        if (empty($rows)) {
+            wp_send_json_success(['html' => $html.$this->empty_msg('No se encontraron evaluaciones publicadas.')]);
+            return;
+        }
+        $total_q   = count($rows);
+        $total_att = (int)array_sum(array_column($rows, 'total_attempts'));
+        $total_app = (int)array_sum(array_column($rows, 'approved'));
+        $html .= $this->metric('<strong>'.$total_q.'</strong> evaluaciones | <strong>'.$total_att.'</strong> ejecuciones totales | <strong>'.$total_app.'</strong> aprobados');
+        $det_ico = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
+        $html .= $this->table_open(['#', 'Test', 'Curso', 'Completado', 'Aprobado', 'Puntuación Media', 'Opciones']);
+        foreach ($rows as $i => $r) {
+            $avg  = $r->avg_score !== null ? number_format((float)$r->avg_score, 2).'%' : '—';
+            $tot  = (int)$r->total_attempts;
+            $app  = (int)$r->approved;
+            $app_str = $app.'/'.$tot;
+            $acol = $tot > 0 ? ($app/$tot >= .7 ? 'green' : ($app/$tot >= .4 ? 'yellow' : 'red')) : 'yellow';
+            $avgscore = (float)($r->avg_score ?? 0);
+            $btn  = '<button class="button button-small fplms-test-detail-btn" data-quiz-id="'.esc_attr($r->quiz_id).'" title="Ver Informes">'.$det_ico.'Informes</button>';
+            $html .= '<tr>'
+                   . '<td style="color:#aaa;font-size:11px">#'.($i+1).'</td>'
+                   . '<td><strong>'.esc_html($r->quiz_name).'</strong></td>'
+                   . '<td>'.esc_html($r->course_name ?? '—').'</td>'
+                   . '<td>'.esc_html((string)$tot).'</td>'
+                   . '<td>'.$this->badge($app_str, $acol).'</td>'
+                   . '<td>'.$this->badge($avg, $avgscore >= 70 ? 'green' : ($avgscore >= 50 ? 'yellow' : 'red')).'</td>'
+                   . '<td>'.$btn.'</td></tr>';
+        }
+        $html .= $this->table_close();
+        wp_send_json_success(['html' => $html]);
+    }
+
+    // TEST REPORT — DETAIL (per-user results for a specific quiz)
+    public function ajax_report_test_detail(): void {
+        if (!$this->verify_request()) return;
+        global $wpdb;
+        $quiz_id = isset($_POST['quiz_id']) ? (int)$_POST['quiz_id'] : 0;
+        if (!$quiz_id) { wp_send_json_error(['message' => 'Quiz ID inválido.']); return; }
+
+        $quiz_table = null;
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->prefix.'stm_lms_user_quizzes')) === $wpdb->prefix.'stm_lms_user_quizzes')
+            $quiz_table = $wpdb->prefix.'stm_lms_user_quizzes';
+        if (!$quiz_table) { wp_send_json_error(['message' => 'Tabla de evaluaciones no encontrada.']); return; }
+
+        // Detect whether time columns exist
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $qt_cols   = array_column((array)$wpdb->get_results("SHOW COLUMNS FROM `{$quiz_table}`"), 'Field');
+        $has_times = in_array('start_time', $qt_cols, true) && in_array('end_time', $qt_cols, true);
+        $time_cols = $has_times ? ', uq.start_time, uq.end_time' : ', NULL AS start_time, NULL AS end_time';
+
+        $quiz_title = get_the_title($quiz_id) ?: 'Test #'.$quiz_id;
+
+        // Detect course_id for this quiz (from existing attempts)
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $course_id   = (int)$wpdb->get_var($wpdb->prepare(
+            "SELECT course_id FROM `{$quiz_table}` WHERE quiz_id = %d AND course_id > 0 LIMIT 1",
+            $quiz_id
+        ));
+        $course_name = $course_id > 0 ? get_the_title($course_id) : null;
+
+        $f    = $this->get_filters();
+        $uids = $this->get_user_ids_for_filters($f);
+        $ms   = $this->ms_table();
+        $rows = [];
+
+        // Strategy A: enrolled users in the course + their attempt (includes "Sin iniciar")
+        if ($course_id > 0 && $ms) {
+            $uw_uc = $this->uid_in($uids, 'uc.user_id');
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
+            $rows = (array)$wpdb->get_results($wpdb->prepare(
+                "SELECT u.ID AS user_id, u.display_name, u.user_email,
+                        uq.progress AS score, uq.status {$time_cols}
+                 FROM `{$ms}` uc
+                 INNER JOIN {$wpdb->users} u ON uc.user_id = u.ID
+                 LEFT JOIN `{$quiz_table}` uq ON uq.user_id = uc.user_id AND uq.quiz_id = %d
+                 WHERE uc.course_id = %d {$uw_uc}
+                 ORDER BY u.display_name",
+                $quiz_id, $course_id
+            ));
+        }
+
+        // Strategy B fallback: only users who have a quiz record
+        if (empty($rows)) {
+            $uw_uq = $this->uid_in($uids, 'uq.user_id');
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
+            $rows = (array)$wpdb->get_results($wpdb->prepare(
+                "SELECT u.ID AS user_id, u.display_name, u.user_email,
+                        uq.progress AS score, uq.status {$time_cols}
+                 FROM `{$quiz_table}` uq
+                 INNER JOIN {$wpdb->users} u ON uq.user_id = u.ID
+                 WHERE uq.quiz_id = %d {$uw_uq}
+                 ORDER BY u.display_name",
+                $quiz_id
+            ));
+        }
+
+        // Compute stats
+        $total = count($rows); $approved = 0; $failed = 0; $pending = 0;
+        foreach ($rows as $r) {
+            $st = strtolower($r->status ?? '');
+            if (in_array($st, ['passed','completed'], true))      $approved++;
+            elseif (in_array($st, ['failed','not_passed'], true)) $failed++;
+            else                                                   $pending++;
+        }
+        $pct = $total > 0 ? round($approved / $total * 100) : 0;
+
+        $back_ico = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polyline points="15 18 9 12 15 6"/></svg>';
+        $exp_ico  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+        $exp_url  = $this->build_export_url('tests_detail_'.$quiz_id, $f);
+
+        // Navigation bar
+        $html  = '<div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">';
+        $html .= '<button id="fplms-test-back-btn" class="button">'.$back_ico.'Volver al listado</button>';
+        $html .= '<a href="'.esc_url($exp_url).'" class="button button-primary fplms-rpt-export-btn" target="_blank">'.$exp_ico.'Exportar en Excel</a>';
+        $html .= '</div>';
+
+        // Quiz info card
+        $html .= '<div style="background:#fff8ee;border-left:4px solid #ffa800;padding:12px 16px;margin-bottom:18px;border-radius:0 6px 6px 0;">';
+        $html .= '<strong style="font-size:15px">'.esc_html($quiz_title).'</strong>';
+        if ($course_name) $html .= '<span style="color:#666;margin-left:10px;font-size:13px">'.esc_html($course_name).'</span>';
+        $html .= '<div style="margin-top:6px;font-size:13px;color:#555">';
+        $html .= '<strong>'.$total.'</strong> usuarios asignados &mdash; ';
+        $html .= '<span style="color:#22c55e;font-weight:600">'.$approved.' aprobados ('.$pct.'%)</span> &mdash; ';
+        $html .= '<span style="color:#ef4444;font-weight:600">'.$failed.' reprobados</span>';
+        if ($pending > 0) $html .= ' &mdash; <span style="color:#888">'.$pending.' sin iniciar</span>';
+        $html .= '</div></div>';
+
+        if (empty($rows)) {
+            $html .= $this->empty_msg('Sin resultados para esta evaluación.');
+            wp_send_json_success(['html' => $html]);
+            return;
+        }
+
+        // Build pie chart + table in two-column layout
+        $pie = $this->render_pie_chart([
+            ['label' => 'Aprobados',   'value' => $approved, 'color' => '#22c55e'],
+            ['label' => 'Reprobados',  'value' => $failed,   'color' => '#ef4444'],
+            ['label' => 'Sin iniciar', 'value' => $pending,  'color' => '#94a3b8'],
+        ]);
+
+        $can_reset = current_user_can('manage_options');
+        $reset_ico = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.39"/></svg>';
+
+        $table  = $this->table_open(['Usuario', 'Fecha', 'Resultado', 'Puntuación', 'Hora', 'Opciones']);
+        foreach ($rows as $r) {
+            $st       = strtolower($r->status ?? '');
+            $cl       = in_array($st, ['passed','completed'], true) ? 'green' : (in_array($st, ['failed','not_passed'], true) ? 'red' : 'yellow');
+            $label    = in_array($st, ['passed','completed'], true) ? 'APROBADO' : (in_array($st, ['failed','not_passed'], true) ? 'REPROBADO' : 'SIN INICIAR');
+            $end_ts   = (int)($r->end_time ?? 0);
+            $start_ts = (int)($r->start_time ?? 0);
+            $fecha    = $end_ts > 0 ? wp_date('d/m/Y, H:i:s', $end_ts) : ($start_ts > 0 ? wp_date('d/m/Y, H:i:s', $start_ts) : '—');
+            $dur      = ($end_ts > 0 && $start_ts > 0 && $end_ts > $start_ts) ? $this->format_duration($end_ts - $start_ts) : '—';
+            $score    = $r->score !== null ? number_format((float)$r->score, 2).'%' : '—';
+            $opts     = $can_reset
+                ? '<button class="button button-small fplms-test-reset-btn" data-quiz-id="'.esc_attr($quiz_id).'" data-user-id="'.esc_attr($r->user_id).'" data-user-name="'.esc_attr($r->display_name).'" style="color:#c00">'.$reset_ico.'Resetear</button>'
+                : '—';
+            $table .= '<tr>'
+                    . '<td><strong>'.esc_html($r->display_name).'</strong><br><small style="color:#888">'.esc_html($r->user_email).'</small></td>'
+                    . '<td style="white-space:nowrap">'.esc_html($fecha).'</td>'
+                    . '<td>'.$this->badge($label, $cl).'</td>'
+                    . '<td>'.esc_html($score).'</td>'
+                    . '<td style="white-space:nowrap">'.esc_html($dur).'</td>'
+                    . '<td>'.$opts.'</td></tr>';
+        }
+        $table .= $this->table_close();
+
+        // Two-column layout: table (left) + pie chart (right)
+        $html .= '<div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">';
+        $html .= '<div style="flex:1;min-width:300px;overflow-x:auto">'.$table.'</div>';
+        $html .= '<div style="flex-shrink:0">'.$pie.'</div>';
+        $html .= '</div>';
+
+        wp_send_json_success(['html' => $html, 'quiz_id' => $quiz_id]);
+    }
+
+    // TEST REPORT — RESET a user's quiz attempt
+    public function ajax_report_test_reset(): void {
+        if (!check_ajax_referer('fplms_reports_nonce', 'nonce', false)) {
+            wp_send_json_error(['message' => 'Nonce inválido.'], 403); return;
+        }
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'Sin permisos para resetear evaluaciones.'], 403); return;
+        }
+        global $wpdb;
+        $quiz_id = isset($_POST['quiz_id']) ? (int)$_POST['quiz_id'] : 0;
+        $user_id = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
+        if (!$quiz_id || !$user_id) { wp_send_json_error(['message' => 'Parámetros inválidos.']); return; }
+        $quiz_table = null;
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->prefix.'stm_lms_user_quizzes')) === $wpdb->prefix.'stm_lms_user_quizzes')
+            $quiz_table = $wpdb->prefix.'stm_lms_user_quizzes';
+        if (!$quiz_table) { wp_send_json_error(['message' => 'Tabla de evaluaciones no encontrada.']); return; }
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $deleted = $wpdb->delete($quiz_table, ['user_id' => $user_id, 'quiz_id' => $quiz_id], ['%d', '%d']);
+        if (false === $deleted) {
+            wp_send_json_error(['message' => 'Error al resetear: '.$wpdb->last_error]); return;
+        }
+        wp_send_json_success(['message' => 'Evaluación reseteada correctamente.', 'deleted' => (int)$deleted]);
+    }
+
+    // HELPER — SVG donut pie chart. $slices = [['label'=>'', 'value'=>0, 'color'=>'#hex'], ...]
+    private function render_pie_chart(array $slices, int $size = 184): string {
+        $total = (int)array_sum(array_column($slices, 'value'));
+        if ($total <= 0) {
+            return '<div style="padding:18px 20px;background:#fff;border:1px solid #eee;border-radius:8px;min-width:195px;text-align:center;color:#bbb;font-size:12px">Sin datos disponibles</div>';
+        }
+        $cx = $size / 2; $cy = $size / 2;
+        $r  = ($size / 2) - 10;
+        $ir = $r * 0.50; // inner radius (donut)
+
+        $non_empty = array_values(array_filter($slices, fn($s) => (int)$s['value'] > 0));
+        $paths = '';
+
+        if (count($non_empty) === 1) {
+            // Full circle for single slice
+            $paths .= '<circle cx="'.round($cx,1).'" cy="'.round($cy,1).'" r="'.round($r,1).'" fill="'.esc_attr($non_empty[0]['color']).'"/>';
+        } else {
+            $angle = -M_PI / 2; // start at 12 o'clock
+            foreach ($slices as $sl) {
+                $val = (int)$sl['value'];
+                if ($val <= 0) continue;
+                $sweep = 2 * M_PI * $val / $total;
+                $x1 = $cx + $r * cos($angle);
+                $y1 = $cy + $r * sin($angle);
+                $angle += $sweep;
+                $x2 = $cx + $r * cos($angle);
+                $y2 = $cy + $r * sin($angle);
+                $large = $sweep > M_PI ? 1 : 0;
+                $paths .= '<path d="M'.round($cx,1).','.round($cy,1)
+                        . ' L'.round($x1,2).','.round($y1,2)
+                        . ' A'.round($r,1).','.round($r,1).' 0 '.$large.',1 '.round($x2,2).','.round($y2,2)
+                        . ' Z" fill="'.esc_attr($sl['color']).'"/>';
+            }
+        }
+
+        // Donut hole + center label
+        $paths .= '<circle cx="'.round($cx,1).'" cy="'.round($cy,1).'" r="'.round($ir,1).'" fill="#fff"/>';
+        $paths .= '<text x="'.round($cx,1).'" y="'.round($cy - 5, 1).'" text-anchor="middle" dominant-baseline="middle" font-size="22" font-weight="700" fill="#333">'.$total.'</text>';
+        $paths .= '<text x="'.round($cx,1).'" y="'.round($cy + 15, 1).'" text-anchor="middle" font-size="9" fill="#999" letter-spacing="0.5">TOTAL</text>';
+
+        $svg = '<svg width="'.$size.'" height="'.$size.'" viewBox="0 0 '.$size.' '.$size.'" style="display:block;margin:0 auto">'.$paths.'</svg>';
+
+        $legend = '';
+        foreach ($slices as $sl) {
+            $val = (int)$sl['value'];
+            $pct = round($val / $total * 100);
+            $legend .= '<div style="display:flex;align-items:center;gap:7px;margin-bottom:7px;font-size:12px">'
+                     . '<span style="width:12px;height:12px;border-radius:3px;background:'.esc_attr($sl['color']).';flex-shrink:0;display:inline-block"></span>'
+                     . '<span style="color:#555;flex:1">'.esc_html($sl['label']).'</span>'
+                     . '<strong style="color:#333;min-width:22px;text-align:right">'.$val.'</strong>'
+                     . '<span style="color:#aaa;min-width:40px">('.$pct.'%)</span>'
+                     . '</div>';
+        }
+
+        return '<div style="padding:18px 20px;background:#fff;border:1px solid #eee;border-radius:8px;min-width:195px;box-shadow:0 1px 4px rgba(0,0,0,.06)">'
+             . '<div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px;text-align:center">Distribucion de Resultados</div>'
+             . $svg
+             . '<div style="margin-top:14px">'.$legend.'</div>'
+             . '</div>';
+    }
+
+    // HELPER — Format seconds as "Xm Ys"
+    private function format_duration(int $seconds): string {
+        if ($seconds <= 0) return '—';
+        $m = intdiv($seconds, 60); $s = $seconds % 60;
+        return $m > 0 ? $m.'m '.$s.'s' : $s.'s';
+    }
+
     // CSV EXPORT
     public function handle_export(): void {
         if (!is_admin()) return;
@@ -700,7 +998,7 @@ class FairPlay_LMS_Reports_Controller {
 
         switch (true) {
 
-            // ── PARTICIPACION ──────────────────────────────────────────────
+            // -- PARTICIPACION ----------------------------------------------
             case str_starts_with($format, 'participation'):
                 $dw  = $this->date_sql('u.user_registered', $f['date_from'], $f['date_to']);
                 $ldw = $this->date_sql('l.login_time', $f['date_from'], $f['date_to']);
@@ -808,7 +1106,7 @@ class FairPlay_LMS_Reports_Controller {
                 ], $f);
                 break;
 
-            // ── PROGRESO ──────────────────────────────────────────────────
+            // -- PROGRESO --------------------------------------------------
             case str_starts_with($format, 'progress'):
                 if (!$ms) { echo 'Sin tabla.'; exit; }
 
@@ -882,7 +1180,7 @@ class FairPlay_LMS_Reports_Controller {
                 ], $f);
                 break;
 
-            // ── DESEMPENO ────────────────────────────────────────────────
+            // -- DESEMPENO ------------------------------------------------
             case str_starts_with($format, 'performance'):
                 $quiz_table = null;
                 if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->prefix . 'stm_lms_user_quizzes')) === $wpdb->prefix . 'stm_lms_user_quizzes') {
@@ -945,7 +1243,7 @@ class FairPlay_LMS_Reports_Controller {
                 ], $f);
                 break;
 
-            // ── CERTIFICADOS ──────────────────────────────────────────────
+            // -- CERTIFICADOS ----------------------------------------------
             case str_starts_with($format, 'certificates'):
                 $cert_in = null !== $uids ? (empty($uids) ? 'AND 1=0' : 'AND pm_uid.meta_value IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
                 $dw      = $this->date_sql('p.post_date', $f['date_from'], $f['date_to']);
@@ -976,7 +1274,7 @@ class FairPlay_LMS_Reports_Controller {
                 ], $f);
                 break;
 
-            // ── TIEMPO ───────────────────────────────────────────────────
+            // -- TIEMPO ---------------------------------------------------
             case str_starts_with($format, 'time'):
                 if (!$ms) { echo 'Sin datos.'; exit; }
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -1019,7 +1317,7 @@ class FairPlay_LMS_Reports_Controller {
                 ], $f);
                 break;
 
-            // ── SATISFACCION ─────────────────────────────────────────────
+            // -- SATISFACCION ---------------------------------------------
             case str_starts_with($format, 'satisfaction'):
                 $st = $wpdb->prefix . 'fplms_survey_responses';
                 if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $st)) !== $st) {
@@ -1050,7 +1348,7 @@ class FairPlay_LMS_Reports_Controller {
                 ], $f);
                 break;
 
-            // ── CANALES ──────────────────────────────────────────────────
+            // -- CANALES --------------------------------------------------
             case str_starts_with($format, 'channels'):
                 if (!$ms) { echo 'Sin datos.'; exit; }
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -1081,7 +1379,82 @@ class FairPlay_LMS_Reports_Controller {
                 ], $f);
                 break;
 
-            // ── DEFAULT ──────────────────────────────────────────────────
+            // -- TESTS DETAIL ----------------------------------------------
+            case str_starts_with($format, 'tests_detail_'):
+                $quiz_id_e = (int)substr($format, strlen('tests_detail_'));
+                $qt_e = null;
+                if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->prefix.'stm_lms_user_quizzes')) === $wpdb->prefix.'stm_lms_user_quizzes')
+                    $qt_e = $wpdb->prefix.'stm_lms_user_quizzes';
+                if (!$qt_e || !$quiz_id_e) { echo 'Sin datos.'; exit; }
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $qt_cols_e  = array_column((array)$wpdb->get_results("SHOW COLUMNS FROM `{$qt_e}`"), 'Field');
+                $time_sel_e = in_array('start_time', $qt_cols_e, true) && in_array('end_time', $qt_cols_e, true)
+                    ? ', uq.start_time, uq.end_time' : ', 0 AS start_time, 0 AS end_time';
+                $quiz_title_e = get_the_title($quiz_id_e) ?: 'Test #'.$quiz_id_e;
+                $uw_q_e = $this->uid_in($uids, 'uq.user_id');
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
+                $det_rows = (array)$wpdb->get_results($wpdb->prepare(
+                    "SELECT u.display_name, u.user_email,
+                            uq.progress AS score, uq.status {$time_sel_e},
+                            MAX(pc.post_title) AS course_name
+                     FROM `{$qt_e}` uq
+                     INNER JOIN {$wpdb->users} u ON uq.user_id = u.ID
+                     LEFT JOIN {$wpdb->posts} pc ON uq.course_id = pc.ID
+                     WHERE uq.quiz_id = %d $uw_q_e
+                     GROUP BY uq.user_id, u.display_name, u.user_email, uq.progress, uq.status
+                     ORDER BY u.display_name",
+                    $quiz_id_e
+                ));
+                $det_data = [];
+                foreach ($det_rows as $r) {
+                    $st_e    = strtolower($r->status ?? '');
+                    $lbl_e   = in_array($st_e, ['passed','completed'], true) ? 'Aprobado' : (in_array($st_e, ['failed','not_passed'], true) ? 'Reprobado' : 'Sin iniciar');
+                    $end_e   = (int)($r->end_time ?? 0);
+                    $start_e = (int)($r->start_time ?? 0);
+                    $fecha_e = $end_e > 0 ? wp_date('d/m/Y H:i:s', $end_e) : ($start_e > 0 ? wp_date('d/m/Y H:i:s', $start_e) : '—');
+                    $dur_e   = ($end_e > 0 && $start_e > 0 && $end_e > $start_e) ? $this->format_duration($end_e - $start_e) : '—';
+                    $det_data[] = [$r->display_name, $r->user_email, $r->course_name ?? '—', $fecha_e, $lbl_e, number_format((float)$r->score, 2), $dur_e];
+                }
+                $this->output_xls_multi('test_detalle_'.$quiz_id_e, 'Detalle: '.$quiz_title_e, [[
+                    'title'   => 'Resultados ('.count($det_rows).' usuarios)',
+                    'headers' => ['Usuario', 'Email', 'Curso', 'Fecha', 'Resultado', 'Puntuacion %', 'Tiempo'],
+                    'data'    => $det_data,
+                ]], $f);
+                break;
+
+            // -- TESTS ------------------------------------------------------
+            case str_starts_with($format, 'tests'):
+                $qt_l = null;
+                if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->prefix.'stm_lms_user_quizzes')) === $wpdb->prefix.'stm_lms_user_quizzes')
+                    $qt_l = $wpdb->prefix.'stm_lms_user_quizzes';
+                if (!$qt_l) { echo 'Sin datos.'; exit; }
+                $uw_q_l = $this->uid_in($uids, 'uq.user_id');
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $tl_rows = (array)$wpdb->get_results(
+                    "SELECT q.ID AS quiz_id, q.post_title AS quiz_name,
+                            MAX(pc.post_title) AS course_name,
+                            COUNT(uq.user_id) AS total_attempts,
+                            SUM(CASE WHEN uq.status IN('passed','completed') THEN 1 ELSE 0 END) AS approved,
+                            ROUND(AVG(CASE WHEN uq.progress > 0 THEN uq.progress ELSE NULL END), 2) AS avg_score
+                     FROM {$wpdb->posts} q
+                     LEFT JOIN `{$qt_l}` uq ON q.ID = uq.quiz_id $uw_q_l
+                     LEFT JOIN {$wpdb->posts} pc ON uq.course_id = pc.ID
+                     WHERE q.post_type = 'stm-quizzes' AND q.post_status = 'publish'
+                     GROUP BY q.ID, q.post_title
+                     ORDER BY q.post_title"
+                );
+                $tl_data = [];
+                foreach ($tl_rows as $i => $r) {
+                    $tl_data[] = [$i+1, $r->quiz_name, $r->course_name ?? '—', (int)$r->total_attempts, (int)$r->approved, number_format((float)($r->avg_score ?? 0), 2)];
+                }
+                $this->output_xls_multi('tests', 'Reporte de Tests / Evaluaciones', [[
+                    'title'   => 'Listado de Evaluaciones ('.count($tl_rows).')',
+                    'headers' => ['#', 'Test', 'Curso', 'Completado', 'Aprobado', 'Puntuacion Media %'],
+                    'data'    => $tl_data,
+                ]], $f);
+                break;
+
+            // -- DEFAULT --------------------------------------------------
             default:
                 $users = $this->users->get_users_filtered_by_structure(0, 0, 0, 0);
                 $this->output_xls_multi('usuarios_avance', 'Usuarios — Avance General', [
@@ -1343,6 +1716,7 @@ class FairPlay_LMS_Reports_Controller {
         $tabs = [
             'participation'=>'Participacion','progress'=>'Progreso','performance'=>'Desempeno',
             'certificates'=>'Certificados','time'=>'Tiempo','satisfaction'=>'Satisfaccion','channels'=>'Canales',
+            'tests'=>'Tests',
         ];
         $icons = [
             'participation' => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="18" y="3" width="4" height="18"/><rect x="10" y="8" width="4" height="13"/><rect x="2" y="13" width="4" height="8"/></svg>',
@@ -1352,6 +1726,7 @@ class FairPlay_LMS_Reports_Controller {
             'time'          => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
             'satisfaction'  => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
             'channels'      => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
+            'tests'         => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
         ];
         ?>
         <div class="wrap fplms-reports-wrap">
@@ -1449,7 +1824,7 @@ class FairPlay_LMS_Reports_Controller {
         (function(){
             var NONCE=<?php echo wp_json_encode($nonce); ?>,AJAXURL=<?php echo wp_json_encode(admin_url('admin-ajax.php')); ?>;
             var activeTab=null,searchTimer=null;
-            var tabActions={participation:'fplms_report_participation',progress:'fplms_report_progress',performance:'fplms_report_performance',certificates:'fplms_report_certificates',time:'fplms_report_time',satisfaction:'fplms_report_satisfaction',channels:'fplms_report_channels'};
+            var tabActions={participation:'fplms_report_participation',progress:'fplms_report_progress',performance:'fplms_report_performance',certificates:'fplms_report_certificates',time:'fplms_report_time',satisfaction:'fplms_report_satisfaction',channels:'fplms_report_channels',tests:'fplms_report_tests'};
             function getFilters(){return{date_from:document.getElementById('fplms-rpt-date-from').value||'',date_to:document.getElementById('fplms-rpt-date-to').value||'',channel_id:document.getElementById('fplms-rpt-channel').value||'',city_id:document.getElementById('fplms-rpt-city').value||'',company_id:document.getElementById('fplms-rpt-company').value||'',role_id:document.getElementById('fplms-rpt-role').value||'',user_ids:document.getElementById('fplms-rpt-user-ids').value||''};}
             function loadReport(tab){
                 if(!tab)return; activeTab=tab;
@@ -1499,6 +1874,40 @@ class FairPlay_LMS_Reports_Controller {
             });
             sug.addEventListener('click',function(e){var it=e.target.closest('.fplms-sug-item');if(!it)return;us.value=it.textContent.trim();document.getElementById('fplms-rpt-user-ids').value=it.dataset.id;sug.style.display='none';});
             document.addEventListener('click',function(e){if(!e.target.closest('.fplms-rpt-fg-user'))sug.style.display='none';});
+
+            // — Test report: detail navigation, back, reset —
+            var currentQuizId = null;
+            function loadTestDetail(quizId) {
+                currentQuizId = quizId;
+                var content = document.getElementById('fplms-rpt-content');
+                content.innerHTML = '<div class="fplms-rpt-loading"><span class="fplms-spin-dot"></span>Cargando detalle…</div>';
+                var p = Object.assign({action:'fplms_report_test_detail',nonce:NONCE,quiz_id:quizId}, getFilters());
+                var body = Object.keys(p).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(p[k]);}).join('&');
+                fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+                    .then(function(r){return r.json();})
+                    .then(function(res){content.innerHTML = res.success ? res.data.html : '<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>';});
+            }
+            function resetQuizAttempt(quizId, userId, userName) {
+                if (!confirm('\u00bfResetear la evaluaci\u00f3n de ' + userName + '?\nEsta acci\u00f3n eliminar\u00e1 el intento y no se puede deshacer.')) return;
+                var body = 'action=fplms_report_test_reset&nonce='+encodeURIComponent(NONCE)+'&quiz_id='+quizId+'&user_id='+userId;
+                fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+                    .then(function(r){return r.json();})
+                    .then(function(res){
+                        if (res.success) {
+                            if (currentQuizId) loadTestDetail(currentQuizId);
+                        } else {
+                            alert('Error: '+(res.data ? res.data.message : 'Error desconocido'));
+                        }
+                    });
+            }
+            document.getElementById('fplms-rpt-content').addEventListener('click', function(e) {
+                var detBtn  = e.target.closest('.fplms-test-detail-btn');
+                var backBtn = e.target.closest('#fplms-test-back-btn');
+                var rstBtn  = e.target.closest('.fplms-test-reset-btn');
+                if (detBtn)  { loadTestDetail(detBtn.dataset.quizId); }
+                else if (backBtn) { currentQuizId = null; loadReport('tests'); }
+                else if (rstBtn)  { resetQuizAttempt(rstBtn.dataset.quizId, rstBtn.dataset.userId, rstBtn.dataset.userName); }
+            });
         })();
         </script>
         <?php

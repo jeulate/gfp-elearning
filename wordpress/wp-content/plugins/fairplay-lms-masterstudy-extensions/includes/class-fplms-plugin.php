@@ -892,7 +892,7 @@ class FairPlay_LMS_Plugin {
             global $wpdb;
             $stats   = $this->progress->get_student_dashboard_stats( $user_id );
             // Forzar recálculo limpio sin transient
-            delete_transient( 'fplms_sdash_v8_' . $user_id );
+            delete_transient( 'fplms_sdash_v9_' . $user_id );
             $stats2  = $this->progress->get_student_dashboard_stats( $user_id );
             // Obtener IDs de cursos completados directamente
             $ms_table = null;

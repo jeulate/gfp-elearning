@@ -132,7 +132,7 @@ class FairPlay_LMS_Progress_Service {
     public function get_student_dashboard_stats( int $user_id ): array {
         global $wpdb;
 
-        $cache_key = 'fplms_sdash_v8_' . $user_id;
+        $cache_key = 'fplms_sdash_v9_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
@@ -212,7 +212,7 @@ class FairPlay_LMS_Progress_Service {
                 $status   = strtolower( (string) ( $data['status'] ?? '' ) );
                 $total_progress += $progress;
 
-                if ( 'completed' === $status || $progress >= 100.0 ) {
+                if ( 'completed' === $status || 'passed' === $status || $progress >= 100.0 ) {
                     $stats['completed']++;
                     $completed_ids[] = (int) $cid;
                 } elseif ( $progress > 1 ) {
@@ -284,18 +284,25 @@ class FairPlay_LMS_Progress_Service {
             $stats['upcoming_ids']   = $upcoming_ids;
         }
 
-        // 3. Certificados del usuario
+        // 3. Certificados del usuario — múltiples métodos para compatibilidad con
+        //    distintas versiones de MasterStudy (algunos guardan posts, otros no).
+        $cert_count = 0;
+
+        // Método 1: Posts stm-certificates con meta user_id o stm_user_id.
+        // Se usa %s (string) para evitar problemas de comparación tipo en MySQL.
         $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
             "SELECT COUNT(DISTINCT p.ID)
              FROM {$wpdb->posts} p
              INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
              WHERE p.post_type  IN ('stm-certificates','stm-certificate')
                AND p.post_status != 'trash'
-               AND pm.meta_key   = 'user_id'
-               AND pm.meta_value = %d",
-            $user_id
+               AND pm.meta_key   IN ('user_id','stm_user_id')
+               AND pm.meta_value = %s",
+            (string) $user_id
         ) );
-        // Fallback: post_author
+
+        // Método 2: post_author (algunas versiones guardan el certificado con el
+        //           usuario como autor del post, no como meta).
         if ( 0 === $cert_count ) {
             $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
                 "SELECT COUNT(ID) FROM {$wpdb->posts}
@@ -305,6 +312,25 @@ class FairPlay_LMS_Progress_Service {
                 $user_id
             ) );
         }
+
+        // Método 3: Tabla MasterStudy — cursos con status completed/passed.
+        // En MasterStudy 3.x los certificados se generan al vuelo y no siempre
+        // quedan registrados como posts; se cuenta desde la tabla de matrículas.
+        if ( 0 === $cert_count && $ms_table ) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
+                "SELECT COUNT(*) FROM `{$ms_table}`
+                 WHERE user_id = %d
+                   AND status IN ('completed','passed')",
+                $user_id
+            ) );
+        }
+
+        // Método 4: Fallback — cursos completados ya calculados arriba.
+        if ( 0 === $cert_count ) {
+            $cert_count = count( $completed_ids );
+        }
+
         $stats['certificates'] = $cert_count;
 
         // Lista de cursos inscritos para la vista de calendario del estudiante
