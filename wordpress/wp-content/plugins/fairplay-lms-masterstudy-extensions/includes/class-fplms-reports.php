@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
@@ -741,12 +741,6 @@ class FairPlay_LMS_Reports_Controller {
             $quiz_table = $wpdb->prefix.'stm_lms_user_quizzes';
         if (!$quiz_table) { wp_send_json_error(['message' => 'Tabla de evaluaciones no encontrada.']); return; }
 
-        // Detect whether time columns exist
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        $qt_cols   = array_column((array)$wpdb->get_results("SHOW COLUMNS FROM `{$quiz_table}`"), 'Field');
-        $has_times = in_array('start_time', $qt_cols, true) && in_array('end_time', $qt_cols, true);
-        $time_cols = $has_times ? ', uq.start_time, uq.end_time' : ', NULL AS start_time, NULL AS end_time';
-
         $quiz_title = get_the_title($quiz_id) ?: 'Test #'.$quiz_id;
 
         // Detect course_id for this quiz (from existing attempts)
@@ -768,7 +762,7 @@ class FairPlay_LMS_Reports_Controller {
             // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
             $rows = (array)$wpdb->get_results($wpdb->prepare(
                 "SELECT u.ID AS user_id, u.display_name, u.user_email,
-                        uq.progress AS score, uq.status {$time_cols}
+                        uq.progress AS score, uq.status, uq.created_at
                  FROM `{$ms}` uc
                  INNER JOIN {$wpdb->users} u ON uc.user_id = u.ID
                  LEFT JOIN `{$quiz_table}` uq ON uq.user_id = uc.user_id AND uq.quiz_id = %d
@@ -784,13 +778,34 @@ class FairPlay_LMS_Reports_Controller {
             // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
             $rows = (array)$wpdb->get_results($wpdb->prepare(
                 "SELECT u.ID AS user_id, u.display_name, u.user_email,
-                        uq.progress AS score, uq.status {$time_cols}
+                        uq.progress AS score, uq.status, uq.created_at
                  FROM `{$quiz_table}` uq
                  INNER JOIN {$wpdb->users} u ON uq.user_id = u.ID
                  WHERE uq.quiz_id = %d {$uw_uq}
                  ORDER BY u.display_name",
                 $quiz_id
             ));
+        }
+
+        // Fetch timing data from user_quizzes_times — latest attempt per user for this quiz
+        $time_map   = [];
+        $times_table = null;
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->prefix.'stm_lms_user_quizzes_times')) === $wpdb->prefix.'stm_lms_user_quizzes_times')
+            $times_table = $wpdb->prefix.'stm_lms_user_quizzes_times';
+        if ($times_table) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $time_rows = (array)$wpdb->get_results($wpdb->prepare(
+                "SELECT user_id, start_time, end_time
+                 FROM `{$times_table}`
+                 WHERE quiz_id = %d
+                 ORDER BY user_quiz_time_id DESC",
+                $quiz_id
+            ));
+            foreach ($time_rows as $tr) {
+                // Keep only the latest row per user (DESC order, first occurrence wins)
+                if (!isset($time_map[(int)$tr->user_id]))
+                    $time_map[(int)$tr->user_id] = $tr;
+            }
         }
 
         // Compute stats
@@ -840,15 +855,22 @@ class FairPlay_LMS_Reports_Controller {
         $can_reset = current_user_can('manage_options');
         $reset_ico = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.39"/></svg>';
 
-        $table  = $this->table_open(['Usuario', 'Fecha', 'Resultado', 'Puntuación', 'Hora', 'Opciones']);
+        $table  = $this->table_open(['Usuario', 'Fecha de Realización', 'Duración', 'Resultado', 'Puntuación', 'Opciones']);
         foreach ($rows as $r) {
             $st       = strtolower($r->status ?? '');
             $cl       = in_array($st, ['passed','completed'], true) ? 'green' : (in_array($st, ['failed','not_passed'], true) ? 'red' : 'yellow');
             $label    = in_array($st, ['passed','completed'], true) ? 'APROBADO' : (in_array($st, ['failed','not_passed'], true) ? 'REPROBADO' : 'SIN INICIAR');
-            $end_ts   = (int)($r->end_time ?? 0);
-            $start_ts = (int)($r->start_time ?? 0);
-            $fecha    = $end_ts > 0 ? wp_date('d/m/Y, H:i:s', $end_ts) : ($start_ts > 0 ? wp_date('d/m/Y, H:i:s', $start_ts) : '—');
-            $dur      = ($end_ts > 0 && $start_ts > 0 && $end_ts > $start_ts) ? $this->format_duration($end_ts - $start_ts) : '—';
+            $qt       = $time_map[(int)$r->user_id] ?? null;
+            $start_ts = $qt ? (int)$qt->start_time : 0;
+            $end_ts   = $qt ? (int)$qt->end_time   : 0;
+            // Fecha: prefer end_time from times table, fallback to created_at
+            $fecha    = $end_ts > 0
+                ? wp_date('d/m/Y, H:i:s', $end_ts)
+                : (!empty($r->created_at) ? wp_date('d/m/Y, H:i:s', strtotime($r->created_at)) : '—');
+            // Duración: only if both timestamps exist and end > start
+            $dur      = ($end_ts > 0 && $start_ts > 0 && $end_ts > $start_ts)
+                ? $this->format_duration($end_ts - $start_ts)
+                : '—';
             $score    = $r->score !== null ? number_format((float)$r->score, 2).'%' : '—';
             $opts     = $can_reset
                 ? '<button class="button button-small fplms-test-reset-btn" data-quiz-id="'.esc_attr($quiz_id).'" data-user-id="'.esc_attr($r->user_id).'" data-user-name="'.esc_attr($r->display_name).'" style="color:#c00">'.$reset_ico.'Resetear</button>'
@@ -856,9 +878,9 @@ class FairPlay_LMS_Reports_Controller {
             $table .= '<tr>'
                     . '<td><strong>'.esc_html($r->display_name).'</strong><br><small style="color:#888">'.esc_html($r->user_email).'</small></td>'
                     . '<td style="white-space:nowrap">'.esc_html($fecha).'</td>'
+                    . '<td style="white-space:nowrap">'.esc_html($dur).'</td>'
                     . '<td>'.$this->badge($label, $cl).'</td>'
                     . '<td>'.esc_html($score).'</td>'
-                    . '<td style="white-space:nowrap">'.esc_html($dur).'</td>'
                     . '<td>'.$opts.'</td></tr>';
         }
         $table .= $this->table_close();
@@ -893,6 +915,10 @@ class FairPlay_LMS_Reports_Controller {
         if (false === $deleted) {
             wp_send_json_error(['message' => 'Error al resetear: '.$wpdb->last_error]); return;
         }
+        // Also delete timing records so the student can be timed fresh on retake
+        $times_tbl = $wpdb->prefix.'stm_lms_user_quizzes_times';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $times_tbl)) === $times_tbl)
+            $wpdb->delete($times_tbl, ['user_id' => $user_id, 'quiz_id' => $quiz_id], ['%d', '%d']);
         wp_send_json_success(['message' => 'Evaluación reseteada correctamente.', 'deleted' => (int)$deleted]);
     }
 
@@ -1387,37 +1413,50 @@ class FairPlay_LMS_Reports_Controller {
                     $qt_e = $wpdb->prefix.'stm_lms_user_quizzes';
                 if (!$qt_e || !$quiz_id_e) { echo 'Sin datos.'; exit; }
                 // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $qt_cols_e  = array_column((array)$wpdb->get_results("SHOW COLUMNS FROM `{$qt_e}`"), 'Field');
-                $time_sel_e = in_array('start_time', $qt_cols_e, true) && in_array('end_time', $qt_cols_e, true)
-                    ? ', uq.start_time, uq.end_time' : ', 0 AS start_time, 0 AS end_time';
                 $quiz_title_e = get_the_title($quiz_id_e) ?: 'Test #'.$quiz_id_e;
                 $uw_q_e = $this->uid_in($uids, 'uq.user_id');
                 // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
                 $det_rows = (array)$wpdb->get_results($wpdb->prepare(
-                    "SELECT u.display_name, u.user_email,
-                            uq.progress AS score, uq.status {$time_sel_e},
+                    "SELECT u.ID AS user_id, u.display_name, u.user_email,
+                            uq.progress AS score, uq.status, uq.created_at,
                             MAX(pc.post_title) AS course_name
                      FROM `{$qt_e}` uq
                      INNER JOIN {$wpdb->users} u ON uq.user_id = u.ID
                      LEFT JOIN {$wpdb->posts} pc ON uq.course_id = pc.ID
                      WHERE uq.quiz_id = %d $uw_q_e
-                     GROUP BY uq.user_id, u.display_name, u.user_email, uq.progress, uq.status
+                     GROUP BY uq.user_id, u.display_name, u.user_email, uq.progress, uq.status, uq.created_at
                      ORDER BY u.display_name",
                     $quiz_id_e
                 ));
+                // Fetch timing data for XLS export
+                $xls_time_map = [];
+                $qt_times_e = $wpdb->prefix.'stm_lms_user_quizzes_times';
+                if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $qt_times_e)) === $qt_times_e) {
+                    // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                    $xls_time_rows = (array)$wpdb->get_results($wpdb->prepare(
+                        "SELECT user_id, start_time, end_time FROM `{$qt_times_e}` WHERE quiz_id = %d ORDER BY user_quiz_time_id DESC",
+                        $quiz_id_e
+                    ));
+                    foreach ($xls_time_rows as $xtr) {
+                        if (!isset($xls_time_map[(int)$xtr->user_id])) $xls_time_map[(int)$xtr->user_id] = $xtr;
+                    }
+                }
                 $det_data = [];
                 foreach ($det_rows as $r) {
-                    $st_e    = strtolower($r->status ?? '');
-                    $lbl_e   = in_array($st_e, ['passed','completed'], true) ? 'Aprobado' : (in_array($st_e, ['failed','not_passed'], true) ? 'Reprobado' : 'Sin iniciar');
-                    $end_e   = (int)($r->end_time ?? 0);
-                    $start_e = (int)($r->start_time ?? 0);
-                    $fecha_e = $end_e > 0 ? wp_date('d/m/Y H:i:s', $end_e) : ($start_e > 0 ? wp_date('d/m/Y H:i:s', $start_e) : '—');
-                    $dur_e   = ($end_e > 0 && $start_e > 0 && $end_e > $start_e) ? $this->format_duration($end_e - $start_e) : '—';
+                    $st_e     = strtolower($r->status ?? '');
+                    $lbl_e    = in_array($st_e, ['passed','completed'], true) ? 'Aprobado' : (in_array($st_e, ['failed','not_passed'], true) ? 'Reprobado' : 'Sin iniciar');
+                    $xqt      = $xls_time_map[(int)$r->user_id] ?? null;
+                    $xstart   = $xqt ? (int)$xqt->start_time : 0;
+                    $xend     = $xqt ? (int)$xqt->end_time   : 0;
+                    $fecha_e  = $xend > 0
+                        ? wp_date('d/m/Y H:i:s', $xend)
+                        : (!empty($r->created_at) ? wp_date('d/m/Y H:i:s', strtotime($r->created_at)) : '—');
+                    $dur_e    = ($xend > 0 && $xstart > 0 && $xend > $xstart) ? $this->format_duration($xend - $xstart) : '—';
                     $det_data[] = [$r->display_name, $r->user_email, $r->course_name ?? '—', $fecha_e, $lbl_e, number_format((float)$r->score, 2), $dur_e];
                 }
                 $this->output_xls_multi('test_detalle_'.$quiz_id_e, 'Detalle: '.$quiz_title_e, [[
                     'title'   => 'Resultados ('.count($det_rows).' usuarios)',
-                    'headers' => ['Usuario', 'Email', 'Curso', 'Fecha', 'Resultado', 'Puntuacion %', 'Tiempo'],
+                    'headers' => ['Usuario', 'Email', 'Curso', 'Fecha de Realizacion', 'Resultado', 'Puntuacion %', 'Duracion'],
                     'data'    => $det_data,
                 ]], $f);
                 break;
