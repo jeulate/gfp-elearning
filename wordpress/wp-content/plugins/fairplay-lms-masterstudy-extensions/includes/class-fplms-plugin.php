@@ -6,6 +6,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 class FairPlay_LMS_Plugin {
 
     /**
+     * Buffer de tiempos de quiz pendientes de insertar en _times.
+     * Se llena durante masterstudy_lms_user_quiz_added y se vuelca
+     * en el shutdown del request, después de que MasterStudy haya
+     * ejecutado stm_lms_get_delete_user_quiz_time().
+     *
+     * @var array<int, array<int, array{start: int, end: int}>>
+     */
+    private static $pending_quiz_times = [];
+
+    /**
      * @var FairPlay_LMS_Structures_Controller
      */
     private $structures;
@@ -331,6 +341,109 @@ class FairPlay_LMS_Plugin {
         // Panel /user-account/: estadísticas personalizadas por rol
         add_action( 'wp_ajax_fplms_dashboard_stats',  [ $this, 'ajax_dashboard_stats' ] );
         add_action( 'wp_footer',                       [ $this, 'inject_student_dashboard_script' ] );
+
+        // Captura de tiempos reales de quiz: MasterStudy borra el registro _times al enviar
+        // el intento, por lo que interceptamos el inicio (prioridad 1) y el guardado del
+        // resultado para escribir start_time/end_time reales antes de que se borren.
+        add_action( 'wp_ajax_stm_lms_start_quiz',       [ $this, 'capture_quiz_start_time' ], 1 );
+        add_action( 'masterstudy_lms_user_quiz_added',  [ $this, 'capture_quiz_end_time'   ], 5 );
+    }
+
+    /**
+     * Captura el momento de inicio de un quiz (prioridad 1, antes de que MasterStudy
+     * procese el request) y lo guarda en user_meta.
+     * MasterStudy escribe en _times solo el countdown (end_time = now + duration) y
+     * borra el registro al enviar el intento, por lo que necesitamos capturar el
+     * start_time real nosotros mismos.
+     */
+    public function capture_quiz_start_time(): void {
+        // MasterStudy puede enviar quiz_id por GET o POST según la versión/contexto
+        $quiz_id = isset( $_REQUEST['quiz_id'] ) ? (int) $_REQUEST['quiz_id'] : 0;
+        $user_id = get_current_user_id();
+        if ( ! $quiz_id || ! $user_id ) return;
+        // Almacenar timestamp de inicio; se sobreescribe en cada intento nuevo
+        update_user_meta( $user_id, 'fplms_quiz_start_' . $quiz_id, time() );
+    }
+
+    /**
+     * Al guardarse un intento de quiz, encola el par start/end para insertarlo en
+     * wp_stm_lms_user_quizzes_times durante el shutdown del request.
+     *
+     * NO se inserta aquí directamente porque MasterStudy llama a
+     * stm_lms_get_delete_user_quiz_time() JUSTO DESPUÉS de disparar esta acción,
+     * lo que borraría nuestra fila. El shutdown garantiza que el insert ocurre
+     * después de que MasterStudy ya terminó toda su limpieza.
+     *
+     * @param array $user_quiz Array del intento guardado: user_id, quiz_id, status, progress…
+     */
+    public function capture_quiz_end_time( array $user_quiz ): void {
+        $user_id = (int) ( $user_quiz['user_id'] ?? 0 );
+        $quiz_id = (int) ( $user_quiz['quiz_id'] ?? 0 );
+        if ( ! $user_id || ! $quiz_id ) return;
+
+        $start = (int) get_user_meta( $user_id, 'fplms_quiz_start_' . $quiz_id, true );
+        if ( ! $start ) return;
+
+        $end = time();
+        // Solo registrar si la duración es razonable (> 0s y < 24h)
+        if ( $end <= $start || ( $end - $start ) > 86400 ) {
+            delete_user_meta( $user_id, 'fplms_quiz_start_' . $quiz_id );
+            return;
+        }
+
+        // Encolar para insertar en shutdown (después del delete de MasterStudy)
+        self::$pending_quiz_times[ $user_id ][ $quiz_id ] = [
+            'start' => $start,
+            'end'   => $end,
+        ];
+
+        // Limpiar el meta de inicio ahora que ya tenemos los datos
+        delete_user_meta( $user_id, 'fplms_quiz_start_' . $quiz_id );
+
+        // Registrar el shutdown una sola vez (el add_action es idempotente si usamos el mismo callback)
+        add_action( 'shutdown', [ $this, 'flush_pending_quiz_times' ] );
+    }
+
+    /**
+     * Vuelca los tiempos de quiz pendientes en wp_stm_lms_user_quizzes_times.
+     * Se ejecuta en el shutdown del request, después de que MasterStudy haya
+     * eliminado sus propios registros temporales.
+     */
+    public function flush_pending_quiz_times(): void {
+        if ( empty( self::$pending_quiz_times ) ) return;
+
+        global $wpdb;
+        $times_table = $wpdb->prefix . 'stm_lms_user_quizzes_times';
+        // Verificar que la tabla existe (una sola vez)
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $times_table ) ) !== $times_table ) {
+            return;
+        }
+
+        foreach ( self::$pending_quiz_times as $user_id => $quizzes ) {
+            foreach ( $quizzes as $quiz_id => $timing ) {
+                // Eliminar cualquier fila residual para este par (MasterStudy puede haber
+                // dejado alguna si el quiz tenía duración configurada y falló a medias)
+                $wpdb->delete(
+                    $times_table,
+                    [ 'user_id' => $user_id, 'quiz_id' => $quiz_id ],
+                    [ '%d', '%d' ]
+                );
+                $wpdb->insert(
+                    $times_table,
+                    [
+                        'user_id'    => $user_id,
+                        'quiz_id'    => $quiz_id,
+                        'start_time' => $timing['start'],
+                        'end_time'   => $timing['end'],
+                    ],
+                    [ '%d', '%d', '%d', '%d' ]
+                );
+            }
+        }
+
+        // Limpiar el buffer
+        self::$pending_quiz_times = [];
     }
 
     /**
@@ -2782,7 +2895,9 @@ class FairPlay_LMS_Plugin {
                     // Filtrar cursos visibles en ese rango
                     var filtered = getFiltered().filter( function ( c ) {
                         var s = parseISO( c.date_start ); if ( ! s ) return false;
-                        var e = parseISO( c.date_end ) || s;
+                        // Courses with no end date are ongoing — always include them in the table
+                        if ( ! c.date_end ) return true;
+                        var e = parseISO( c.date_end ); if ( ! e ) return true;
                         var sd = new Date( s.getFullYear(), s.getMonth(), s.getDate() );
                         var ed = new Date( e.getFullYear(), e.getMonth(), e.getDate() );
                         var rs = new Date( rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate() );
@@ -2803,6 +2918,7 @@ class FairPlay_LMS_Plugin {
                             '<td>' + esc( c.title ) + '</td>' +
                             '<td>' + prog + '</td>' +
                             '<td>' + ( c.date_start ? fmtDate( parseISO( c.date_start ) ) : '' ) + '</td>' +
+                            '<td>' + ( c.date_end   ? fmtDate( parseISO( c.date_end ) )   : 'Sin caducidad' ) + '</td>' +
                             '</tr>';
                     } ).join( '' );
 
@@ -2835,7 +2951,7 @@ class FairPlay_LMS_Plugin {
                         '<table class="pdf-tbl"><thead><tr>' +
                         '<th>ID</th><th>Nombre del curso</th>' +
                         ( isInstructor ? '<th>Estudiantes</th>' : '<th>Progreso</th>' ) +
-                        '<th>Fecha de inicio</th></tr></thead><tbody>' +
+                        '<th>Fecha de inicio</th><th>Fecha de finalización</th></tr></thead><tbody>' +
                         tableRows +
                         '</tbody></table>'
                         ) : '<p style="color:#aaa;font-size:12px;">No hay cursos en este per\u00edodo.</p>' ) +

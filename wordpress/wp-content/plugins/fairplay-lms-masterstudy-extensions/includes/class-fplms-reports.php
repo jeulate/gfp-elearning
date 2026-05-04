@@ -140,6 +140,79 @@ class FairPlay_LMS_Reports_Controller {
     }
     private function table_close(): string { return '</tbody></table></div>'; }
 
+    /** Variante paginada: envuelve la tabla con controles de paginación cliente. */
+    private function paged_table_open(array $heads): string {
+        $ths = implode('', array_map(fn($h) => '<th>' . esc_html($h) . '</th>', $heads));
+        return '<div class="fplms-paged-wrap">'
+             . '<div class="fplms-rpt-table-wrap"><table class="widefat striped fplms-rpt-table">'
+             . '<thead><tr>' . $ths . '</tr></thead><tbody>';
+    }
+    private function paged_table_close(): string {
+        return '</tbody></table></div>'
+             . '<div class="fplms-paged-controls">'
+             . '<label style="font-size:12px;color:#555">Mostrar: <select class="fplms-paged-size">'
+             . '<option value="10" selected>10</option>'
+             . '<option value="20">20</option>'
+             . '<option value="50">50</option>'
+             . '</select></label>'
+             . '<span class="fplms-paged-info"></span>'
+             . '<button type="button" class="button button-small fplms-paged-prev">&lsaquo; Anterior</button>'
+             . '<button type="button" class="button button-small fplms-paged-next">Siguiente &rsaquo;</button>'
+             . '</div></div>';
+    }
+
+    /**
+     * Aggregates raw quiz attempt rows (one per attempt) into one summary row
+     * per (user + quiz + course).
+     * - Approved: score and attempt number of the FIRST passing attempt
+     * - Failed:   score and total attempts of the last attempt
+     */
+    private function aggregate_quiz_rows(array $raw): array {
+        $grouped = [];
+        $pass_set = ['passed', 'completed'];
+        foreach ($raw as $r) {
+            $key = $r->user_id . '_' . $r->quiz_id . '_' . $r->course_id;
+            if (!isset($grouped[$key])) {
+                $grouped[$key] = [
+                    'display_name' => $r->display_name,
+                    'user_email'   => $r->user_email,
+                    'course_name'  => $r->course_name,
+                    'quiz_name'    => $r->quiz_name,
+                    'attempts'     => [],
+                ];
+            }
+            $grouped[$key]['attempts'][] = ['score' => $r->score, 'status' => $r->status];
+        }
+        $agg = [];
+        foreach ($grouped as $data) {
+            $atts  = $data['attempts'];
+            $total = count($atts);
+            $last  = $atts[$total - 1];
+            $pass_score   = null;
+            $pass_attempt = null;
+            foreach ($atts as $i => $a) {
+                if (in_array(strtolower($a['status'] ?? ''), $pass_set, true)) {
+                    $pass_score   = $a['score'];
+                    $pass_attempt = $i + 1;
+                    break;
+                }
+            }
+            $agg[] = (object) [
+                'display_name'   => $data['display_name'],
+                'user_email'     => $data['user_email'],
+                'course_name'    => $data['course_name'],
+                'quiz_name'      => $data['quiz_name'],
+                'total_attempts' => $total,
+                'score'          => $pass_score ?? $last['score'],
+                'attempts_label' => $pass_attempt ?? $total,
+                'status'         => $pass_attempt !== null
+                                    ? ($atts[$pass_attempt - 1]['status'] ?? 'passed')
+                                    : ($last['status'] ?? 'failed'),
+            ];
+        }
+        return $agg;
+    }
+
     private function build_export_url(string $report, array $f): string {
         $uid_str = !empty($f['user_ids']) ? implode(',', array_map('intval', (array)$f['user_ids'])) : '';
         return add_query_arg( array_filter([
@@ -181,7 +254,7 @@ class FairPlay_LMS_Reports_Controller {
         $act=0; $inact=0;
         foreach ($created as $r) { if (empty($r->user_status) || 'active' === $r->user_status) $act++; else $inact++; }
         $html .= $this->sub('Usuarios Registrados ('.count($created).') — Activos:'.$act.' / Inactivos:'.$inact);
-        $html .= $this->table_open(['Nombre','Email','Fecha Registro','Ciudad','Canal','Estado']);
+        $html .= $this->paged_table_open(['Nombre','Email','Fecha Registro','Ciudad','Canal','Estado']);
         foreach ($created as $r) {
             $city    = $r->city_id    ? $this->structures->get_term_name_by_id((int)$r->city_id)    : '—';
             $channel = $r->channel_id ? $this->structures->get_term_name_by_id((int)$r->channel_id) : '—';
@@ -191,7 +264,7 @@ class FairPlay_LMS_Reports_Controller {
                    . '<td>'.esc_html($city).'</td><td>'.esc_html($channel).'</td>'
                    . '<td>'.($isact?$this->badge('Activo','green'):$this->badge('Inactivo','red')).'</td></tr>';
         }
-        $html .= $this->table_close();
+        $html .= $this->paged_table_close();
 
         // 1B. Frecuencia de acceso
         $login_table = $wpdb->prefix.'fplms_user_logins';
@@ -210,13 +283,13 @@ class FairPlay_LMS_Reports_Controller {
             );
             if (empty($logins)) { $html .= $this->empty_msg('Sin registros de login en el periodo seleccionado.'); }
             else {
-                $html .= $this->table_open(['Nombre','Email','N. de Ingresos','Ultimo Ingreso']);
+                $html .= $this->paged_table_open(['Nombre','Email','N. de Ingresos','Ultimo Ingreso']);
                 foreach ($logins as $r) {
                     $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                            . '<td><strong>'.(int)$r->login_count.'</strong></td>'
                            . '<td>'.esc_html($r->last_login?wp_date('d/m/Y H:i',strtotime($r->last_login)):'—').'</td></tr>';
                 }
-                $html .= $this->table_close();
+                $html .= $this->paged_table_close();
             }
         }
 
@@ -240,13 +313,13 @@ class FairPlay_LMS_Reports_Controller {
             $pct = $total_enroll>0 ? round($ac/$total_enroll*100,1) : 0;
             $html .= $this->metric('<strong>'.$ac.'</strong> inscripciones sin progreso'.($total_enroll?' de <strong>'.$total_enroll.'</strong> totales — tasa: <strong>'.$pct.'%</strong>':''));
             if (!empty($abandon)) {
-                $html .= $this->table_open(['Usuario','Email','Curso','Progreso','Estado']);
+                $html .= $this->paged_table_open(['Usuario','Email','Curso','Progreso','Estado']);
                 foreach ($abandon as $r) {
                     $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                            . '<td>'.esc_html($r->course_name).'</td><td>'.(int)$r->progress_percent.'%</td>'
                            . '<td>'.$this->badge($this->translate_status($r->status??''),'yellow').'</td></tr>';
                 }
-                $html .= $this->table_close();
+                $html .= $this->paged_table_close();
             }
         }
 
@@ -264,7 +337,7 @@ class FairPlay_LMS_Reports_Controller {
         $html .= $this->sub('Usuarios Dados de Baja / Inactivos ('.count($inactive).')');
         if (empty($inactive)) { $html .= $this->empty_msg('No hay usuarios dados de baja.'); }
         else {
-            $html .= $this->table_open(['ID','Nombre','Email','Fecha Registro','Ciudad','Canal']);
+            $html .= $this->paged_table_open(['ID','Nombre','Email','Fecha Registro','Ciudad','Canal']);
             foreach ($inactive as $r) {
                 $city    = $r->city_id    ? $this->structures->get_term_name_by_id((int)$r->city_id)    : '—';
                 $channel = $r->channel_id ? $this->structures->get_term_name_by_id((int)$r->channel_id) : '—';
@@ -272,7 +345,7 @@ class FairPlay_LMS_Reports_Controller {
                        . '<td>'.esc_html(wp_date('d/m/Y',strtotime($r->user_registered))).'</td>'
                        . '<td>'.esc_html($city).'</td><td>'.esc_html($channel).'</td></tr>';
             }
-            $html .= $this->table_close();
+            $html .= $this->paged_table_close();
         }
         wp_send_json_success(['html'=>$html]);
     }
@@ -304,7 +377,7 @@ class FairPlay_LMS_Reports_Controller {
         $html .= $this->sub('Porcentaje de Avance por Curso');
         if (empty($cstats)) { $html.=$this->empty_msg('Sin datos.'); }
         else {
-            $html .= $this->table_open(['Curso','Inscritos','Avance Prom.','Completados','Tasa Finalizacion','En Progreso','No Iniciados','Tasa Abandono']);
+            $html .= $this->paged_table_open(['Curso','Inscritos','Avance Prom.','Completados','Tasa Finalizacion','En Progreso','No Iniciados','Tasa Abandono']);
             foreach ($cstats as $r) {
                 $en=(int)$r->enrolled; $ep=max(1,$en);
                 $cp=(int)$r->completed; $ns=(int)$r->not_started;
@@ -314,7 +387,7 @@ class FairPlay_LMS_Reports_Controller {
                        . '<td>'.$cp.'</td><td>'.$this->badge($fp.'%',$fc).'</td>'
                        . '<td>'.(int)$r->in_progress.'</td><td>'.$ns.'</td><td>'.$this->badge($ap.'%',$ac).'</td></tr>';
             }
-            $html .= $this->table_close();
+            $html .= $this->paged_table_close();
         }
 
         // 2B. Mayor abandono top 10
@@ -323,13 +396,13 @@ class FairPlay_LMS_Reports_Controller {
         usort($sorted, fn($a,$b)=>(int)$b->not_started/(max(1,(int)$b->enrolled)) <=> (int)$a->not_started/(max(1,(int)$a->enrolled)));
         $top10 = array_slice($sorted,0,10);
         if (!empty($top10)) {
-            $html .= $this->table_open(['Curso','Inscritos','Sin Participacion','Tasa Abandono']);
+            $html .= $this->paged_table_open(['Curso','Inscritos','Sin Participacion','Tasa Abandono']);
             foreach ($top10 as $r) {
                 $ep=max(1,(int)$r->enrolled); $pct=round((int)$r->not_started/$ep*100,1);
                 $html .= '<tr><td>'.esc_html($r->course_name).'</td><td>'.(int)$r->enrolled.'</td>'
                        . '<td>'.(int)$r->not_started.'</td><td>'.$this->badge($pct.'%',$pct>50?'red':'yellow').'</td></tr>';
             }
-            $html .= $this->table_close();
+            $html .= $this->paged_table_close();
         }
 
         // 2C. Por usuario
@@ -345,14 +418,14 @@ class FairPlay_LMS_Reports_Controller {
         $html .= $this->sub('Progreso por Usuario');
         if (empty($uprg)) { $html.=$this->empty_msg('Sin datos de progreso por usuario.'); }
         else {
-            $html .= $this->table_open(['Usuario','Email','Cursos Asignados','Avance Promedio','Completados','Pendientes']);
+            $html .= $this->paged_table_open(['Usuario','Email','Cursos Asignados','Avance Promedio','Completados','Pendientes']);
             foreach ($uprg as $r) {
                 $t=max(1,(int)$r->total_courses); $cp=(int)$r->completed;
                 $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                        . '<td>'.$t.'</td><td>'.esc_html((string)$r->avg_progress).'%</td>'
                        . '<td>'.$cp.'</td><td>'.($t-$cp).'</td></tr>';
             }
-            $html .= $this->table_close();
+            $html .= $this->paged_table_close();
         }
         wp_send_json_success(['html'=>$html]);
     }
@@ -372,25 +445,31 @@ class FairPlay_LMS_Reports_Controller {
             $qw = null!==$uids?(empty($uids)?'AND uq.user_id=0':'AND uq.user_id IN ('.implode(',',array_map('intval',$uids)).')'):'';
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $qrows = (array)$wpdb->get_results(
-                "SELECT u.display_name,u.user_email,pc.post_title AS course_name,q.post_title AS quiz_name,uq.progress AS score,uq.status
+                "SELECT uq.user_id,uq.course_id,uq.quiz_id,uq.user_quiz_id,
+                        uq.progress AS score,uq.status,
+                        u.display_name,u.user_email,
+                        pc.post_title AS course_name,q.post_title AS quiz_name
                  FROM `{$quiz_table}` uq INNER JOIN {$wpdb->users} u ON uq.user_id=u.ID
                  LEFT JOIN {$wpdb->posts} q ON uq.quiz_id=q.ID LEFT JOIN {$wpdb->posts} pc ON uq.course_id=pc.ID
-                 WHERE 1=1 $qw ORDER BY u.display_name,q.post_title LIMIT 500"
+                 WHERE 1=1 $qw ORDER BY uq.user_id,uq.quiz_id,uq.course_id,uq.user_quiz_id ASC LIMIT 2000"
             );
             if (!empty($qrows)) {
-                $passed=count(array_filter($qrows,fn($r)=>in_array(strtolower($r->status??''),['passed','completed'],true)));
-                $failed=count(array_filter($qrows,fn($r)=>in_array(strtolower($r->status??''),['failed','not_passed'],true)));
-                $tot=count($qrows); $pp=$tot>0?round($passed/$tot*100,1):0;
-                $html .= $this->metric('Total:<strong>'.$tot.'</strong> | Aprobados:<strong>'.$passed.' ('.$pp.'%)</strong> | Reprobados:<strong>'.$failed.'</strong>');
-                $html .= $this->table_open(['Usuario','Email','Curso','Evaluacion','Puntaje','Estado']);
-                foreach ($qrows as $r) {
+                $agg = $this->aggregate_quiz_rows($qrows);
+                $passed=count(array_filter($agg,fn($r)=>in_array(strtolower($r->status??''),['passed','completed'],true)));
+                $failed=count($agg)-$passed; $tot=count($agg);
+                $pp=$tot>0?round($passed/$tot*100,1):0;
+                $html .= $this->metric('Estudiantes evaluados:<strong>'.$tot.'</strong> | Aprobados:<strong>'.$passed.' ('.$pp.'%)</strong> | Reprobados:<strong>'.$failed.'</strong>');
+                $html .= $this->paged_table_open(['Usuario','Email','Curso','Evaluacion','Intentos','Puntaje','Estado']);
+                foreach ($agg as $r) {
                     $st=strtolower($r->status??'');
                     $cl=in_array($st,['passed','completed'],true)?'green':(in_array($st,['failed','not_passed'],true)?'red':'yellow');
+                    $n=(int)$r->attempts_label;
                     $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                            . '<td>'.esc_html($r->course_name??'—').'</td><td>'.esc_html($r->quiz_name??'—').'</td>'
+                           . '<td>'.($n===1?'1 intento':$n.' intentos').'</td>'
                            . '<td>'.esc_html((string)$r->score).'</td><td>'.$this->badge($this->translate_status($r->status??''),$cl).'</td></tr>';
                 }
-                $html .= $this->table_close();
+                $html .= $this->paged_table_close();
             } else { $html.=$this->empty_msg('Sin datos de evaluaciones.'); }
         } else { $html.=$this->empty_msg('Tabla de resultados de MasterStudy no encontrada.'); }
 
@@ -411,14 +490,14 @@ class FairPlay_LMS_Reports_Controller {
                  ORDER BY expiry_date ASC LIMIT 300",$today));
             $html .= $this->metric('<strong>'.count($exp).'</strong> usuarios con cursos vencidos sin completar');
             if (!empty($exp)) {
-                $html .= $this->table_open(['Usuario','Email','Curso','Progreso','Dias Vigencia','Vencio el']);
+                $html .= $this->paged_table_open(['Usuario','Email','Curso','Progreso','Dias Vigencia','Vencio el']);
                 foreach ($exp as $r) {
                     $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                            . '<td>'.esc_html($r->course_name).'</td><td>'.(int)$r->progress_percent.'%</td>'
                            . '<td>'.(int)$r->end_days.' dias</td>'
                            . '<td>'.$this->badge(wp_date('d/m/Y',strtotime($r->expiry_date)),'red').'</td></tr>';
                 }
-                $html .= $this->table_close();
+                $html .= $this->paged_table_close();
             } else { $html.=$this->empty_msg('No hay cursos vencidos sin completar.'); }
         } else { $html.=$this->empty_msg('Tabla de matriculas no encontrada.'); }
 
@@ -436,12 +515,12 @@ class FairPlay_LMS_Reports_Controller {
                  GROUP BY p.ID HAVING enrolled>=1 ORDER BY rate DESC LIMIT 10"
             );
             if (!empty($tc)) {
-                $html .= $this->table_open(['Curso','Inscritos','Completados','Tasa Cumplimiento']);
+                $html .= $this->paged_table_open(['Curso','Inscritos','Completados','Tasa Cumplimiento']);
                 foreach ($tc as $r) {
                     $html .= '<tr><td>'.esc_html($r->course_name).'</td><td>'.(int)$r->enrolled.'</td>'
                            . '<td>'.(int)$r->completed.'</td><td>'.$this->badge($r->rate.'%',$r->rate>=70?'green':($r->rate>=40?'yellow':'red')).'</td></tr>';
                 }
-                $html .= $this->table_close();
+                $html .= $this->paged_table_close();
             } else { $html.=$this->empty_msg('Sin datos.'); }
         }
         wp_send_json_success(['html'=>$html]);
@@ -451,44 +530,89 @@ class FairPlay_LMS_Reports_Controller {
     public function ajax_report_certificates(): void {
         if (!$this->verify_request()) return;
         global $wpdb;
-        $f=$this->get_filters(); $uids=$this->get_user_ids_for_filters($f);
-        $u_in=null!==$uids?(empty($uids)?'AND 1=0':'AND pm_uid.meta_value IN ('.implode(',',array_map('intval',$uids)).')'):'';
-        $dw=$this->date_sql('p.post_date',$f['date_from'],$f['date_to']);
+        $f=$this->get_filters(); $uids=$this->get_user_ids_for_filters($f); $ms=$this->ms_table();
+        if (!$ms) { wp_send_json_success(['html'=>$this->render_section_head('Reporte de Certificacion','').$this->empty_msg('Tabla de matriculas no encontrada.')]); return; }
+        $uw=null!==$uids?(empty($uids)?'AND uc.user_id=0':'AND uc.user_id IN ('.implode(',',array_map('intval',$uids)).')'):'';
+        $dw='';
+        if (!empty($f['date_from'])) $dw.=$wpdb->prepare(' AND FROM_UNIXTIME(uc.end_time) >= %s',$f['date_from'].' 00:00:00');
+        if (!empty($f['date_to']))   $dw.=$wpdb->prepare(' AND FROM_UNIXTIME(uc.end_time) <= %s',$f['date_to']  .' 23:59:59');
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $certs=(array)$wpdb->get_results(
-            "SELECT u.display_name,u.user_email,pc.post_title AS course_name,p.post_date AS issued_date,pm_dl.meta_value AS downloaded
-             FROM {$wpdb->posts} p
-             INNER JOIN {$wpdb->postmeta} pm_uid ON p.ID=pm_uid.post_id AND pm_uid.meta_key='user_id'
-             INNER JOIN {$wpdb->users} u ON pm_uid.meta_value=u.ID
-             LEFT JOIN {$wpdb->postmeta} pm_cid ON p.ID=pm_cid.post_id AND pm_cid.meta_key='course_id'
-             LEFT JOIN {$wpdb->posts} pc ON pm_cid.meta_value=pc.ID
-             LEFT JOIN {$wpdb->postmeta} pm_dl ON p.ID=pm_dl.post_id AND pm_dl.meta_key='certificate_downloaded'
-             WHERE p.post_type IN('stm-certificates','stm-certificate') AND p.post_status!='trash'
-             $u_in $dw ORDER BY p.post_date DESC LIMIT 500"
+            "SELECT u.ID AS user_id, u.display_name, u.user_email,
+                    p.ID AS course_id, p.post_title AS course_name,
+                    uc.end_time,
+                    pm_cert.meta_value AS cert_template_id,
+                    cp.post_title AS template_name,
+                    prev.meta_value AS cert_preview
+             FROM `{$ms}` uc
+             INNER JOIN {$wpdb->users} u ON uc.user_id=u.ID
+             INNER JOIN {$wpdb->posts} p ON uc.course_id=p.ID AND p.post_status='publish'
+             INNER JOIN {$wpdb->postmeta} pm_cert ON p.ID=pm_cert.post_id
+                 AND pm_cert.meta_key='course_certificate'
+                 AND pm_cert.meta_value REGEXP '^[0-9]+$'
+             LEFT JOIN {$wpdb->posts} cp ON pm_cert.meta_value=cp.ID
+             LEFT JOIN {$wpdb->postmeta} prev ON cp.ID=prev.post_id AND prev.meta_key='certificate_preview'
+             WHERE (uc.status IN('completed','passed') OR uc.progress_percent>=100)
+               AND uc.end_time>0
+               $uw $dw
+             ORDER BY u.display_name, p.post_title LIMIT 1000"
         );
         $html = $this->render_section_head('Reporte de Certificacion', $this->build_export_url('certificates',$f));
-        $dl=count(array_filter($certs,fn($r)=>!empty($r->downloaded)));
-        $html .= $this->metric('Total emitidos:<strong>'.count($certs).'</strong> | Descargados:<strong>'.$dl.'</strong>');
-        $by=[]; foreach ($certs as $r) { $cn=$r->course_name?:'(Sin curso)'; $by[$cn]=($by[$cn]??0)+1; }
-        arsort($by);
-        if (!empty($by)) {
-            $html .= $this->sub('Certificados por Curso');
-            $html .= $this->table_open(['Curso','Certificados Emitidos']);
-            foreach ($by as $cn=>$cnt) $html.='<tr><td>'.esc_html($cn).'</td><td><strong>'.(int)$cnt.'</strong></td></tr>';
-            $html .= $this->table_close();
-        }
-        $html .= $this->sub('Detalle de Certificados Emitidos');
+
+        $total     = count($certs);
+        $students  = count(array_unique(array_column((array)$certs,'user_id')));
+        $courses_n = count(array_unique(array_column((array)$certs,'course_id')));
+        $html .= $this->metric(
+            'Certificados alcanzados:<strong>'.$total.'</strong> | '
+           .'Estudiantes:<strong>'.$students.'</strong> | '
+           .'Cursos con certificado:<strong>'.$courses_n.'</strong>'
+        );
+        $html .= '<p style="font-size:12px;color:#888;margin:0 0 14px">'
+               . '&#9432; El seguimiento de descarga no esta disponible en la version actual de MasterStudy LMS.</p>';
+
+        // — Cursos con Certificado
+        $html .= $this->sub('Cursos con Certificado Configurado');
         if (!empty($certs)) {
-            $html .= $this->table_open(['Usuario','Email','Curso','Fecha Emision','Descargado']);
+            $by_c=[];
             foreach ($certs as $r) {
-                $dl2=!empty($r->downloaded)?$this->badge('Si','green'):$this->badge('No','yellow');
-                $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
-                       . '<td>'.esc_html($r->course_name?:'—').'</td>'
-                       . '<td>'.esc_html(wp_date('d/m/Y',strtotime($r->issued_date))).'</td>'
-                       . '<td>'.$dl2.'</td></tr>';
+                $cid=(int)$r->course_id;
+                if (!isset($by_c[$cid])) $by_c[$cid]=['name'=>$r->course_name,'template'=>$r->template_name?:'—','preview'=>$r->cert_preview??'','count'=>0];
+                $by_c[$cid]['count']++;
             }
-            $html .= $this->table_close();
-        } else { $html.=$this->empty_msg('No se encontraron certificados.'); }
+            usort($by_c,fn($a,$b)=>$b['count']<=>$a['count']);
+            $html .= $this->paged_table_open(['Vista Previa','Curso','Plantilla','Estudiantes con Certificado']);
+            foreach ($by_c as $c) {
+                $thumb = !empty($c['preview'])
+                    ? '<img src="'.esc_url($c['preview']).'\" style="height:48px;border-radius:4px;border:1px solid #ddd" loading="lazy">'
+                    : '<span style="color:#ccc;font-size:11px">Sin preview</span>';
+                $html .= '<tr>'
+                       . '<td style="width:80px">'. $thumb .'</td>'
+                       . '<td>'.esc_html($c['name']).'</td>'
+                       . '<td>'.esc_html($c['template']).'</td>'
+                       . '<td><strong>'.$c['count'].'</strong></td>'
+                       . '</tr>';
+            }
+            $html .= $this->paged_table_close();
+        } else { $html.=$this->empty_msg('No hay cursos con certificado configurado o ningun estudiante lo ha completado.'); }
+
+        // — Detalle por Estudiante
+        $html .= $this->sub('Detalle — Estudiante / Curso / Certificado');
+        if (!empty($certs)) {
+            $html .= $this->paged_table_open(['Estudiante','Email','Curso','Fecha Finalizacion','Certificado']);
+            foreach ($certs as $r) {
+                $cert_url = home_url('/certificate/'.(int)$r->course_id.'/'.(int)$r->user_id.'/');
+                $btn      = '<a href="'.esc_url($cert_url).'" target="_blank" class="button button-small" style="font-size:11px;padding:2px 8px">Ver certificado</a>';
+                $end_date = (int)$r->end_time>0 ? wp_date('d/m/Y',(int)$r->end_time) : '—';
+                $html .= '<tr>'
+                       . '<td>'.esc_html($r->display_name).'</td>'
+                       . '<td>'.esc_html($r->user_email).'</td>'
+                       . '<td>'.esc_html($r->course_name).'</td>'
+                       . '<td>'.esc_html($end_date).'</td>'
+                       . '<td>'.$btn.'</td>'
+                       . '</tr>';
+            }
+            $html .= $this->paged_table_close();
+        } else { $html.=$this->empty_msg('No se encontraron certificados obtenidos.'); }
         wp_send_json_success(['html'=>$html]);
     }
 
@@ -525,22 +649,22 @@ class FairPlay_LMS_Reports_Controller {
         $html.=$this->sub('Horas por Usuario (Cursos Aprobados)');
         if (empty($by)) { $html.=$this->empty_msg('Sin datos de horas.'); }
         else {
-            $html.=$this->table_open(['Usuario','Email','Cursos Aprobados','Horas Totales']);
+            $html.=$this->paged_table_open(['Usuario','Email','Cursos Aprobados','Horas Totales']);
             foreach ($by as $row) {
                 $html.='<tr><td>'.esc_html($row['name']).'</td><td>'.esc_html($row['email']).'</td>'
                       .'<td>'.(int)$row['courses'].'</td><td><strong>'.round($row['hours'],1).' h</strong></td></tr>';
             }
-            $html.=$this->table_close();
+            $html.=$this->paged_table_close();
         }
         $html.=$this->sub('Detalle por Usuario y Curso');
         if (!empty($trows)) {
-            $html.=$this->table_open(['Usuario','Email','Curso','Horas']);
+            $html.=$this->paged_table_open(['Usuario','Email','Curso','Horas']);
             foreach ($trows as $r) {
                 $h=round(max((float)$r->video_hours,(float)$r->duration_hours),1);
                 $html.='<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                       .'<td>'.esc_html($r->course_name).'</td><td>'.$h.' h</td></tr>';
             }
-            $html.=$this->table_close();
+            $html.=$this->paged_table_close();
         }
         wp_send_json_success(['html'=>$html]);
     }
@@ -574,24 +698,24 @@ class FairPlay_LMS_Reports_Controller {
         }
         if (!empty($cs)) {
             $html.=$this->sub('Puntuacion Promedio por Curso');
-            $html.=$this->table_open(['Curso','Respuestas','Puntuacion Promedio']);
+            $html.=$this->paged_table_open(['Curso','Respuestas','Puntuacion Promedio']);
             foreach ($cs as $cn=>$d) {
                 $avg=$d['count']>0?round($d['total']/$d['count'],2):0;
                 $html.='<tr><td>'.esc_html($cn).'</td><td>'.(int)$d['count'].'</td>'
                       .'<td>'.$this->badge($avg.' / 5',$avg>=4?'green':($avg>=2.5?'yellow':'red')).'</td></tr>';
             }
-            $html.=$this->table_close();
+            $html.=$this->paged_table_close();
         }
         $html.=$this->sub('Detalle de Respuestas');
         if (!empty($srows)) {
-            $html.=$this->table_open(['Usuario','Curso','Fecha','Respuestas']);
+            $html.=$this->paged_table_open(['Usuario','Curso','Fecha','Respuestas']);
             foreach ($srows as $r) {
                 $ans=maybe_unserialize($r->answers);
                 $at=is_array($ans)?implode(' | ',array_map('esc_html',$ans)):esc_html((string)$r->answers);
                 $html.='<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->course_name?:'—').'</td>'
                       .'<td>'.esc_html(wp_date('d/m/Y',strtotime($r->submitted_at))).'</td><td>'.$at.'</td></tr>';
             }
-            $html.=$this->table_close();
+            $html.=$this->paged_table_close();
         } else { $html.=$this->empty_msg('Sin respuestas para los filtros seleccionados.'); }
         wp_send_json_success(['html'=>$html]);
     }
@@ -624,7 +748,7 @@ class FairPlay_LMS_Reports_Controller {
             $html.='<h3 class="fplms-rpt-sub fplms-rpt-channel-head">'.esc_html($ch->name)
                   .'<span class="fplms-rpt-channel-count"> ('.$uc.' usuarios | '.count($courses).' cursos)</span></h3>';
             if (empty($courses)) { $html.=$this->empty_msg('Sin cursos asignados a este canal.'); $comp[$ch->name]=['courses'=>0,'enrolled'=>0,'completed'=>0,'rate'=>0]; continue; }
-            $html.=$this->table_open(['Curso','Usuarios del Canal','Inscritos en Curso','Completados','Tasa Cumplimiento']);
+            $html.=$this->paged_table_open(['Curso','Usuarios del Canal','Inscritos en Curso','Completados','Tasa Cumplimiento']);
             $cen=0; $ccp=0;
             foreach ($courses as $cr) {
                 $rid=(int)$cr->ID;
@@ -638,21 +762,21 @@ class FairPlay_LMS_Reports_Controller {
                 $rt=$en>0?round($cp/$en*100,1):0; $rc=$rt>=70?'green':($rt>=40?'yellow':'red');
                 $html.='<tr><td>'.esc_html($cr->post_title).'</td><td>'.$uc.'</td><td>'.$en.'</td><td>'.$cp.'</td><td>'.$this->badge($rt.'%',$rc).'</td></tr>';
             }
-            $html.=$this->table_close();
+            $html.=$this->paged_table_close();
             $cr2=$cen>0?round($ccp/$cen*100,1):0; $cc=$cr2>=70?'green':($cr2>=40?'yellow':'red');
             $html.='<p class="fplms-rpt-metric" style="text-align:right;margin-top:-8px;">Cumplimiento global del canal: '.$this->badge($cr2.'%',$cc).'</p>';
             $comp[$ch->name]=['courses'=>count($courses),'enrolled'=>$cen,'completed'=>$ccp,'rate'=>$cr2];
         }
         if (count($comp)>1) {
             $html.='<hr style="margin:28px 0;border-color:#eee;">'.$this->sub('Comparacion Global entre Canales');
-            $html.=$this->table_open(['Canal','Cursos','Total Inscripciones','Completadas','Tasa Cumplimiento']);
+            $html.=$this->paged_table_open(['Canal','Cursos','Total Inscripciones','Completadas','Tasa Cumplimiento']);
             foreach ($comp as $nm=>$cd) {
                 $rt=$cd['rate']??0; $rc=$rt>=70?'green':($rt>=40?'yellow':'red');
                 $html.='<tr><td><strong>'.esc_html($nm).'</strong></td><td>'.(int)$cd['courses'].'</td>'
                       .'<td>'.(int)$cd['enrolled'].'</td><td>'.(int)$cd['completed'].'</td>'
                       .'<td>'.$this->badge($rt.'%',$rc).'</td></tr>';
             }
-            $html.=$this->table_close();
+            $html.=$this->paged_table_close();
         }
         wp_send_json_success(['html'=>$html]);
     }
@@ -707,7 +831,7 @@ class FairPlay_LMS_Reports_Controller {
         $total_app = (int)array_sum(array_column($rows, 'approved'));
         $html .= $this->metric('<strong>'.$total_q.'</strong> evaluaciones | <strong>'.$total_att.'</strong> ejecuciones totales | <strong>'.$total_app.'</strong> aprobados');
         $det_ico = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
-        $html .= $this->table_open(['#', 'Test', 'Curso', 'Completado', 'Aprobado', 'Puntuación Media', 'Opciones']);
+        $html .= $this->paged_table_open(['#', 'Test', 'Curso', 'Completado', 'Aprobado', 'Puntuación Media', 'Opciones']);
         foreach ($rows as $i => $r) {
             $avg  = $r->avg_score !== null ? number_format((float)$r->avg_score, 2).'%' : '—';
             $tot  = (int)$r->total_attempts;
@@ -725,7 +849,7 @@ class FairPlay_LMS_Reports_Controller {
                    . '<td>'.$this->badge($avg, $avgscore >= 70 ? 'green' : ($avgscore >= 50 ? 'yellow' : 'red')).'</td>'
                    . '<td>'.$btn.'</td></tr>';
         }
-        $html .= $this->table_close();
+        $html .= $this->paged_table_close();
         wp_send_json_success(['html' => $html]);
     }
 
@@ -762,7 +886,7 @@ class FairPlay_LMS_Reports_Controller {
             // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
             $rows = (array)$wpdb->get_results($wpdb->prepare(
                 "SELECT u.ID AS user_id, u.display_name, u.user_email,
-                        uq.progress AS score, uq.status, uq.created_at
+                        uq.user_quiz_id, uq.progress AS score, uq.status, uq.created_at
                  FROM `{$ms}` uc
                  INNER JOIN {$wpdb->users} u ON uc.user_id = u.ID
                  LEFT JOIN `{$quiz_table}` uq ON uq.user_id = uc.user_id AND uq.quiz_id = %d
@@ -778,7 +902,7 @@ class FairPlay_LMS_Reports_Controller {
             // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
             $rows = (array)$wpdb->get_results($wpdb->prepare(
                 "SELECT u.ID AS user_id, u.display_name, u.user_email,
-                        uq.progress AS score, uq.status, uq.created_at
+                        uq.user_quiz_id, uq.progress AS score, uq.status, uq.created_at
                  FROM `{$quiz_table}` uq
                  INNER JOIN {$wpdb->users} u ON uq.user_id = u.ID
                  WHERE uq.quiz_id = %d {$uw_uq}
@@ -805,6 +929,16 @@ class FairPlay_LMS_Reports_Controller {
                 // Keep only the latest row per user (DESC order, first occurrence wins)
                 if (!isset($time_map[(int)$tr->user_id]))
                     $time_map[(int)$tr->user_id] = $tr;
+            }
+        }
+
+        // Map: user_id => max(user_quiz_id) — timing only applies to the latest attempt
+        $latest_attempt = [];
+        foreach ($rows as $r) {
+            $uid  = (int) $r->user_id;
+            $uqid = (int) ( $r->user_quiz_id ?? 0 );
+            if ( $uqid > ( $latest_attempt[ $uid ] ?? 0 ) ) {
+                $latest_attempt[ $uid ] = $uqid;
             }
         }
 
@@ -860,15 +994,17 @@ class FairPlay_LMS_Reports_Controller {
             $st       = strtolower($r->status ?? '');
             $cl       = in_array($st, ['passed','completed'], true) ? 'green' : (in_array($st, ['failed','not_passed'], true) ? 'red' : 'yellow');
             $label    = in_array($st, ['passed','completed'], true) ? 'APROBADO' : (in_array($st, ['failed','not_passed'], true) ? 'REPROBADO' : 'SIN INICIAR');
-            $qt       = $time_map[(int)$r->user_id] ?? null;
-            $start_ts = $qt ? (int)$qt->start_time : 0;
-            $end_ts   = $qt ? (int)$qt->end_time   : 0;
-            // Fecha: prefer end_time from times table, fallback to created_at
-            $fecha    = $end_ts > 0
+            $uid_key   = (int) $r->user_id;
+            $is_latest = ( (int)( $r->user_quiz_id ?? 0 ) === ( $latest_attempt[ $uid_key ] ?? -1 ) );
+            $qt        = $is_latest ? ( $time_map[ $uid_key ] ?? null ) : null;
+            $start_ts  = $qt ? (int)$qt->start_time : 0;
+            $end_ts    = $qt ? (int)$qt->end_time   : 0;
+            // Fecha: prefer end_time from times table (latest attempt only), fallback to created_at
+            $fecha     = $end_ts > 0
                 ? wp_date('d/m/Y, H:i:s', $end_ts)
                 : (!empty($r->created_at) ? wp_date('d/m/Y, H:i:s', strtotime($r->created_at)) : '—');
-            // Duración: only if both timestamps exist and end > start
-            $dur      = ($end_ts > 0 && $start_ts > 0 && $end_ts > $start_ts)
+            // Duración: solo para el intento más reciente, y solo si tenemos ambos timestamps
+            $dur       = ($is_latest && $end_ts > 0 && $start_ts > 0 && $end_ts > $start_ts)
                 ? $this->format_duration($end_ts - $start_ts)
                 : '—';
             $score    = $r->score !== null ? number_format((float)$r->score, 2).'%' : '—';
@@ -1217,15 +1353,17 @@ class FairPlay_LMS_Reports_Controller {
                 if ($quiz_table) {
                     // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                     $quizzes = (array) $wpdb->get_results(
-                        "SELECT u.display_name,u.user_email,
-                                pc.post_title AS course_name,q.post_title AS quiz_name,
-                                uq.progress AS score,uq.status
+                        "SELECT uq.user_id,uq.course_id,uq.quiz_id,uq.user_quiz_id,
+                                uq.progress AS score,uq.status,
+                                u.display_name,u.user_email,
+                                pc.post_title AS course_name,q.post_title AS quiz_name
                          FROM `{$quiz_table}` uq
                          INNER JOIN {$wpdb->users} u ON uq.user_id=u.ID
                          LEFT JOIN {$wpdb->posts} q  ON uq.quiz_id=q.ID
                          LEFT JOIN {$wpdb->posts} pc ON uq.course_id=pc.ID
-                         WHERE 1=1 $qw ORDER BY u.display_name,q.post_title LIMIT 5000"
+                         WHERE 1=1 $qw ORDER BY uq.user_id,uq.quiz_id,uq.course_id,uq.user_quiz_id ASC LIMIT 5000"
                     );
+                    $quizzes = $this->aggregate_quiz_rows($quizzes);
                 }
                 $expired = [];
                 if ($ms) {
@@ -1248,12 +1386,16 @@ class FairPlay_LMS_Reports_Controller {
                 }
                 $this->output_xls_multi('desempeno', 'Reporte de Desempeno', [
                     [
-                        'title'   => 'Resultados de Evaluaciones (' . count($quizzes) . ')',
-                        'headers' => ['Usuario', 'Email', 'Curso', 'Evaluacion', 'Puntaje', 'Estado'],
+                        'title'   => 'Resultados de Evaluaciones (' . count($quizzes) . ' estudiantes)',
+                        'headers' => ['Usuario', 'Email', 'Curso', 'Evaluacion', 'Intentos', 'Puntaje', 'Estado'],
                         'data'    => array_map(fn($r) => [
-                            $r->display_name, $r->user_email,
-                            $r->course_name ?? '—', $r->quiz_name ?? '—',
-                            $r->score, $r->status ?? '—',
+                            $r->display_name,
+                            $r->user_email,
+                            $r->course_name ?? '—',
+                            $r->quiz_name   ?? '—',
+                            (int)$r->attempts_label === 1 ? '1 intento' : (int)$r->attempts_label . ' intentos',
+                            $r->score,
+                            $this->translate_status($r->status ?? ''),
                         ], $quizzes),
                     ],
                     [
@@ -1271,31 +1413,55 @@ class FairPlay_LMS_Reports_Controller {
 
             // -- CERTIFICADOS ----------------------------------------------
             case str_starts_with($format, 'certificates'):
-                $cert_in = null !== $uids ? (empty($uids) ? 'AND 1=0' : 'AND pm_uid.meta_value IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
-                $dw      = $this->date_sql('p.post_date', $f['date_from'], $f['date_to']);
+                if (!$ms) { echo 'Sin datos.'; exit; }
+                $uw_xls = null !== $uids ? (empty($uids) ? 'AND uc.user_id=0' : 'AND uc.user_id IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
+                $dw_xls = '';
+                if (!empty($f['date_from'])) $dw_xls .= $wpdb->prepare(' AND FROM_UNIXTIME(uc.end_time) >= %s', $f['date_from'] . ' 00:00:00');
+                if (!empty($f['date_to']))   $dw_xls .= $wpdb->prepare(' AND FROM_UNIXTIME(uc.end_time) <= %s', $f['date_to']   . ' 23:59:59');
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $certs = (array) $wpdb->get_results(
-                    "SELECT u.display_name,u.user_email,pc.post_title AS course,
-                            p.post_date,pm_dl.meta_value AS downloaded
-                     FROM {$wpdb->posts} p
-                     INNER JOIN {$wpdb->postmeta} pm_uid ON p.ID=pm_uid.post_id AND pm_uid.meta_key='user_id'
-                     INNER JOIN {$wpdb->users} u ON pm_uid.meta_value=u.ID
-                     LEFT JOIN {$wpdb->postmeta} pm_cid ON p.ID=pm_cid.post_id AND pm_cid.meta_key='course_id'
-                     LEFT JOIN {$wpdb->posts} pc ON pm_cid.meta_value=pc.ID
-                     LEFT JOIN {$wpdb->postmeta} pm_dl ON p.ID=pm_dl.post_id AND pm_dl.meta_key='certificate_downloaded'
-                     WHERE p.post_type IN('stm-certificates','stm-certificate') AND p.post_status!='trash'
-                     $cert_in $dw ORDER BY p.post_date DESC LIMIT 5000"
+                $cert_rows = (array) $wpdb->get_results(
+                    "SELECT u.ID AS user_id, u.display_name, u.user_email,
+                            p.ID AS course_id, p.post_title AS course_name,
+                            uc.end_time,
+                            cp.post_title AS template_name
+                     FROM `{$ms}` uc
+                     INNER JOIN {$wpdb->users} u ON uc.user_id=u.ID
+                     INNER JOIN {$wpdb->posts} p ON uc.course_id=p.ID AND p.post_status='publish'
+                     INNER JOIN {$wpdb->postmeta} pm_cert ON p.ID=pm_cert.post_id
+                         AND pm_cert.meta_key='course_certificate'
+                         AND pm_cert.meta_value REGEXP '^[0-9]+$'
+                     LEFT JOIN {$wpdb->posts} cp ON pm_cert.meta_value=cp.ID
+                     WHERE (uc.status IN('completed','passed') OR uc.progress_percent>=100)
+                       AND uc.end_time>0
+                       $uw_xls $dw_xls
+                     ORDER BY u.display_name, p.post_title LIMIT 5000"
                 );
+                // By-course summary for XLS
+                $by_course_xls2 = [];
+                foreach ($cert_rows as $r) {
+                    $k = (int)$r->course_id;
+                    if (!isset($by_course_xls2[$k])) $by_course_xls2[$k] = ['name'=>$r->course_name,'template'=>$r->template_name??'—','count'=>0];
+                    $by_course_xls2[$k]['count']++;
+                }
+                usort($by_course_xls2, fn($a,$b) => $b['count'] <=> $a['count']);
                 $this->output_xls_multi('certificados', 'Reporte de Certificacion', [
                     [
-                        'title'   => 'Certificados Emitidos (' . count($certs) . ')',
-                        'headers' => ['Usuario', 'Email', 'Curso', 'Fecha Emision', 'Descargado'],
+                        'title'   => 'Por Curso (' . count($by_course_xls2) . ')',
+                        'headers' => ['Curso', 'Plantilla Certificado', 'Estudiantes con Certificado'],
+                        'data'    => array_map(fn($c) => [
+                            $c['name'], $c['template'], $c['count'],
+                        ], $by_course_xls2),
+                    ],
+                    [
+                        'title'   => 'Detalle Estudiantes (' . count($cert_rows) . ')',
+                        'headers' => ['Estudiante', 'Email', 'Curso', 'Fecha Finalizacion', 'URL Certificado'],
                         'data'    => array_map(fn($r) => [
-                            $r->display_name, $r->user_email,
-                            $r->course ?: '—',
-                            wp_date('d/m/Y', strtotime($r->post_date)),
-                            !empty($r->downloaded) ? 'Si' : 'No',
-                        ], $certs),
+                            $r->display_name,
+                            $r->user_email,
+                            $r->course_name,
+                            $r->end_time > 0 ? wp_date('d/m/Y', (int)$r->end_time) : '—',
+                            home_url('/certificate/' . (int)$r->course_id . '/' . (int)$r->user_id . '/'),
+                        ], $cert_rows),
                     ],
                 ], $f);
                 break;
@@ -1418,13 +1584,13 @@ class FairPlay_LMS_Reports_Controller {
                 // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
                 $det_rows = (array)$wpdb->get_results($wpdb->prepare(
                     "SELECT u.ID AS user_id, u.display_name, u.user_email,
-                            uq.progress AS score, uq.status, uq.created_at,
+                            uq.user_quiz_id, uq.progress AS score, uq.status, uq.created_at,
                             MAX(pc.post_title) AS course_name
                      FROM `{$qt_e}` uq
                      INNER JOIN {$wpdb->users} u ON uq.user_id = u.ID
                      LEFT JOIN {$wpdb->posts} pc ON uq.course_id = pc.ID
                      WHERE uq.quiz_id = %d $uw_q_e
-                     GROUP BY uq.user_id, u.display_name, u.user_email, uq.progress, uq.status, uq.created_at
+                     GROUP BY uq.user_quiz_id, u.ID, u.display_name, u.user_email, uq.progress, uq.status, uq.created_at
                      ORDER BY u.display_name",
                     $quiz_id_e
                 ));
@@ -1441,17 +1607,26 @@ class FairPlay_LMS_Reports_Controller {
                         if (!isset($xls_time_map[(int)$xtr->user_id])) $xls_time_map[(int)$xtr->user_id] = $xtr;
                     }
                 }
+                // Map: user_id => max(user_quiz_id) para timing solo en el intento más reciente
+                $xls_latest = [];
+                foreach ($det_rows as $r) {
+                    $uid  = (int) $r->user_id;
+                    $uqid = (int) ( $r->user_quiz_id ?? 0 );
+                    if ( $uqid > ( $xls_latest[ $uid ] ?? 0 ) ) $xls_latest[ $uid ] = $uqid;
+                }
                 $det_data = [];
                 foreach ($det_rows as $r) {
-                    $st_e     = strtolower($r->status ?? '');
-                    $lbl_e    = in_array($st_e, ['passed','completed'], true) ? 'Aprobado' : (in_array($st_e, ['failed','not_passed'], true) ? 'Reprobado' : 'Sin iniciar');
-                    $xqt      = $xls_time_map[(int)$r->user_id] ?? null;
-                    $xstart   = $xqt ? (int)$xqt->start_time : 0;
-                    $xend     = $xqt ? (int)$xqt->end_time   : 0;
-                    $fecha_e  = $xend > 0
+                    $st_e      = strtolower($r->status ?? '');
+                    $lbl_e     = in_array($st_e, ['passed','completed'], true) ? 'Aprobado' : (in_array($st_e, ['failed','not_passed'], true) ? 'Reprobado' : 'Sin iniciar');
+                    $xls_uid   = (int) $r->user_id;
+                    $xls_is_latest = ( (int)( $r->user_quiz_id ?? 0 ) === ( $xls_latest[ $xls_uid ] ?? -1 ) );
+                    $xqt       = $xls_is_latest ? ( $xls_time_map[ $xls_uid ] ?? null ) : null;
+                    $xstart    = $xqt ? (int)$xqt->start_time : 0;
+                    $xend      = $xqt ? (int)$xqt->end_time   : 0;
+                    $fecha_e   = $xend > 0
                         ? wp_date('d/m/Y H:i:s', $xend)
                         : (!empty($r->created_at) ? wp_date('d/m/Y H:i:s', strtotime($r->created_at)) : '—');
-                    $dur_e    = ($xend > 0 && $xstart > 0 && $xend > $xstart) ? $this->format_duration($xend - $xstart) : '—';
+                    $dur_e     = ($xls_is_latest && $xend > 0 && $xstart > 0 && $xend > $xstart) ? $this->format_duration($xend - $xstart) : '—';
                     $det_data[] = [$r->display_name, $r->user_email, $r->course_name ?? '—', $fecha_e, $lbl_e, number_format((float)$r->score, 2), $dur_e];
                 }
                 $this->output_xls_multi('test_detalle_'.$quiz_id_e, 'Detalle: '.$quiz_title_e, [[
@@ -1539,54 +1714,22 @@ class FairPlay_LMS_Reports_Controller {
         }
         $meta = 'Generado: ' . wp_date('d/m/Y H:i') . (empty($fp) ? '' : ' | ' . implode(' | ', $fp));
 
-        // Max columns (for title/meta merge span)
-        $max_cols = 1;
-        foreach ($sections as $s) $max_cols = max($max_cols, count($s['headers']));
-        $merge_all = max(0, $max_cols - 1);
-
-        $body  = '';
-        $body .= '<Row ss:Height="28"><Cell ss:StyleID="s_title" ss:MergeAcross="' . $merge_all . '">'
-               . '<Data ss:Type="String">' . $xe($report_title) . '</Data></Cell></Row>';
-        $body .= '<Row ss:Height="16"><Cell ss:StyleID="s_meta" ss:MergeAcross="' . $merge_all . '">'
-               . '<Data ss:Type="String">' . $xe($meta) . '</Data></Cell></Row>';
-
-        foreach ($sections as $s) {
-            $ncols = count($s['headers']);
-            $merge = max(0, $ncols - 1);
-
-            // Spacer
-            $body .= '<Row ss:Height="10"/>';
-
-            // Section heading (orange #FFA800)
-            $body .= '<Row ss:Height="22"><Cell ss:StyleID="s_sec" ss:MergeAcross="' . $merge . '">'
-                   . '<Data ss:Type="String">' . $xe($s['title']) . '</Data></Cell></Row>';
-
-            // Column headers (dark orange #CC8600)
-            $hdr = implode('', array_map(
-                fn($h) => '<Cell ss:StyleID="s_hdr"><Data ss:Type="String">' . $xe($h) . '</Data></Cell>',
-                $s['headers']
-            ));
-            $body .= '<Row ss:Height="20">' . $hdr . '</Row>';
-
-            // Data rows
-            if (empty($s['data'])) {
-                $body .= '<Row ss:Height="18"><Cell ss:StyleID="s_even" ss:MergeAcross="' . $merge . '">'
-                       . '<Data ss:Type="String">(Sin datos para los filtros seleccionados)</Data></Cell></Row>';
-            } else {
-                $i = 0;
-                foreach ($s['data'] as $row) {
-                    $sty  = ($i % 2 === 0) ? 's_even' : 's_odd';
-                    $body .= '<Row ss:Height="18">';
-                    foreach ((array)$row as $cell) {
-                        $v    = (string)$cell;
-                        $type = (is_numeric($v) && !preg_match('/^0\d/', $v) && $v !== '') ? 'Number' : 'String';
-                        $body .= '<Cell ss:StyleID="' . $sty . '"><Data ss:Type="' . $type . '">' . $xe($v) . '</Data></Cell>';
-                    }
-                    $body .= '</Row>';
-                    $i++;
-                }
+        // Helper: sanitize Excel sheet name (max 31 chars, no invalid chars, deduplicated)
+        $used_names = [];
+        $make_sheet_name = function(string $title, int $idx) use (&$used_names): string {
+            $clean = preg_replace('/[\/\\\\\?\*\[\]:]/', '', $title);
+            $clean = trim((string)$clean);
+            if ($clean === '') $clean = 'Hoja' . $idx;
+            $clean = mb_substr($clean, 0, 31);
+            $base  = $clean;
+            $i     = 2;
+            while (isset($used_names[$clean])) {
+                $suffix = ' ' . $i++;
+                $clean  = mb_substr($base, 0, 31 - mb_strlen($suffix)) . $suffix;
             }
-        }
+            $used_names[$clean] = true;
+            return $clean;
+        };
 
         $styles = '<Styles>'
             . '<Style ss:ID="s_title"><Font ss:Bold="1" ss:Size="13" ss:Color="#333333"/>'
@@ -1613,6 +1756,49 @@ class FairPlay_LMS_Reports_Controller {
             .   '<Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F0E8D8"/></Borders></Style>'
             . '</Styles>';
 
+        // One worksheet per section
+        $worksheets = '';
+        foreach ($sections as $idx => $s) {
+            $ncols      = count($s['headers']);
+            $merge      = max(0, $ncols - 1);
+            $sheet_name = $make_sheet_name($s['title'], $idx + 1);
+
+            $sheet_body  = '';
+            $sheet_body .= '<Row ss:Height="22"><Cell ss:StyleID="s_title" ss:MergeAcross="' . $merge . '">'
+                         . '<Data ss:Type="String">' . $xe($report_title) . '</Data></Cell></Row>';
+            $sheet_body .= '<Row ss:Height="14"><Cell ss:StyleID="s_meta" ss:MergeAcross="' . $merge . '">'
+                         . '<Data ss:Type="String">' . $xe($meta) . '</Data></Cell></Row>';
+            $sheet_body .= '<Row ss:Height="8"/>';
+            $sheet_body .= '<Row ss:Height="20"><Cell ss:StyleID="s_sec" ss:MergeAcross="' . $merge . '">'
+                         . '<Data ss:Type="String">' . $xe($s['title']) . '</Data></Cell></Row>';
+
+            $hdr = implode('', array_map(
+                fn($h) => '<Cell ss:StyleID="s_hdr"><Data ss:Type="String">' . $xe($h) . '</Data></Cell>',
+                $s['headers']
+            ));
+            $sheet_body .= '<Row ss:Height="20">' . $hdr . '</Row>';
+
+            if (empty($s['data'])) {
+                $sheet_body .= '<Row ss:Height="18"><Cell ss:StyleID="s_even" ss:MergeAcross="' . $merge . '">'
+                             . '<Data ss:Type="String">(Sin datos para los filtros seleccionados)</Data></Cell></Row>';
+            } else {
+                $i = 0;
+                foreach ($s['data'] as $row) {
+                    $sty  = ($i % 2 === 0) ? 's_even' : 's_odd';
+                    $sheet_body .= '<Row ss:Height="18">';
+                    foreach ((array)$row as $cell) {
+                        $v    = (string)$cell;
+                        $type = (is_numeric($v) && !preg_match('/^0\d/', $v) && $v !== '') ? 'Number' : 'String';
+                        $sheet_body .= '<Cell ss:StyleID="' . $sty . '"><Data ss:Type="' . $type . '">' . $xe($v) . '</Data></Cell>';
+                    }
+                    $sheet_body .= '</Row>';
+                    $i++;
+                }
+            }
+
+            $worksheets .= '<Worksheet ss:Name="' . $xe($sheet_name) . '"><Table>' . $sheet_body . '</Table></Worksheet>';
+        }
+
         $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
              . '<?mso-application progid="Excel.Sheet"?>' . "\n"
              . '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"'
@@ -1620,9 +1806,8 @@ class FairPlay_LMS_Reports_Controller {
              . ' xmlns:x="urn:schemas-microsoft-com:office:excel"'
              . ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
              . $styles
-             . '<Worksheet ss:Name="Reporte"><Table>'
-             . $body
-             . '</Table></Worksheet></Workbook>';
+             . $worksheets
+             . '</Workbook>';
 
         // Flush all WordPress output buffers so no HTML contaminates the file
         while (ob_get_level()) {
@@ -1858,11 +2043,44 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-badge.red{background:#f8d7da;color:#721c24}
         .fplms-spin-dot{display:inline-block;width:16px;height:16px;border:2.5px solid #ffa80033;border-top-color:#ffa800;border-radius:50%;animation:fplms-spin .7s linear infinite;vertical-align:-4px;margin-right:6px}
         @keyframes fplms-spin{to{transform:rotate(360deg)}}
+        .fplms-paged-wrap{margin-bottom:16px}
+        .fplms-paged-controls{display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap;padding:6px 4px;background:#fafafa;border:1px solid #e8e8e8;border-radius:0 0 6px 6px}
+        .fplms-paged-controls label{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#555;white-space:nowrap}
+        .fplms-paged-controls select{appearance:none;-webkit-appearance:none;height:30px;font-size:13px;font-weight:700;color:#333;padding:0 28px 0 10px;border:1.5px solid #ffa800;border-radius:5px;background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23ffa800' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E") no-repeat right 8px center;background-size:10px 6px;cursor:pointer;outline:none;min-width:68px}
+        .fplms-paged-controls select:focus{border-color:#e08800;box-shadow:0 0 0 2px rgba(255,168,0,.2)}
+        .fplms-paged-info{flex:1;font-size:12px;color:#777;text-align:center;min-width:120px}
+        .fplms-paged-prev,.fplms-paged-next{font-size:12px!important;padding:4px 12px!important;line-height:22px!important;height:auto!important;border-color:#ffa800!important;color:#ffa800!important;font-weight:600!important}
+        .fplms-paged-prev:hover,.fplms-paged-next:hover{background:#fff8ee!important;border-color:#e08800!important;color:#e08800!important}
+        .fplms-paged-prev:disabled,.fplms-paged-next:disabled{opacity:.35;cursor:not-allowed;border-color:#ddd!important;color:#aaa!important}
         </style>
         <script>
         (function(){
             var NONCE=<?php echo wp_json_encode($nonce); ?>,AJAXURL=<?php echo wp_json_encode(admin_url('admin-ajax.php')); ?>;
             var activeTab=null,searchTimer=null;
+            function initPagedTables(container) {
+                container.querySelectorAll('.fplms-paged-wrap').forEach(function(wrap) {
+                    var rows = Array.from(wrap.querySelectorAll('tbody tr'));
+                    if (!rows.length) return;
+                    var perPage = 10, page = 1;
+                    var sizeEl = wrap.querySelector('.fplms-paged-size');
+                    var infoEl = wrap.querySelector('.fplms-paged-info');
+                    var prevEl = wrap.querySelector('.fplms-paged-prev');
+                    var nextEl = wrap.querySelector('.fplms-paged-next');
+                    function render() {
+                        var total = rows.length, pages = Math.ceil(total / perPage) || 1;
+                        if (page > pages) page = pages;
+                        var start = (page - 1) * perPage, end = Math.min(start + perPage, total);
+                        rows.forEach(function(r, i) { r.style.display = (i >= start && i < end) ? '' : 'none'; });
+                        infoEl.textContent = total + ' registros — pág. ' + page + ' / ' + pages;
+                        prevEl.disabled = page <= 1;
+                        nextEl.disabled = page >= pages;
+                    }
+                    sizeEl.addEventListener('change', function() { perPage = parseInt(this.value, 10); page = 1; render(); });
+                    prevEl.addEventListener('click', function() { if (page > 1) { page--; render(); } });
+                    nextEl.addEventListener('click', function() { if (page < Math.ceil(rows.length / perPage)) { page++; render(); } });
+                    render();
+                });
+            }
             var tabActions={participation:'fplms_report_participation',progress:'fplms_report_progress',performance:'fplms_report_performance',certificates:'fplms_report_certificates',time:'fplms_report_time',satisfaction:'fplms_report_satisfaction',channels:'fplms_report_channels',tests:'fplms_report_tests'};
             function getFilters(){return{date_from:document.getElementById('fplms-rpt-date-from').value||'',date_to:document.getElementById('fplms-rpt-date-to').value||'',channel_id:document.getElementById('fplms-rpt-channel').value||'',city_id:document.getElementById('fplms-rpt-city').value||'',company_id:document.getElementById('fplms-rpt-company').value||'',role_id:document.getElementById('fplms-rpt-role').value||'',user_ids:document.getElementById('fplms-rpt-user-ids').value||''};}
             function loadReport(tab){
@@ -1873,7 +2091,7 @@ class FairPlay_LMS_Reports_Controller {
                 var p=Object.assign({action:action,nonce:NONCE},getFilters());
                 var body=Object.keys(p).map(k=>encodeURIComponent(k)+'='+encodeURIComponent(p[k])).join('&');
                 fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
-                    .then(r=>r.json()).then(res=>{content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>';})
+                    .then(r=>r.json()).then(res=>{content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>'; initPagedTables(content);})
                     .catch(()=>{content.innerHTML='<p class="notice notice-error">Error de conexion.</p>';});
             }
             document.querySelector('.fplms-rpt-tabs-nav').addEventListener('click',function(e){
