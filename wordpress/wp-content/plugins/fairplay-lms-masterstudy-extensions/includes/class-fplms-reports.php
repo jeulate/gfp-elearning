@@ -117,6 +117,23 @@ class FairPlay_LMS_Reports_Controller {
     private function sub(string $t): string   { return '<h3 class="fplms-rpt-sub">'.esc_html($t).'</h3>'; }
     private function empty_msg(string $t): string { return '<p class="fplms-rpt-empty">'.esc_html($t).'</p>'; }
     private function metric(string $h): string  { return '<p class="fplms-rpt-metric">'.$h.'</p>'; }
+    /**
+     * Renders a row of stat cards. Each card: ['label'=>string, 'value'=>string, 'sub'=>string (opt), 'color'=>'green|yellow|red|blue|orange' (opt)]
+     */
+    private function stat_cards(array $cards): string {
+        $out = '<div class="fplms-stat-cards">';
+        foreach ($cards as $c) {
+            $color = $c['color'] ?? 'blue';
+            $sub   = isset($c['sub']) && $c['sub'] !== '' ? '<span class="fplms-sc-sub">'.esc_html($c['sub']).'</span>' : '';
+            $out  .= '<div class="fplms-sc fplms-sc--'.$color.'">'
+                   . '<p class="fplms-sc-label">'.esc_html($c['label']).'</p>'
+                   . '<p class="fplms-sc-value">'.$c['value'].'</p>'
+                   . $sub
+                   . '</div>';
+        }
+        $out .= '</div>';
+        return $out;
+    }
     private function badge(string $text, string $color): string {
         return '<span class="fplms-badge '.esc_attr($color).'">'.esc_html($text).'</span>';
     }
@@ -159,6 +176,37 @@ class FairPlay_LMS_Reports_Controller {
              . '<button type="button" class="button button-small fplms-paged-prev">&lsaquo; Anterior</button>'
              . '<button type="button" class="button button-small fplms-paged-next">Siguiente &rsaquo;</button>'
              . '</div></div>';
+    }
+
+    /** Parse varied duration strings to minutes: "1:30", "2h 45m", "30 min", "2 horas", "1" */
+    private function parse_duration_minutes(string $raw): float {
+        $raw = trim($raw);
+        if ($raw === '' || strtoupper($raw) === 'NULL') return 0.0;
+        // H:MM or HH:MM or HH:MM:SS
+        if (preg_match('/^(\d+):(\d{1,2})(?::\d+)?$/', $raw, $m))
+            return (float)$m[1] * 60 + (float)$m[2];
+        // Nh Nm  e.g. "2h 45m", "1h", "1 hora"
+        if (preg_match('/(\d+(?:\.\d+)?)\s*h(?:ora[s]?)?\b/i', $raw, $mh)) {
+            preg_match('/(\d+)\s*m(?:in)?/i', $raw, $mm);
+            return (float)$mh[1] * 60 + (isset($mm[1]) ? (float)$mm[1] : 0);
+        }
+        // N min / N minutos
+        if (preg_match('/^(\d+(?:\.\d+)?)\s*m(?:in(?:uto[s]?)?)?$/i', $raw, $m))
+            return (float)$m[1];
+        // Plain integer/decimal → treat as hours (lesson UI default)
+        if (preg_match('/^(\d+(?:\.\d+)?)$/', $raw, $m))
+            return (float)$m[1] * 60;
+        return 0.0;
+    }
+
+    /** Format minutes to human-readable: "2h 30m", "45 min", "0 min" */
+    private function fmt_minutes(float $minutes): string {
+        if ($minutes <= 0) return '0 min';
+        $h = (int)floor($minutes / 60);
+        $m = (int)round(fmod($minutes, 60));
+        if ($h > 0 && $m > 0) return $h . 'h ' . $m . 'm';
+        if ($h > 0) return $h . ' h';
+        return $m . ' min';
     }
 
     /**
@@ -253,7 +301,12 @@ class FairPlay_LMS_Reports_Controller {
         );
         $act=0; $inact=0;
         foreach ($created as $r) { if (empty($r->user_status) || 'active' === $r->user_status) $act++; else $inact++; }
-        $html .= $this->sub('Usuarios Registrados ('.count($created).') — Activos:'.$act.' / Inactivos:'.$inact);
+        $html .= $this->stat_cards([
+            ['label'=>'Usuarios Registrados', 'value'=>'<strong>'.count($created).'</strong>', 'color'=>'blue'],
+            ['label'=>'Activos',   'value'=>'<strong>'.$act.'</strong>',   'color'=>'green'],
+            ['label'=>'Inactivos', 'value'=>'<strong>'.$inact.'</strong>', 'color'=>'red'],
+        ]);
+        $html .= $this->sub('Usuarios Registrados');
         $html .= $this->paged_table_open(['Nombre','Email','Fecha Registro','Ciudad','Canal','Estado']);
         foreach ($created as $r) {
             $city    = $r->city_id    ? $this->structures->get_term_name_by_id((int)$r->city_id)    : '—';
@@ -275,21 +328,35 @@ class FairPlay_LMS_Reports_Controller {
         } else {
             $ld  = $this->date_sql('l.login_time', $f['date_from'], $f['date_to']);
             $lw  = null!==$uids ? (empty($uids)?'AND 1=0':'AND l.user_id IN ('.implode(',',array_map('intval',$uids)).')') : '';
+            $act_tbl = $wpdb->prefix.'fplms_user_activity';
+            $act_exists = ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$act_tbl)) === $act_tbl);
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $logins = (array)$wpdb->get_results(
-                "SELECT u.display_name,u.user_email,COUNT(l.id) AS login_count,MAX(l.login_time) AS last_login
-                 FROM {$wpdb->users} u INNER JOIN `{$login_table}` l ON u.ID=l.user_id
-                 WHERE 1=1 $lw $ld GROUP BY u.ID ORDER BY login_count DESC LIMIT 500"
+                "SELECT u.display_name,u.user_email,u.ID AS user_id,COUNT(l.id) AS login_count,MAX(l.login_time) AS last_login"
+                . ($act_exists ? ",COALESCE(ua.activity_count,0) AS activity_count" : ",0 AS activity_count")
+                . " FROM {$wpdb->users} u INNER JOIN `{$login_table}` l ON u.ID=l.user_id"
+                . ($act_exists ? " LEFT JOIN (SELECT user_id,COUNT(*) AS activity_count FROM `{$act_tbl}` GROUP BY user_id) ua ON u.ID=ua.user_id" : "")
+                . " WHERE 1=1 $lw $ld GROUP BY u.ID ORDER BY login_count DESC LIMIT 500"
             );
             if (empty($logins)) { $html .= $this->empty_msg('Sin registros de login en el periodo seleccionado.'); }
             else {
-                $html .= $this->paged_table_open(['Nombre','Email','N. de Ingresos','Ultimo Ingreso']);
+                $html .= $this->paged_table_open(['Nombre','Email','N. de Ingresos','Actividad','Ultimo Ingreso']);
                 foreach ($logins as $r) {
+                    $acts = (int)$r->activity_count;
+                    $act_badge = $acts >= 50 ? $this->badge($acts,'green') : ($acts >= 10 ? $this->badge($acts,'yellow') : $this->badge($acts,'red'));
                     $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                            . '<td><strong>'.(int)$r->login_count.'</strong></td>'
+                           . '<td>'.$act_badge.'</td>'
                            . '<td>'.esc_html($r->last_login?wp_date('d/m/Y H:i',strtotime($r->last_login)):'—').'</td></tr>';
                 }
                 $html .= $this->paged_table_close();
+                if ($act_exists) {
+                    $html .= '<p style="font-size:11px;color:#888;margin:4px 0 0">'
+                           . '&#9432; <strong>Actividad</strong>: pings registrados mientras el usuario naveg&oacute; la plataforma (aprox. 1 ping cada 5 minutos de sesion activa). '
+                           . '<span style="background:#46b450;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">&ge;50</span> alta &nbsp;'
+                           . '<span style="background:#ffb900;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">&ge;10</span> media &nbsp;'
+                           . '<span style="background:#dc3232;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">&lt;10</span> baja</p>';
+                }
             }
         }
 
@@ -311,7 +378,11 @@ class FairPlay_LMS_Reports_Controller {
             );
             $ac  = count($abandon);
             $pct = $total_enroll>0 ? round($ac/$total_enroll*100,1) : 0;
-            $html .= $this->metric('<strong>'.$ac.'</strong> inscripciones sin progreso'.($total_enroll?' de <strong>'.$total_enroll.'</strong> totales — tasa: <strong>'.$pct.'%</strong>':''));
+            $html .= $this->stat_cards([
+                ['label'=>'Inscripciones sin progreso', 'value'=>'<strong>'.$ac.'</strong>',          'color'=>'red'],
+                ['label'=>'Total inscripciones',        'value'=>'<strong>'.$total_enroll.'</strong>', 'color'=>'blue'],
+                ['label'=>'Tasa de abandono',           'value'=>'<strong>'.$pct.'%</strong>',        'color'=>$pct>=50?'red':($pct>=25?'yellow':'green')],
+            ]);
             if (!empty($abandon)) {
                 $html .= $this->paged_table_open(['Usuario','Email','Curso','Progreso','Estado']);
                 foreach ($abandon as $r) {
@@ -327,23 +398,40 @@ class FairPlay_LMS_Reports_Controller {
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $inactive = (array)$wpdb->get_results(
             "SELECT u.ID,u.display_name,u.user_email,u.user_registered,
-                    um_ci.meta_value AS city_id,um_ch.meta_value AS channel_id
+                    um_ci.meta_value AS city_id,um_ch.meta_value AS channel_id,
+                    um_db.meta_value AS deactivated_by_id,
+                    um_dd.meta_value AS deactivated_date
              FROM {$wpdb->users} u
              INNER JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id AND um_st.meta_key='fplms_user_status' AND um_st.meta_value='inactive'
              LEFT JOIN {$wpdb->usermeta} um_ci ON u.ID=um_ci.user_id AND um_ci.meta_key='fplms_city'
              LEFT JOIN {$wpdb->usermeta} um_ch ON u.ID=um_ch.user_id AND um_ch.meta_key='fplms_channel'
-             WHERE 1=1 $uid_w ORDER BY u.display_name LIMIT 500"
+             LEFT JOIN {$wpdb->usermeta} um_db ON u.ID=um_db.user_id AND um_db.meta_key='fplms_deactivated_by'
+             LEFT JOIN {$wpdb->usermeta} um_dd ON u.ID=um_dd.user_id AND um_dd.meta_key='fplms_deactivated_date'
+             WHERE 1=1 $uid_w ORDER BY um_dd.meta_value DESC, u.display_name LIMIT 500"
         );
+        // Preload display names of admins who deactivated users (avoid N+1 queries)
+        $admin_ids = array_filter(array_unique(array_column((array)$inactive,'deactivated_by_id')));
+        $admin_names = [];
+        if (!empty($admin_ids)) {
+            $id_in = implode(',', array_map('intval', $admin_ids));
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            foreach ((array)$wpdb->get_results("SELECT ID, display_name FROM {$wpdb->users} WHERE ID IN ({$id_in})") as $adm) {
+                $admin_names[(int)$adm->ID] = $adm->display_name;
+            }
+        }
         $html .= $this->sub('Usuarios Dados de Baja / Inactivos ('.count($inactive).')');
         if (empty($inactive)) { $html .= $this->empty_msg('No hay usuarios dados de baja.'); }
         else {
-            $html .= $this->paged_table_open(['ID','Nombre','Email','Fecha Registro','Ciudad','Canal']);
+            $html .= $this->paged_table_open(['ID','Nombre','Email','Fecha Registro','Ciudad','Canal','Inactivado por','Fecha Inactivacion']);
             foreach ($inactive as $r) {
                 $city    = $r->city_id    ? $this->structures->get_term_name_by_id((int)$r->city_id)    : '—';
                 $channel = $r->channel_id ? $this->structures->get_term_name_by_id((int)$r->channel_id) : '—';
+                $by      = !empty($r->deactivated_by_id) ? esc_html($admin_names[(int)$r->deactivated_by_id] ?? 'ID '.(int)$r->deactivated_by_id) : '—';
+                $date    = !empty($r->deactivated_date)  ? esc_html(wp_date('d/m/Y H:i', strtotime($r->deactivated_date))) : '—';
                 $html .= '<tr><td>'.(int)$r->ID.'</td><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                        . '<td>'.esc_html(wp_date('d/m/Y',strtotime($r->user_registered))).'</td>'
-                       . '<td>'.esc_html($city).'</td><td>'.esc_html($channel).'</td></tr>';
+                       . '<td>'.esc_html($city).'</td><td>'.esc_html($channel).'</td>'
+                       . '<td>'.$by.'</td><td>'.$date.'</td></tr>';
             }
             $html .= $this->paged_table_close();
         }
@@ -458,7 +546,11 @@ class FairPlay_LMS_Reports_Controller {
                 $passed=count(array_filter($agg,fn($r)=>in_array(strtolower($r->status??''),['passed','completed'],true)));
                 $failed=count($agg)-$passed; $tot=count($agg);
                 $pp=$tot>0?round($passed/$tot*100,1):0;
-                $html .= $this->metric('Estudiantes evaluados:<strong>'.$tot.'</strong> | Aprobados:<strong>'.$passed.' ('.$pp.'%)</strong> | Reprobados:<strong>'.$failed.'</strong>');
+                $html .= $this->stat_cards([
+                    ['label'=>'Evaluados',  'value'=>'<strong>'.$tot.'</strong>',                'color'=>'blue'],
+                    ['label'=>'Aprobados',  'value'=>'<strong>'.$passed.'</strong>', 'sub'=>$pp.'%', 'color'=>'green'],
+                    ['label'=>'Reprobados', 'value'=>'<strong>'.$failed.'</strong>',               'color'=>'red'],
+                ]);
                 $html .= $this->paged_table_open(['Usuario','Email','Curso','Evaluacion','Intentos','Puntaje','Estado']);
                 foreach ($agg as $r) {
                     $st=strtolower($r->status??'');
@@ -488,7 +580,9 @@ class FairPlay_LMS_Reports_Controller {
                  WHERE p.post_type='stm-courses' AND DATE_ADD(p.post_date,INTERVAL pm.meta_value DAY)<%s
                    AND uc.status NOT IN('completed','passed') AND uc.progress_percent<100 $mw2
                  ORDER BY expiry_date ASC LIMIT 300",$today));
-            $html .= $this->metric('<strong>'.count($exp).'</strong> usuarios con cursos vencidos sin completar');
+            $html .= $this->stat_cards([
+                ['label'=>'Usuarios con cursos vencidos', 'value'=>'<strong>'.count($exp).'</strong>', 'color'=>'red'],
+            ]);
             if (!empty($exp)) {
                 $html .= $this->paged_table_open(['Usuario','Email','Curso','Progreso','Dias Vigencia','Vencio el']);
                 foreach ($exp as $r) {
@@ -562,11 +656,11 @@ class FairPlay_LMS_Reports_Controller {
         $total     = count($certs);
         $students  = count(array_unique(array_column((array)$certs,'user_id')));
         $courses_n = count(array_unique(array_column((array)$certs,'course_id')));
-        $html .= $this->metric(
-            'Certificados alcanzados:<strong>'.$total.'</strong> | '
-           .'Estudiantes:<strong>'.$students.'</strong> | '
-           .'Cursos con certificado:<strong>'.$courses_n.'</strong>'
-        );
+        $html .= $this->stat_cards([
+            ['label'=>'Certificados alcanzados', 'value'=>'<strong>'.$total.'</strong>',     'color'=>'green'],
+            ['label'=>'Estudiantes',              'value'=>'<strong>'.$students.'</strong>',  'color'=>'blue'],
+            ['label'=>'Cursos con certificado',  'value'=>'<strong>'.$courses_n.'</strong>', 'color'=>'orange'],
+        ]);
         $html .= '<p style="font-size:12px;color:#888;margin:0 0 14px">'
                . '&#9432; El seguimiento de descarga no esta disponible en la version actual de MasterStudy LMS.</p>';
 
@@ -623,49 +717,106 @@ class FairPlay_LMS_Reports_Controller {
         $f=$this->get_filters(); $uids=$this->get_user_ids_for_filters($f); $ms=$this->ms_table();
         $html = $this->render_section_head('Reporte de Tiempo de Capacitacion', $this->build_export_url('time',$f));
         if (!$ms) { $html.=$this->empty_msg('Tabla de matriculas no encontrada.'); wp_send_json_success(['html'=>$html]); return; }
-        $mw=null!==$uids?(empty($uids)?'AND uc.user_id=0':'AND uc.user_id IN ('.implode(',',array_map('intval',$uids)).')'):'';
+        $mw=null!==$uids?(empty($uids)?'AND uc.user_id=0':'AND uc.user_id IN ('.implode(',',array_map('intval',$uids)).')'):''; 
+        $sec_tbl=$wpdb->prefix.'stm_lms_curriculum_sections';
+        $mat_tbl=$wpdb->prefix.'stm_lms_curriculum_materials';
+        $ul_tbl =$wpdb->prefix.'stm_lms_user_lessons';
+        // 1) All enrollments (completed + in-progress)
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $trows=(array)$wpdb->get_results(
-            "SELECT u.display_name,u.user_email,p.post_title AS course_name,
-                    COALESCE(CAST(pm_vd.meta_value AS DECIMAL(10,2)),0) AS video_hours,
-                    COALESCE(CAST(pm_di.meta_value AS DECIMAL(10,2)),0) AS duration_hours
-             FROM {$wpdb->users} u INNER JOIN `{$ms}` uc ON u.ID=uc.user_id
+        $enrollments=(array)$wpdb->get_results(
+            "SELECT u.ID AS user_id, u.display_name, u.user_email,
+                    p.ID AS course_id, p.post_title AS course_name,
+                    uc.progress_percent, uc.status
+             FROM `{$ms}` uc
+             INNER JOIN {$wpdb->users} u ON uc.user_id=u.ID
              INNER JOIN {$wpdb->posts} p ON uc.course_id=p.ID AND p.post_status='publish'
-             LEFT JOIN {$wpdb->postmeta} pm_vd ON p.ID=pm_vd.post_id AND pm_vd.meta_key='video_duration'
-             LEFT JOIN {$wpdb->postmeta} pm_di ON p.ID=pm_di.post_id AND pm_di.meta_key='duration_info'
-             WHERE (uc.status IN('completed','passed') OR uc.progress_percent>=100) $mw
-             ORDER BY u.display_name,p.post_title LIMIT 500"
+             WHERE 1=1 $mw
+             ORDER BY u.display_name, p.post_title LIMIT 1000"
         );
+        if (empty($enrollments)) {
+            $html.=$this->empty_msg('Sin datos de tiempo.');
+            wp_send_json_success(['html'=>$html]); return;
+        }
+        $course_ids=array_unique(array_map(fn($r)=>(int)$r->course_id, $enrollments));
+        $user_ids  =array_unique(array_map(fn($r)=>(int)$r->user_id,   $enrollments));
+        $cid_in=implode(',', $course_ids);
+        $uid_in=implode(',', $user_ids);
+        // 2) All lesson durations per course
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $ld_rows=(array)$wpdb->get_results(
+            "SELECT cs.course_id, cm.post_id AS lesson_id, pm.meta_value AS duration
+             FROM `{$sec_tbl}` cs
+             INNER JOIN `{$mat_tbl}` cm ON cm.section_id=cs.id
+             LEFT JOIN {$wpdb->postmeta} pm ON cm.post_id=pm.post_id AND pm.meta_key='duration'
+             WHERE cs.course_id IN ({$cid_in})"
+        );
+        $course_lessons=[]; // [course_id][lesson_id] = minutes
+        foreach ($ld_rows as $ld) {
+            $cid=(int)$ld->course_id; $lid=(int)$ld->lesson_id;
+            $course_lessons[$cid][$lid]=$this->parse_duration_minutes($ld->duration??'');
+        }
+        // 3) Lessons completed per user per course
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $done_rows=(array)$wpdb->get_results(
+            "SELECT user_id, course_id, lesson_id
+             FROM `{$ul_tbl}`
+             WHERE course_id IN ({$cid_in}) AND user_id IN ({$uid_in}) AND end_time>0"
+        );
+        $done_map=[]; // "uid_cid" => [lesson_id => true]
+        foreach ($done_rows as $dr) {
+            $done_map[(int)$dr->user_id.'_'.(int)$dr->course_id][(int)$dr->lesson_id]=true;
+        }
+        // 4) Compute per-row hours
+        $trows=[];
+        foreach ($enrollments as $r) {
+            $uid=(int)$r->user_id; $cid=(int)$r->course_id;
+            $is_done=in_array($r->status,['completed','passed'],true)||(int)$r->progress_percent>=100;
+            $all_mins=$course_lessons[$cid]??[];
+            $total_min=(float)array_sum($all_mins);
+            $done_min=0.0;
+            foreach (($done_map[$uid.'_'.$cid]??[]) as $lid=>$_) $done_min+=$all_mins[$lid]??0.0;
+            $trows[]=(object)[
+                'display_name'=>$r->display_name,'user_email'=>$r->user_email,
+                'course_name'=>$r->course_name,'progress'=>(int)$r->progress_percent,
+                'is_done'=>$is_done,'total_min'=>$total_min,
+                'lesson_min'=>$is_done?$total_min:$done_min,
+            ];
+        }
+        // Summary by user
         $by=[];
         foreach ($trows as $r) {
-            $k=(string)$r->display_name.'|'.(string)$r->user_email;
-            if (!isset($by[$k])) $by[$k]=['name'=>$r->display_name,'email'=>$r->user_email,'hours'=>0.0,'courses'=>0];
-            $by[$k]['hours']  += max((float)$r->video_hours,(float)$r->duration_hours);
+            $k=$r->display_name.'|'.$r->user_email;
+            if (!isset($by[$k])) $by[$k]=['name'=>$r->display_name,'email'=>$r->user_email,'lesson_min'=>0.0,'courses'=>0];
+            $by[$k]['lesson_min']+=$r->lesson_min;
             $by[$k]['courses']++;
         }
-        uasort($by,fn($a,$b)=>$b['hours']<=>$a['hours']);
-        $th=array_sum(array_column($by,'hours'));
-        $html.=$this->metric('Total horas capacitacion (cursos aprobados):<strong>'.round($th,1).' h</strong>');
-        $html.=$this->sub('Horas por Usuario (Cursos Aprobados)');
-        if (empty($by)) { $html.=$this->empty_msg('Sin datos de horas.'); }
-        else {
-            $html.=$this->paged_table_open(['Usuario','Email','Cursos Aprobados','Horas Totales']);
-            foreach ($by as $row) {
-                $html.='<tr><td>'.esc_html($row['name']).'</td><td>'.esc_html($row['email']).'</td>'
-                      .'<td>'.(int)$row['courses'].'</td><td><strong>'.round($row['hours'],1).' h</strong></td></tr>';
-            }
-            $html.=$this->paged_table_close();
+        uasort($by,fn($a,$b)=>$b['lesson_min']<=>$a['lesson_min']);
+        $th=(float)array_sum(array_column($by,'lesson_min'));
+        $html.=$this->stat_cards([
+            ['label'=>'Total horas de lección', 'value'=>'<strong>'.$this->fmt_minutes($th).'</strong>', 'color'=>'orange'],
+            ['label'=>'Usuarios con actividad', 'value'=>'<strong>'.count($by).'</strong>',              'color'=>'blue'],
+        ]);
+        $html.=$this->sub('Horas por Usuario');
+        $html.=$this->paged_table_open(['Usuario','Email','Cursos','Horas de Lección']);
+        foreach ($by as $row) {
+            $html.='<tr><td>'.esc_html($row['name']).'</td><td>'.esc_html($row['email']).'</td>'
+                  .'<td>'.(int)$row['courses'].'</td><td><strong>'.$this->fmt_minutes($row['lesson_min']).'</strong></td></tr>';
         }
+        $html.=$this->paged_table_close();
         $html.=$this->sub('Detalle por Usuario y Curso');
-        if (!empty($trows)) {
-            $html.=$this->paged_table_open(['Usuario','Email','Curso','Horas']);
-            foreach ($trows as $r) {
-                $h=round(max((float)$r->video_hours,(float)$r->duration_hours),1);
-                $html.='<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
-                      .'<td>'.esc_html($r->course_name).'</td><td>'.$h.' h</td></tr>';
-            }
-            $html.=$this->paged_table_close();
+        $html.=$this->paged_table_open(['Usuario','Email','Curso','Progreso','Duración Total','Horas de Lección']);
+        foreach ($trows as $r) {
+            $badge=$r->is_done?$this->badge('Completado','green'):$this->badge($r->progress.'%',$r->progress>=50?'yellow':'red');
+            $html.='<tr>'
+                  .'<td>'.esc_html($r->display_name).'</td>'
+                  .'<td>'.esc_html($r->user_email).'</td>'
+                  .'<td>'.esc_html($r->course_name).'</td>'
+                  .'<td>'.$badge.'</td>'
+                  .'<td>'.$this->fmt_minutes($r->total_min).'</td>'
+                  .'<td><strong>'.$this->fmt_minutes($r->lesson_min).'</strong></td>'
+                  .'</tr>';
         }
+        $html.=$this->paged_table_close();
         wp_send_json_success(['html'=>$html]);
     }
 
@@ -682,42 +833,133 @@ class FairPlay_LMS_Reports_Controller {
         }
         $uw=null!==$uids?(empty($uids)?'AND sr.user_id=0':'AND sr.user_id IN ('.implode(',',array_map('intval',$uids)).')'):'';
         $dw=$this->date_sql('sr.submitted_at',$f['date_from'],$f['date_to']);
+
+        // ── Aggregate per course (one row per question per user in the table) ──
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $srows=(array)$wpdb->get_results(
-            "SELECT u.display_name,u.user_email,p.post_title AS course_name,sr.answers,sr.submitted_at
-             FROM `{$st}` sr INNER JOIN {$wpdb->users} u ON sr.user_id=u.ID
+        $course_stats=(array)$wpdb->get_results(
+            "SELECT sr.course_id,p.post_title AS course_name,
+                    COUNT(DISTINCT sr.user_id) AS respondents,
+                    ROUND(AVG(sr.score),2)     AS avg_score,
+                    MIN(sr.submitted_at)       AS first_sub,
+                    MAX(sr.submitted_at)       AS last_sub
+             FROM `{$st}` sr
              LEFT JOIN {$wpdb->posts} p ON sr.course_id=p.ID
-             WHERE 1=1 $uw $dw ORDER BY sr.submitted_at DESC LIMIT 300"
+             WHERE 1=1 $uw $dw
+             GROUP BY sr.course_id
+             ORDER BY respondents DESC"
         );
-        $html.=$this->metric('Total respuestas:<strong>'.count($srows).'</strong>');
-        $cs=[];
-        foreach ($srows as $r) {
-            $cn=$r->course_name?:'(Sin curso)'; if (!isset($cs[$cn])) $cs[$cn]=['total'=>0.0,'count'=>0];
-            $ans=maybe_unserialize($r->answers);
-            if (is_array($ans)) foreach ($ans as $v) if (is_numeric($v)) { $cs[$cn]['total']+=(float)$v; $cs[$cn]['count']++; }
+
+        $total_resp   =(int)array_sum(array_column($course_stats,'respondents'));
+        $total_courses=count($course_stats);
+        $overall_avg  =$total_resp>0
+            ? round(array_sum(array_map(fn($c)=>(float)$c->avg_score*(int)$c->respondents,$course_stats))/$total_resp,2)
+            : 0;
+        $ga_col=$overall_avg>=4?'green':($overall_avg>=2.5?'yellow':'red');
+
+        $html.=$this->stat_cards([
+            ['label'=>'Total Respuestas', 'value'=>'<strong>'.$total_resp.'</strong>','color'=>'blue'],
+            ['label'=>'Cursos evaluados', 'value'=>'<strong>'.$total_courses.'</strong>','color'=>'green'],
+            ['label'=>'Promedio general', 'value'=>'<strong>'.number_format($overall_avg,2).'</strong>','sub'=>'sobre 5','color'=>$ga_col],
+        ]);
+
+        if (empty($course_stats)) {
+            $html.=$this->empty_msg('Sin respuestas para los filtros seleccionados.');
+            wp_send_json_success(['html'=>$html,'charts'=>[]]); return;
         }
-        if (!empty($cs)) {
-            $html.=$this->sub('Puntuacion Promedio por Curso');
-            $html.=$this->paged_table_open(['Curso','Respuestas','Puntuacion Promedio']);
-            foreach ($cs as $cn=>$d) {
-                $avg=$d['count']>0?round($d['total']/$d['count'],2):0;
-                $html.='<tr><td>'.esc_html($cn).'</td><td>'.(int)$d['count'].'</td>'
-                      .'<td>'.$this->badge($avg.' / 5',$avg>=4?'green':($avg>=2.5?'yellow':'red')).'</td></tr>';
+
+        // ── Per-course blocks ─────────────────────────────────────────────────
+        $html.=$this->sub('Resultados por Encuesta');
+        $charts=[]; // chart data passed as separate JSON — scripts in innerHTML never execute
+
+        foreach ($course_stats as $cstat) {
+            $cid  =(int)$cstat->course_id;
+            $cname=$cstat->course_name?:'(Sin curso)';
+            $avg  =(float)$cstat->avg_score;
+            $ac   =$avg>=4?'green':($avg>=2.5?'yellow':'red');
+
+            // Score distribution 1–5
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $dist_rows=(array)$wpdb->get_results($wpdb->prepare(
+                "SELECT score,COUNT(*) AS cnt FROM `{$st}` sr WHERE sr.course_id=%d $uw $dw GROUP BY score",$cid
+            ));
+            $dist=[1=>0,2=>0,3=>0,4=>0,5=>0];
+            foreach ($dist_rows as $dr) $dist[(int)$dr->score]=(int)$dr->cnt;
+
+            // Per-question averages
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $q_avgs=(array)$wpdb->get_results($wpdb->prepare(
+                "SELECT question_idx,question,ROUND(AVG(score),2) AS avg_score,COUNT(DISTINCT user_id) AS cnt
+                 FROM `{$st}` sr WHERE sr.course_id=%d $uw $dw
+                 GROUP BY question_idx,question ORDER BY question_idx",$cid
+            ));
+
+            $chart_id='fplms-sv-ch-'.$cid;
+
+            // Store chart data for JS (passed outside HTML, not as <script> tag)
+            $charts[]=['id'=>$chart_id,'labels'=>['Muy insatisfecho (1)','Insatisfecho (2)','Neutral (3)','Satisfecho (4)','Muy satisfecho (5)'],'data'=>array_values($dist),'colors'=>['#ef4444','#f97316','#eab308','#84cc16','#22c55e']];
+
+            $html.='<div class="fplms-sv-block">';
+
+            // Header
+            $html.='<div class="fplms-sv-block-head">'
+                  .'<span class="fplms-sv-block-title">'.esc_html($cname).'</span>'
+                  .'<span class="fplms-sv-block-meta">'
+                  .'<span><strong>'.(int)$cstat->respondents.'</strong> Respuestas</span>'
+                  .'<span>Promedio: '.$this->badge(number_format($avg,2).' / 5',$ac).'</span>'
+                  .'<span>Primera: '.esc_html(wp_date('d/m/Y',strtotime($cstat->first_sub))).'</span>'
+                  .'<span>Ultima: '.esc_html(wp_date('d/m/Y',strtotime($cstat->last_sub))).'</span>'
+                  .'</span></div>';
+
+            // Two-column layout
+            $html.='<div class="fplms-sv-layout">';
+
+            // Chart column — canvas only, Chart.js rendered from JS after innerHTML is set
+            $html.='<div class="fplms-sv-chart-col">'
+                  .'<canvas id="'.esc_attr($chart_id).'" width="220" height="220"></canvas>'
+                  .'</div>';
+
+            // Questions column
+            $html.='<div class="fplms-sv-questions-col">';
+            if (!empty($q_avgs)) {
+                $html.='<table class="fplms-sv-qtable widefat striped">'
+                      .'<thead><tr><th>#</th><th>Pregunta</th><th>Promedio</th><th>Resp.</th></tr></thead><tbody>';
+                foreach ($q_avgs as $qa) {
+                    $qa_avg=(float)$qa->avg_score;
+                    $qa_col=$qa_avg>=4?'green':($qa_avg>=2.5?'yellow':'red');
+                    $html.='<tr>'
+                          .'<td class="fplms-sv-qnum">'.((int)$qa->question_idx+1).'</td>'
+                          .'<td>'.esc_html($qa->question).'</td>'
+                          .'<td>'.$this->badge(number_format($qa_avg,2).' / 5',$qa_col).'</td>'
+                          .'<td class="fplms-sv-qcnt">'.(int)$qa->cnt.'</td>'
+                          .'</tr>';
+                }
+                $html.='</tbody></table>';
+            } else {
+                $html.=$this->empty_msg('Sin preguntas registradas.');
             }
-            $html.=$this->paged_table_close();
+            $html.='</div>'; // questions col
+            $html.='</div>'; // layout
+            $html.='</div>'; // block
         }
-        $html.=$this->sub('Detalle de Respuestas');
-        if (!empty($srows)) {
-            $html.=$this->paged_table_open(['Usuario','Curso','Fecha','Respuestas']);
-            foreach ($srows as $r) {
-                $ans=maybe_unserialize($r->answers);
-                $at=is_array($ans)?implode(' | ',array_map('esc_html',$ans)):esc_html((string)$r->answers);
-                $html.='<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->course_name?:'—').'</td>'
-                      .'<td>'.esc_html(wp_date('d/m/Y',strtotime($r->submitted_at))).'</td><td>'.$at.'</td></tr>';
-            }
-            $html.=$this->paged_table_close();
-        } else { $html.=$this->empty_msg('Sin respuestas para los filtros seleccionados.'); }
-        wp_send_json_success(['html'=>$html]);
+
+        // ── Summary table ─────────────────────────────────────────────────────
+        $html.=$this->sub('Resumen por Curso');
+        $html.=$this->paged_table_open(['Curso','Respuestas','Promedio','Primera Respuesta','Ultima Respuesta']);
+        foreach ($course_stats as $cstat) {
+            $avg=(float)$cstat->avg_score;
+            $ac =$avg>=4?'green':($avg>=2.5?'yellow':'red');
+            $html.='<tr>'
+                  .'<td>'.esc_html($cstat->course_name?:'(Sin curso)').'</td>'
+                  .'<td>'.(int)$cstat->respondents.'</td>'
+                  .'<td>'.$this->badge(number_format($avg,2).' / 5',$ac).'</td>'
+                  .'<td>'.esc_html(wp_date('d/m/Y',strtotime($cstat->first_sub))).'</td>'
+                  .'<td>'.esc_html(wp_date('d/m/Y',strtotime($cstat->last_sub))).'</td>'
+                  .'</tr>';
+        }
+        $html.=$this->paged_table_close();
+
+        // Charts data is separate from HTML — consumed by initSvCharts() in JS
+        wp_send_json_success(['html'=>$html,'charts'=>$charts]);
     }
 
     // REPORT 7 — CANALES
@@ -829,7 +1071,11 @@ class FairPlay_LMS_Reports_Controller {
         $total_q   = count($rows);
         $total_att = (int)array_sum(array_column($rows, 'total_attempts'));
         $total_app = (int)array_sum(array_column($rows, 'approved'));
-        $html .= $this->metric('<strong>'.$total_q.'</strong> evaluaciones | <strong>'.$total_att.'</strong> ejecuciones totales | <strong>'.$total_app.'</strong> aprobados');
+        $html .= $this->stat_cards([
+            ['label'=>'Evaluaciones',       'value'=>'<strong>'.$total_q.'</strong>',   'color'=>'blue'],
+            ['label'=>'Ejecuciones totales','value'=>'<strong>'.$total_att.'</strong>', 'color'=>'orange'],
+            ['label'=>'Aprobados',          'value'=>'<strong>'.$total_app.'</strong>', 'color'=>'green'],
+        ]);
         $det_ico = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
         $html .= $this->paged_table_open(['#', 'Test', 'Curso', 'Completado', 'Aprobado', 'Puntuación Media', 'Opciones']);
         foreach ($rows as $i => $r) {
@@ -1235,11 +1481,12 @@ class FairPlay_LMS_Reports_Controller {
                     ],
                     [
                         'title'   => 'Frecuencia de Acceso / N. de Ingresos al Sistema',
-                        'headers' => ['Nombre', 'Email', 'N. de Ingresos', 'Ultimo Ingreso'],
+                        'headers' => ['Nombre', 'Email', 'N. de Ingresos', 'Actividad', 'Ultimo Ingreso'],
                         'data'    => array_map(fn($r) => [
                             $r->display_name,
                             $r->user_email,
                             (int)$r->login_count,
+                            (int)$r->activity_count,
                             $r->last_login ? wp_date('d/m/Y H:i', strtotime($r->last_login)) : '—',
                         ], $logins),
                     ],
@@ -1256,13 +1503,15 @@ class FairPlay_LMS_Reports_Controller {
                     ],
                     [
                         'title'   => 'Usuarios Dados de Baja / Inactivos (' . count($inactive) . ')',
-                        'headers' => ['Nombre', 'Email', 'Fecha Registro', 'Ciudad', 'Canal'],
+                        'headers' => ['Nombre', 'Email', 'Fecha Registro', 'Ciudad', 'Canal', 'Inactivado por', 'Fecha Inactivacion'],
                         'data'    => array_map(fn($r) => [
                             $r->display_name,
                             $r->user_email,
                             wp_date('d/m/Y', strtotime($r->user_registered)),
                             $r->city_id    ? $this->structures->get_term_name_by_id((int)$r->city_id)    : '',
                             $r->channel_id ? $this->structures->get_term_name_by_id((int)$r->channel_id) : '',
+                            !empty($r->deactivated_by_id) ? ($admin_names[(int)$r->deactivated_by_id] ?? 'ID '.(int)$r->deactivated_by_id) : '',
+                            !empty($r->deactivated_date)  ? wp_date('d/m/Y H:i', strtotime($r->deactivated_date)) : '',
                         ], $inactive),
                     ],
                 ], $f);
@@ -1519,21 +1768,45 @@ class FairPlay_LMS_Reports_Controller {
                 $dw_sat = $this->date_sql('sr.submitted_at', $f['date_from'], $f['date_to']);
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $srows = (array) $wpdb->get_results(
-                    "SELECT u.display_name,u.user_email,p.post_title AS course_name,sr.answers,sr.submitted_at
+                    "SELECT u.display_name,u.user_email,p.post_title AS course_name,
+                            sr.question_idx,sr.question,sr.score,sr.submitted_at
                      FROM `{$st}` sr
                      INNER JOIN {$wpdb->users} u ON sr.user_id=u.ID
                      LEFT JOIN {$wpdb->posts} p ON sr.course_id=p.ID
-                     WHERE 1=1 $sw $dw_sat ORDER BY sr.submitted_at DESC LIMIT 5000"
+                     WHERE 1=1 $sw $dw_sat
+                     ORDER BY sr.course_id,sr.user_id,sr.question_idx LIMIT 5000"
+                );
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $n_submissions = (int) $wpdb->get_var(
+                    "SELECT COUNT(DISTINCT CONCAT(sr.user_id,'-',sr.course_id)) FROM `{$st}` sr WHERE 1=1 $sw $dw_sat"
+                );
+                // Per-course summary
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $sum_rows = (array) $wpdb->get_results(
+                    "SELECT p.post_title AS course_name,COUNT(DISTINCT sr.user_id) AS respondents,
+                            ROUND(AVG(sr.score),2) AS avg_score,
+                            MIN(sr.submitted_at) AS first_sub,MAX(sr.submitted_at) AS last_sub
+                     FROM `{$st}` sr LEFT JOIN {$wpdb->posts} p ON sr.course_id=p.ID
+                     WHERE 1=1 $sw $dw_sat GROUP BY sr.course_id ORDER BY respondents DESC LIMIT 5000"
                 );
                 $this->output_xls_multi('satisfaccion', 'Reporte de Satisfaccion', [
                     [
-                        'title'   => 'Respuestas de Encuestas (' . count($srows) . ')',
-                        'headers' => ['Usuario', 'Email', 'Curso', 'Respuestas', 'Fecha'],
+                        'title'   => 'Resumen por Curso (' . count($sum_rows) . ' cursos)',
+                        'headers' => ['Curso', 'Respondentes', 'Promedio (1-5)', 'Primera Respuesta', 'Ultima Respuesta'],
+                        'data'    => array_map(fn($r) => [
+                            $r->course_name ?? '(Sin curso)',
+                            (int) $r->respondents,
+                            number_format((float)$r->avg_score, 2),
+                            wp_date('d/m/Y', strtotime($r->first_sub)),
+                            wp_date('d/m/Y', strtotime($r->last_sub)),
+                        ], $sum_rows),
+                    ],
+                    [
+                        'title'   => 'Detalle de Respuestas (' . $n_submissions . ' envios)',
+                        'headers' => ['Usuario', 'Email', 'Curso', 'Pregunta', 'Puntuacion (1-5)', 'Fecha'],
                         'data'    => array_map(fn($r) => [
                             $r->display_name, $r->user_email, $r->course_name ?? '—',
-                            is_array(maybe_unserialize($r->answers))
-                                ? implode(' | ', maybe_unserialize($r->answers))
-                                : $r->answers,
+                            $r->question, (int) $r->score,
                             wp_date('d/m/Y', strtotime($r->submitted_at)),
                         ], $srows),
                     ],
@@ -2032,6 +2305,28 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-rpt-channel-head{background:#fff8ee;border-radius:0 6px 6px 0;padding:8px 12px}
         .fplms-rpt-channel-count{font-size:12px;font-weight:400;color:#888}
         .fplms-rpt-metric{font-size:13px;color:#555;margin:4px 0 10px}
+        .fplms-stat-cards{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 20px}
+        .fplms-sc{background:#fff;border:1.5px solid #e8e8e8;border-radius:10px;padding:12px 18px;min-width:130px;flex:1;position:relative;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+        .fplms-sc::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;border-radius:10px 0 0 10px}
+        .fplms-sc--blue::before{background:#2196f3}.fplms-sc--green::before{background:#46b450}.fplms-sc--red::before{background:#dc3232}.fplms-sc--yellow::before{background:#ffb900}.fplms-sc--orange::before{background:#ffa800}
+        .fplms-sc-label{font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:0 0 6px}
+        .fplms-sc-value{font-size:22px;color:#1a1a1a;margin:0;line-height:1.1}
+        .fplms-sc-value strong{font-weight:700}
+        .fplms-sc-sub{display:inline-block;margin-top:4px;font-size:11px;font-weight:600;padding:1px 7px;border-radius:20px;background:#f0f0f0;color:#555}
+        .fplms-sv-block{background:#fff;border:1.5px solid #e8e8e8;border-radius:10px;padding:16px 18px;margin-bottom:18px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+        .fplms-sv-block-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;border-bottom:1.5px solid #f0f0f0;padding-bottom:12px;margin-bottom:14px}
+        .fplms-sv-block-title{font-size:14px;font-weight:700;color:#222}
+        .fplms-sv-block-meta{display:flex;flex-wrap:wrap;gap:10px 18px;font-size:12px;color:#666}
+        .fplms-sv-block-meta strong{color:#333}
+        .fplms-sv-layout{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+        .fplms-sv-chart-col{flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:6px}
+        .fplms-sv-questions-col{flex:1;min-width:260px}
+        .fplms-sv-qtable{font-size:12px;border-collapse:collapse;width:100%}
+        .fplms-sv-qtable th{background:#f5f5f5;font-weight:600;font-size:11px;text-transform:uppercase;padding:6px 10px;white-space:nowrap}
+        .fplms-sv-qtable td{padding:6px 10px;vertical-align:middle;border-bottom:1px solid #f0f0f0}
+        .fplms-sv-qtable tr:last-child td{border-bottom:none}
+        .fplms-sv-qnum{color:#aaa;font-size:11px;text-align:center}
+        .fplms-sv-qcnt{text-align:center;color:#555}
         .fplms-rpt-empty{color:#999;font-size:13px;padding:10px;background:#f9f9f9;border-radius:4px}
         .fplms-rpt-table-wrap{overflow-x:auto;margin-bottom:14px}
         .fplms-rpt-table{font-size:12px;min-width:500px}
@@ -2057,6 +2352,24 @@ class FairPlay_LMS_Reports_Controller {
         (function(){
             var NONCE=<?php echo wp_json_encode($nonce); ?>,AJAXURL=<?php echo wp_json_encode(admin_url('admin-ajax.php')); ?>;
             var activeTab=null,searchTimer=null;
+            function initSvCharts(charts){
+                if(!charts||!charts.length)return;
+                function render(){
+                    charts.forEach(function(c){
+                        var el=document.getElementById(c.id);
+                        if(!el||el._fplmsChart)return;
+                        el._fplmsChart=new Chart(el,{type:'pie',
+                            data:{labels:c.labels,datasets:[{data:c.data,backgroundColor:c.colors,borderWidth:2,borderColor:'#fff',hoverOffset:4}]},
+                            options:{responsive:false,plugins:{legend:{position:'bottom',labels:{font:{size:11},boxWidth:14,padding:8}}}}});
+                    });
+                }
+                if(typeof Chart!=='undefined'){render();return;}
+                if(window._fplmsSvJsLoading){var t=setInterval(function(){if(typeof Chart!=='undefined'){clearInterval(t);render();}},100);return;}
+                window._fplmsSvJsLoading=true;
+                var s=document.createElement('script');
+                s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+                s.onload=render;document.head.appendChild(s);
+            }
             function initPagedTables(container) {
                 container.querySelectorAll('.fplms-paged-wrap').forEach(function(wrap) {
                     var rows = Array.from(wrap.querySelectorAll('tbody tr'));
@@ -2091,7 +2404,7 @@ class FairPlay_LMS_Reports_Controller {
                 var p=Object.assign({action:action,nonce:NONCE},getFilters());
                 var body=Object.keys(p).map(k=>encodeURIComponent(k)+'='+encodeURIComponent(p[k])).join('&');
                 fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
-                    .then(r=>r.json()).then(res=>{content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>'; initPagedTables(content);})
+                    .then(r=>r.json()).then(res=>{content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>'; initPagedTables(content); initSvCharts(res.data&&res.data.charts?res.data.charts:[]);})
                     .catch(()=>{content.innerHTML='<p class="notice notice-error">Error de conexion.</p>';});
             }
             document.querySelector('.fplms-rpt-tabs-nav').addEventListener('click',function(e){
