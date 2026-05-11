@@ -286,7 +286,9 @@ class FairPlay_LMS_Reports_Controller {
         $html = $this->render_section_head('Reporte de Participacion', $this->build_export_url('participation',$f));
 
         // 1A. Usuarios registrados
-        $date_w = $this->date_sql('u.user_registered', $f['date_from'], $f['date_to']);
+        // Cuando se filtra por usuario específico no aplicamos el filtro de fecha sobre la fecha de registro
+        // (el usuario debe aparecer siempre que coincida con el ID buscado, independientemente de cuándo se registró)
+        $date_w = empty($f['user_ids']) ? $this->date_sql('u.user_registered', $f['date_from'], $f['date_to']) : '';
         $uid_w  = $this->uid_in($uids);
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $created = (array) $wpdb->get_results(
@@ -322,21 +324,30 @@ class FairPlay_LMS_Reports_Controller {
         // 1B. Frecuencia de acceso
         $login_table = $wpdb->prefix.'fplms_user_logins';
         $login_exists = ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$login_table)) === $login_table);
-        $html .= $this->sub('Frecuencia de Acceso / N. de Ingresos al Sistema');
+        $html .= $this->sub('Frecuencia de Acceso / N. de Actividades del Sistema');
         if (!$login_exists) {
             $html .= $this->empty_msg('Tabla de logins no encontrada. Ejecuta el script create-activity-table.php.');
         } else {
-            $ld  = $this->date_sql('l.login_time', $f['date_from'], $f['date_to']);
-            $lw  = null!==$uids ? (empty($uids)?'AND 1=0':'AND l.user_id IN ('.implode(',',array_map('intval',$uids)).')') : '';
+            $ld      = $this->date_sql('l.login_time', $f['date_from'], $f['date_to']);
+            $lw      = null!==$uids ? (empty($uids)?'AND 1=0':'AND l.user_id IN ('.implode(',',array_map('intval',$uids)).')') : '';
+            $uw_act  = null!==$uids ? (empty($uids)?'AND 1=0':'AND u.ID IN ('.implode(',',array_map('intval',$uids)).')') : '';
             $act_tbl = $wpdb->prefix.'fplms_user_activity';
             $act_exists = ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$act_tbl)) === $act_tbl);
+            // Date filter applied to activity_time so pings are scoped to the same date range as logins
+            $ad      = $this->date_sql('a.activity_time', $f['date_from'], $f['date_to']);
+            // Also scope the activity subquery to the filtered user(s) to avoid cross-user aggregation
+            $aw      = null!==$uids ? (empty($uids)?'AND 1=0':'AND a.user_id IN ('.implode(',',array_map('intval',$uids)).')') : '';
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $logins = (array)$wpdb->get_results(
                 "SELECT u.display_name,u.user_email,u.ID AS user_id,COUNT(l.id) AS login_count,MAX(l.login_time) AS last_login"
                 . ($act_exists ? ",COALESCE(ua.activity_count,0) AS activity_count" : ",0 AS activity_count")
-                . " FROM {$wpdb->users} u INNER JOIN `{$login_table}` l ON u.ID=l.user_id"
-                . ($act_exists ? " LEFT JOIN (SELECT user_id,COUNT(*) AS activity_count FROM `{$act_tbl}` GROUP BY user_id) ua ON u.ID=ua.user_id" : "")
-                . " WHERE 1=1 $lw $ld GROUP BY u.ID ORDER BY login_count DESC LIMIT 500"
+                // LEFT JOIN so filtered users with 0 logins still appear when a user filter is active
+                . " FROM {$wpdb->users} u LEFT JOIN `{$login_table}` l ON u.ID=l.user_id{$ld}"
+                . ($act_exists ? " LEFT JOIN (SELECT user_id,COUNT(*) AS activity_count FROM `{$act_tbl}` a WHERE 1=1{$ad}{$aw} GROUP BY user_id) ua ON u.ID=ua.user_id" : "")
+                // Without a user filter require at least 1 login; with a user filter always show the user
+                . " WHERE 1=1 $uw_act GROUP BY u.ID"
+                . (null === $uids ? " HAVING login_count > 0" : "")
+                . " ORDER BY login_count DESC LIMIT 500"
             );
             if (empty($logins)) { $html .= $this->empty_msg('Sin registros de login en el periodo seleccionado.'); }
             else {
@@ -741,19 +752,26 @@ class FairPlay_LMS_Reports_Controller {
         $user_ids  =array_unique(array_map(fn($r)=>(int)$r->user_id,   $enrollments));
         $cid_in=implode(',', $course_ids);
         $uid_in=implode(',', $user_ids);
-        // 2) All lesson durations per course
+        // 2) All lesson+quiz durations per course
+        // Lessons: duration parsed normally (H:MM, "2h 45m", etc.)
+        // Quizzes: duration value is always plain minutes (e.g. "5" = 5 min)
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $ld_rows=(array)$wpdb->get_results(
-            "SELECT cs.course_id, cm.post_id AS lesson_id, pm.meta_value AS duration
+            "SELECT cs.course_id, cm.post_id AS lesson_id, lp.post_type, pm.meta_value AS duration
              FROM `{$sec_tbl}` cs
              INNER JOIN `{$mat_tbl}` cm ON cm.section_id=cs.id
+             INNER JOIN {$wpdb->posts} lp ON cm.post_id=lp.ID AND lp.post_type IN ('stm-lessons','stm-quizzes')
              LEFT JOIN {$wpdb->postmeta} pm ON cm.post_id=pm.post_id AND pm.meta_key='duration'
              WHERE cs.course_id IN ({$cid_in})"
         );
         $course_lessons=[]; // [course_id][lesson_id] = minutes
         foreach ($ld_rows as $ld) {
             $cid=(int)$ld->course_id; $lid=(int)$ld->lesson_id;
-            $course_lessons[$cid][$lid]=$this->parse_duration_minutes($ld->duration??'');
+            // Quizzes: treat duration as plain minutes; lessons: use full parser
+            $mins = ($ld->post_type === 'stm-quizzes')
+                ? (float)($ld->duration ?? 0)
+                : $this->parse_duration_minutes($ld->duration ?? '');
+            $course_lessons[$cid][$lid] = $mins;
         }
         // 3) Lessons completed per user per course
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -1049,7 +1067,9 @@ class FairPlay_LMS_Reports_Controller {
             wp_send_json_success(['html' => $html.$this->empty_msg('Tabla de evaluaciones (stm_lms_user_quizzes) no encontrada.')]);
             return;
         }
-        $uw = $this->uid_in($uids, 'uq.user_id');
+        $uw     = $this->uid_in($uids, 'uq.user_id');
+        // When filters are active, only show quizzes with actual attempts from filtered users
+        $having = ($uids !== null) ? 'HAVING COUNT(uq.user_id) > 0' : '';
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $rows = (array)$wpdb->get_results(
             "SELECT q.ID AS quiz_id, q.post_title AS quiz_name,
@@ -1062,6 +1082,7 @@ class FairPlay_LMS_Reports_Controller {
              LEFT JOIN {$wpdb->posts} pc ON uq.course_id = pc.ID
              WHERE q.post_type = 'stm-quizzes' AND q.post_status = 'publish'
              GROUP BY q.ID, q.post_title
+             $having
              ORDER BY q.post_title"
         );
         if (empty($rows)) {
@@ -1072,7 +1093,7 @@ class FairPlay_LMS_Reports_Controller {
         $total_att = (int)array_sum(array_column($rows, 'total_attempts'));
         $total_app = (int)array_sum(array_column($rows, 'approved'));
         $html .= $this->stat_cards([
-            ['label'=>'Evaluaciones',       'value'=>'<strong>'.$total_q.'</strong>',   'color'=>'blue'],
+            ['label'=>"Test's Evaluados",      'value'=>'<strong>'.$total_q.'</strong>',   'color'=>'blue'],
             ['label'=>'Ejecuciones totales','value'=>'<strong>'.$total_att.'</strong>', 'color'=>'orange'],
             ['label'=>'Aprobados',          'value'=>'<strong>'.$total_app.'</strong>', 'color'=>'green'],
         ]);
@@ -1223,6 +1244,24 @@ class FairPlay_LMS_Reports_Controller {
             $html .= $this->empty_msg('Sin resultados para esta evaluación.');
             wp_send_json_success(['html' => $html]);
             return;
+        }
+
+        // Active filter context strip
+        $fp = [];
+        if (!empty($f['user_ids'])) {
+            $names = array_map(fn($id) => get_userdata($id)?->display_name ?? '#'.$id, array_values($f['user_ids']));
+            $fp[] = 'Usuario: '.esc_html(implode(', ', $names));
+        }
+        if ($f['channel_id']) { $term=get_term($f['channel_id']); if ($term&&!is_wp_error($term)) $fp[]='Canal: '.esc_html($term->name); }
+        if ($f['city_id'])    { $term=get_term($f['city_id']);    if ($term&&!is_wp_error($term)) $fp[]='Ciudad: '.esc_html($term->name); }
+        if ($f['company_id']) { $term=get_term($f['company_id']); if ($term&&!is_wp_error($term)) $fp[]='Empresa: '.esc_html($term->name); }
+        if ($f['role_id'])    { $term=get_term($f['role_id']);    if ($term&&!is_wp_error($term)) $fp[]='Cargo: '.esc_html($term->name); }
+        if ($f['date_from'])  $fp[] = 'Desde: '.esc_html($f['date_from']);
+        if ($f['date_to'])    $fp[] = 'Hasta: '.esc_html($f['date_to']);
+        if (!empty($fp)) {
+            $html .= '<div class="fplms-filter-ctx">'
+                   . '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>'
+                   . '<span>Resultados filtrados por: '.implode(' &nbsp;&middot;&nbsp; ', $fp).'</span></div>';
         }
 
         // Build pie chart + table in two-column layout
@@ -1425,16 +1464,21 @@ class FairPlay_LMS_Reports_Controller {
                      WHERE 1=1 $uw $dw ORDER BY u.user_registered DESC LIMIT 5000"
                 );
 
-                // 1B – Login frequency (date filter on login_time)
+                // 1B – Login frequency (date filter on login_time AND activity_time)
                 $login_table  = $wpdb->prefix . 'fplms_user_logins';
                 $login_exists = ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $login_table)) === $login_table);
+                $act_tbl_xls  = $wpdb->prefix . 'fplms_user_activity';
+                $act_exists_xls = ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $act_tbl_xls)) === $act_tbl_xls);
+                $adw = $this->date_sql('a.activity_time', $f['date_from'], $f['date_to']);
                 $logins = [];
                 if ($login_exists) {
                     // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                     $logins = (array) $wpdb->get_results(
-                        "SELECT u.display_name,u.user_email,COUNT(l.id) AS login_count,MAX(l.login_time) AS last_login
-                         FROM {$wpdb->users} u INNER JOIN `{$login_table}` l ON u.ID=l.user_id
-                         WHERE 1=1 $lw $ldw GROUP BY u.ID ORDER BY login_count DESC LIMIT 5000"
+                        "SELECT u.display_name,u.user_email,COUNT(l.id) AS login_count,MAX(l.login_time) AS last_login"
+                        . ($act_exists_xls ? ",COALESCE(ua.activity_count,0) AS activity_count" : ",0 AS activity_count")
+                        . " FROM {$wpdb->users} u INNER JOIN `{$login_table}` l ON u.ID=l.user_id"
+                        . ($act_exists_xls ? " LEFT JOIN (SELECT user_id,COUNT(*) AS activity_count FROM `{$act_tbl_xls}` a WHERE 1=1{$adw} GROUP BY user_id) ua ON u.ID=ua.user_id" : "")
+                        . " WHERE 1=1 $lw $ldw GROUP BY u.ID ORDER BY login_count DESC LIMIT 5000"
                     );
                 }
 
@@ -1456,15 +1500,28 @@ class FairPlay_LMS_Reports_Controller {
                 // 1D – Inactive / given-up users (no date filter)
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $inactive = (array) $wpdb->get_results(
-                    "SELECT u.display_name,u.user_email,u.user_registered,
-                            um_ci.meta_value AS city_id,um_ch.meta_value AS channel_id
+                    "SELECT u.ID AS user_id,u.display_name,u.user_email,u.user_registered,
+                            um_ci.meta_value AS city_id,um_ch.meta_value AS channel_id,
+                            um_db.meta_value AS deactivated_by_id,
+                            um_dd.meta_value AS deactivated_date
                      FROM {$wpdb->users} u
                      INNER JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id
                          AND um_st.meta_key='fplms_user_status' AND um_st.meta_value='inactive'
                      LEFT JOIN {$wpdb->usermeta} um_ci ON u.ID=um_ci.user_id AND um_ci.meta_key='fplms_city'
                      LEFT JOIN {$wpdb->usermeta} um_ch ON u.ID=um_ch.user_id AND um_ch.meta_key='fplms_channel'
+                     LEFT JOIN {$wpdb->usermeta} um_db ON u.ID=um_db.user_id AND um_db.meta_key='fplms_deactivated_by'
+                     LEFT JOIN {$wpdb->usermeta} um_dd ON u.ID=um_dd.user_id AND um_dd.meta_key='fplms_deactivated_date'
                      WHERE 1=1 $uw ORDER BY u.display_name LIMIT 5000"
                 );
+                // Resolve admin display names for deactivated_by_id
+                $admin_names_xls = [];
+                foreach ($inactive as $ir) {
+                    $aid = (int)($ir->deactivated_by_id ?? 0);
+                    if ($aid && !isset($admin_names_xls[$aid])) {
+                        $au = get_userdata($aid);
+                        $admin_names_xls[$aid] = $au ? $au->display_name : 'ID '.$aid;
+                    }
+                }
 
                 $this->output_xls_multi('participacion', 'Reporte de Participacion', [
                     [
@@ -1480,7 +1537,7 @@ class FairPlay_LMS_Reports_Controller {
                         ], $reg),
                     ],
                     [
-                        'title'   => 'Frecuencia de Acceso / N. de Ingresos al Sistema',
+                        'title'   => 'Frecuencia de Acceso / N. de Actividades del Sistema',
                         'headers' => ['Nombre', 'Email', 'N. de Ingresos', 'Actividad', 'Ultimo Ingreso'],
                         'data'    => array_map(fn($r) => [
                             $r->display_name,
@@ -1510,7 +1567,7 @@ class FairPlay_LMS_Reports_Controller {
                             wp_date('d/m/Y', strtotime($r->user_registered)),
                             $r->city_id    ? $this->structures->get_term_name_by_id((int)$r->city_id)    : '',
                             $r->channel_id ? $this->structures->get_term_name_by_id((int)$r->channel_id) : '',
-                            !empty($r->deactivated_by_id) ? ($admin_names[(int)$r->deactivated_by_id] ?? 'ID '.(int)$r->deactivated_by_id) : '',
+                            !empty($r->deactivated_by_id) ? ($admin_names_xls[(int)$r->deactivated_by_id] ?? 'ID '.(int)$r->deactivated_by_id) : '',
                             !empty($r->deactivated_date)  ? wp_date('d/m/Y H:i', strtotime($r->deactivated_date)) : '',
                         ], $inactive),
                     ],
@@ -2261,6 +2318,7 @@ class FairPlay_LMS_Reports_Controller {
                     <button id="fplms-rpt-reset" class="button"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Limpiar</button>
                 </div>
             </div>
+            <div id="fplms-active-filters-bar"></div>
             <div class="fplms-rpt-tabs-nav">
                 <?php foreach ($tabs as $slug=>$label): ?>
                 <button class="fplms-rpt-tab-btn" data-tab="<?php echo esc_attr($slug); ?>"><?php echo ($icons[$slug]??'') . esc_html($label); ?></button>
@@ -2288,6 +2346,11 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-rpt-fg select,.fplms-rpt-fg input[type=date],.fplms-rpt-fg input[type=text]{padding:6px 10px;border:1.5px solid #ddd;border-radius:6px;font-size:13px;background:#fafafa}
         .fplms-rpt-fg select:focus,.fplms-rpt-fg input:focus{border-color:#ffa800;outline:none;background:#fff}
         .fplms-rpt-filters-actions{margin-top:14px;display:flex;gap:8px}
+        #fplms-active-filters-bar{display:none;align-items:center;flex-wrap:wrap;gap:6px;padding:8px 14px;background:#fff8ee;border:1px solid #ffe0a0;border-radius:0 0 6px 6px;margin-bottom:4px;font-size:12px}
+        .fplms-fbar-lbl{font-weight:700;color:#c96800;font-size:11px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;margin-left:6px}
+        .fplms-fbar-badge{padding:2px 10px;background:#fff4e0;border:1px solid #ffa80055;border-radius:12px;color:#7a4800;font-size:11px;font-weight:600}
+        .fplms-fbar-note{margin-left:auto;font-size:11px;color:#aaa;font-style:italic;white-space:nowrap}
+        .fplms-filter-ctx{display:flex;align-items:center;gap:8px;padding:7px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:12px;color:#78350f;margin-bottom:14px}
         #fplms-rpt-suggestions{position:absolute;top:calc(100% + 2px);left:0;right:0;background:#fff;border:1.5px solid #ddd;border-radius:0 0 6px 6px;z-index:200;max-height:200px;overflow-y:auto;display:none;box-shadow:0 4px 12px rgba(0,0,0,.1)}
         .fplms-sug-item{padding:7px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0}
         .fplms-sug-item:hover{background:#fff8ee}
@@ -2394,6 +2457,26 @@ class FairPlay_LMS_Reports_Controller {
                     render();
                 });
             }
+            function updateFilterBar(){
+                var bar=document.getElementById('fplms-active-filters-bar');if(!bar)return;
+                var badges=[];
+                var df=document.getElementById('fplms-rpt-date-from'),dt=document.getElementById('fplms-rpt-date-to');
+                if(df&&df.value)badges.push('Desde: '+df.value);
+                if(dt&&dt.value)badges.push('Hasta: '+dt.value);
+                [{label:'Ciudad',id:'fplms-rpt-city'},{label:'Empresa',id:'fplms-rpt-company'},{label:'Canal',id:'fplms-rpt-channel'},{label:'Cargo',id:'fplms-rpt-role'}].forEach(function(s){
+                    var el=document.getElementById(s.id);
+                    if(el&&el.value&&el.selectedIndex>0)badges.push(s.label+': '+el.options[el.selectedIndex].text);
+                });
+                var uids=document.getElementById('fplms-rpt-user-ids'),uname=document.getElementById('fplms-rpt-user-search');
+                if(uname&&uname.value){
+                    if(uids&&uids.value) badges.push('Usuario: '+uname.value);
+                    else badges.push('\u26a0\ufe0f Usuario: "'+uname.value+'" \u2014 selecciona del desplegable');
+                }
+                if(!badges.length){bar.style.display='none';bar.innerHTML='';return;}
+                bar.style.display='flex';
+                var ico='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#c96800" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>';
+                bar.innerHTML=ico+'<span class="fplms-fbar-lbl">Filtros activos:</span>'+badges.map(function(b){return '<span class="fplms-fbar-badge">'+b+'</span>';}).join('')+'<span class="fplms-fbar-note">Se aplican a todos los tabs</span>';
+            }
             var tabActions={participation:'fplms_report_participation',progress:'fplms_report_progress',performance:'fplms_report_performance',certificates:'fplms_report_certificates',time:'fplms_report_time',satisfaction:'fplms_report_satisfaction',channels:'fplms_report_channels',tests:'fplms_report_tests'};
             function getFilters(){return{date_from:document.getElementById('fplms-rpt-date-from').value||'',date_to:document.getElementById('fplms-rpt-date-to').value||'',channel_id:document.getElementById('fplms-rpt-channel').value||'',city_id:document.getElementById('fplms-rpt-city').value||'',company_id:document.getElementById('fplms-rpt-company').value||'',role_id:document.getElementById('fplms-rpt-role').value||'',user_ids:document.getElementById('fplms-rpt-user-ids').value||''};}
             function loadReport(tab){
@@ -2410,11 +2493,12 @@ class FairPlay_LMS_Reports_Controller {
             document.querySelector('.fplms-rpt-tabs-nav').addEventListener('click',function(e){
                 var btn=e.target.closest('.fplms-rpt-tab-btn'); if(!btn)return;
                 document.querySelectorAll('.fplms-rpt-tab-btn').forEach(b=>b.classList.remove('active'));
-                btn.classList.add('active'); loadReport(btn.dataset.tab);
+                btn.classList.add('active'); updateFilterBar(); loadReport(btn.dataset.tab);
             });
             document.getElementById('fplms-rpt-apply').addEventListener('click',function(){
                 var m=document.getElementById('fplms-rpt-modal');
                 m.style.display='flex';
+                updateFilterBar();
                 if(activeTab) loadReport(activeTab);
             });
             document.getElementById('fplms-rpt-modal-close').addEventListener('click',function(){
@@ -2426,11 +2510,15 @@ class FairPlay_LMS_Reports_Controller {
             document.getElementById('fplms-rpt-reset').addEventListener('click',function(){
                 ['fplms-rpt-date-from','fplms-rpt-date-to','fplms-rpt-city','fplms-rpt-company','fplms-rpt-channel','fplms-rpt-role'].forEach(id=>{var el=document.getElementById(id);if(el)el.value='';});
                 document.getElementById('fplms-rpt-user-ids').value='';document.getElementById('fplms-rpt-user-search').value='';
+                updateFilterBar();
                 if(activeTab)loadReport(activeTab);
             });
             var us=document.getElementById('fplms-rpt-user-search'),sug=document.getElementById('fplms-rpt-suggestions');
             us.addEventListener('input',function(){
                 var q=this.value.trim(); document.getElementById('fplms-rpt-user-ids').value='';
+                updateFilterBar();
+                // If the field was fully cleared, reload immediately without user filter
+                if(q.length===0){sug.style.display='none';sug.innerHTML='';if(activeTab)loadReport(activeTab);return;}
                 clearTimeout(searchTimer); if(q.length<2){sug.style.display='none';sug.innerHTML='';return;}
                 searchTimer=setTimeout(function(){
                     var body='action=fplms_reports_user_search&nonce='+encodeURIComponent(NONCE)+'&q='+encodeURIComponent(q);
@@ -2442,7 +2530,7 @@ class FairPlay_LMS_Reports_Controller {
                         });
                 },350);
             });
-            sug.addEventListener('click',function(e){var it=e.target.closest('.fplms-sug-item');if(!it)return;us.value=it.textContent.trim();document.getElementById('fplms-rpt-user-ids').value=it.dataset.id;sug.style.display='none';});
+            sug.addEventListener('click',function(e){var it=e.target.closest('.fplms-sug-item');if(!it)return;us.value=it.textContent.trim();document.getElementById('fplms-rpt-user-ids').value=it.dataset.id;sug.style.display='none';updateFilterBar();if(activeTab)loadReport(activeTab);});
             document.addEventListener('click',function(e){if(!e.target.closest('.fplms-rpt-fg-user'))sug.style.display='none';});
 
             // — Test report: detail navigation, back, reset —
