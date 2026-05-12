@@ -38,6 +38,7 @@ class FairPlay_LMS_Reports_Controller {
             'fplms_report_tests'          => 'ajax_report_tests',
             'fplms_report_test_detail'    => 'ajax_report_test_detail',
             'fplms_report_test_reset'     => 'ajax_report_test_reset',
+            'fplms_report_test_answers'   => 'ajax_report_test_answers',
         ];
         foreach ( $map as $action => $method ) {
             add_action( 'wp_ajax_' . $action, [ $this, $method ] );
@@ -462,7 +463,7 @@ class FairPlay_LMS_Reports_Controller {
         // 2A. Por curso
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $cstats = (array)$wpdb->get_results(
-            "SELECT p.ID AS course_id,p.post_title AS course_name,
+            "SELECT p.ID AS course_id, p.post_title AS course_name, p.post_status AS course_status,
                     COUNT(uc.user_id) AS enrolled,
                     ROUND(AVG(uc.progress_percent),1) AS avg_progress,
                     SUM(CASE WHEN uc.status IN('completed','passed') OR uc.progress_percent>=100 THEN 1 ELSE 0 END) AS completed,
@@ -470,21 +471,23 @@ class FairPlay_LMS_Reports_Controller {
                     SUM(CASE WHEN uc.progress_percent<1 AND uc.status NOT IN('completed','passed') THEN 1 ELSE 0 END) AS not_started
              FROM {$wpdb->posts} p
              LEFT JOIN `{$ms}` uc ON p.ID=uc.course_id $mw
-             WHERE p.post_type='stm-courses' AND p.post_status='publish'
+             WHERE p.post_type='stm-courses' AND p.post_status IN('publish','draft')
              GROUP BY p.ID ORDER BY enrolled DESC, p.post_title"
         );
         $html .= $this->sub('Porcentaje de Avance por Curso');
         if (empty($cstats)) { $html.=$this->empty_msg('Sin datos.'); }
         else {
-            $html .= $this->paged_table_open(['Curso','Inscritos','Avance Prom.','Completados','Tasa Finalizacion','En Progreso','No Iniciados','Tasa Abandono']);
+            $html .= $this->paged_table_open(['Curso','Inscritos','Avance Prom.','Completados','Tasa Finalizacion','En Progreso','No Iniciados','Tasa Abandono','Estado']);
             foreach ($cstats as $r) {
                 $en=(int)$r->enrolled; $ep=max(1,$en);
                 $cp=(int)$r->completed; $ns=(int)$r->not_started;
                 $fp=round($cp/$ep*100,1); $ap=round($ns/$ep*100,1);
                 $fc=$fp>=70?'green':($fp>=40?'yellow':'red'); $ac=$ap<=20?'green':($ap<=50?'yellow':'red');
+                $is_active = ($r->course_status === 'publish');
                 $html .= '<tr><td>'.esc_html($r->course_name).'</td><td>'.$en.'</td><td>'.esc_html((string)$r->avg_progress).'%</td>'
                        . '<td>'.$cp.'</td><td>'.$this->badge($fp.'%',$fc).'</td>'
-                       . '<td>'.(int)$r->in_progress.'</td><td>'.$ns.'</td><td>'.$this->badge($ap.'%',$ac).'</td></tr>';
+                       . '<td>'.(int)$r->in_progress.'</td><td>'.$ns.'</td><td>'.$this->badge($ap.'%',$ac).'</td>'
+                       . '<td>'.($is_active ? $this->badge('Activo','green') : $this->badge('Inactivo','red')).'</td></tr>';
             }
             $html .= $this->paged_table_close();
         }
@@ -612,18 +615,23 @@ class FairPlay_LMS_Reports_Controller {
             $mw3=null!==$uids?(empty($uids)?'AND uc.user_id=0':'AND uc.user_id IN ('.implode(',',array_map('intval',$uids)).')'):'';
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $tc=(array)$wpdb->get_results(
-                "SELECT p.post_title AS course_name,COUNT(uc.user_id) AS enrolled,
+                "SELECT p.post_title AS course_name, p.post_status AS course_status,
+                        COUNT(uc.user_id) AS enrolled,
                         SUM(CASE WHEN uc.status IN('completed','passed') OR uc.progress_percent>=100 THEN 1 ELSE 0 END) AS completed,
                         ROUND(SUM(CASE WHEN uc.status IN('completed','passed') OR uc.progress_percent>=100 THEN 1 ELSE 0 END)/COUNT(uc.user_id)*100,1) AS rate
                  FROM {$wpdb->posts} p INNER JOIN `{$ms}` uc ON p.ID=uc.course_id
-                 WHERE p.post_type='stm-courses' AND p.post_status='publish' AND uc.user_id>0 $mw3
+                 WHERE p.post_type='stm-courses' AND p.post_status IN('publish','draft') AND uc.user_id>0 $mw3
                  GROUP BY p.ID HAVING enrolled>=1 ORDER BY rate DESC LIMIT 10"
             );
             if (!empty($tc)) {
-                $html .= $this->paged_table_open(['Curso','Inscritos','Completados','Tasa Cumplimiento']);
+                $html .= $this->paged_table_open(['Curso','Estado','Inscritos','Completados','Tasa Cumplimiento']);
                 foreach ($tc as $r) {
-                    $html .= '<tr><td>'.esc_html($r->course_name).'</td><td>'.(int)$r->enrolled.'</td>'
-                           . '<td>'.(int)$r->completed.'</td><td>'.$this->badge($r->rate.'%',$r->rate>=70?'green':($r->rate>=40?'yellow':'red')).'</td></tr>';
+                    $is_active = ($r->course_status === 'publish');
+                    $html .= '<tr><td>'.esc_html($r->course_name).'</td>'
+                           . '<td>'.($is_active ? $this->badge('Activo','green') : $this->badge('Inactivo','red')).'</td>'
+                           . '<td>'.(int)$r->enrolled.'</td>'
+                           . '<td>'.(int)$r->completed.'</td>'
+                           . '<td>'.$this->badge($r->rate.'%',$r->rate>=70?'green':($r->rate>=40?'yellow':'red')).'</td></tr>';
                 }
                 $html .= $this->paged_table_close();
             } else { $html.=$this->empty_msg('Sin datos.'); }
@@ -872,12 +880,13 @@ class FairPlay_LMS_Reports_Controller {
         $overall_avg  =$total_resp>0
             ? round(array_sum(array_map(fn($c)=>(float)$c->avg_score*(int)$c->respondents,$course_stats))/$total_resp,2)
             : 0;
-        $ga_col=$overall_avg>=4?'green':($overall_avg>=2.5?'yellow':'red');
+        $overall_pct  =round($overall_avg/5*100,1);
+        $ga_col=$overall_pct>=80?'green':($overall_pct>=50?'yellow':'red');
 
         $html.=$this->stat_cards([
             ['label'=>'Total Respuestas', 'value'=>'<strong>'.$total_resp.'</strong>','color'=>'blue'],
             ['label'=>'Cursos evaluados', 'value'=>'<strong>'.$total_courses.'</strong>','color'=>'green'],
-            ['label'=>'Promedio general', 'value'=>'<strong>'.number_format($overall_avg,2).'</strong>','sub'=>'sobre 5','color'=>$ga_col],
+            ['label'=>'Promedio general', 'value'=>'<strong>'.$overall_pct.'%</strong>','color'=>$ga_col],
         ]);
 
         if (empty($course_stats)) {
@@ -893,7 +902,8 @@ class FairPlay_LMS_Reports_Controller {
             $cid  =(int)$cstat->course_id;
             $cname=$cstat->course_name?:'(Sin curso)';
             $avg  =(float)$cstat->avg_score;
-            $ac   =$avg>=4?'green':($avg>=2.5?'yellow':'red');
+            $pct  =round($avg/5*100,1);
+            $ac   =$pct>=80?'green':($pct>=50?'yellow':'red');
 
             // Score distribution 1–5
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -923,7 +933,7 @@ class FairPlay_LMS_Reports_Controller {
                   .'<span class="fplms-sv-block-title">'.esc_html($cname).'</span>'
                   .'<span class="fplms-sv-block-meta">'
                   .'<span><strong>'.(int)$cstat->respondents.'</strong> Respuestas</span>'
-                  .'<span>Promedio: '.$this->badge(number_format($avg,2).' / 5',$ac).'</span>'
+                  .'<span>Promedio: '.$this->badge($pct.'%',$ac).'</span>'
                   .'<span>Primera: '.esc_html(wp_date('d/m/Y',strtotime($cstat->first_sub))).'</span>'
                   .'<span>Ultima: '.esc_html(wp_date('d/m/Y',strtotime($cstat->last_sub))).'</span>'
                   .'</span></div>';
@@ -943,11 +953,12 @@ class FairPlay_LMS_Reports_Controller {
                       .'<thead><tr><th>#</th><th>Pregunta</th><th>Promedio</th><th>Resp.</th></tr></thead><tbody>';
                 foreach ($q_avgs as $qa) {
                     $qa_avg=(float)$qa->avg_score;
-                    $qa_col=$qa_avg>=4?'green':($qa_avg>=2.5?'yellow':'red');
+                    $qa_pct=round($qa_avg/5*100,1);
+                    $qa_col=$qa_pct>=80?'green':($qa_pct>=50?'yellow':'red');
                     $html.='<tr>'
                           .'<td class="fplms-sv-qnum">'.((int)$qa->question_idx+1).'</td>'
                           .'<td>'.esc_html($qa->question).'</td>'
-                          .'<td>'.$this->badge(number_format($qa_avg,2).' / 5',$qa_col).'</td>'
+                          .'<td>'.$this->badge($qa_pct.'%',$qa_col).'</td>'
                           .'<td class="fplms-sv-qcnt">'.(int)$qa->cnt.'</td>'
                           .'</tr>';
                 }
@@ -965,11 +976,12 @@ class FairPlay_LMS_Reports_Controller {
         $html.=$this->paged_table_open(['Curso','Respuestas','Promedio','Primera Respuesta','Ultima Respuesta']);
         foreach ($course_stats as $cstat) {
             $avg=(float)$cstat->avg_score;
-            $ac =$avg>=4?'green':($avg>=2.5?'yellow':'red');
+            $spct=round($avg/5*100,1);
+            $ac =$spct>=80?'green':($spct>=50?'yellow':'red');
             $html.='<tr>'
                   .'<td>'.esc_html($cstat->course_name?:'(Sin curso)').'</td>'
                   .'<td>'.(int)$cstat->respondents.'</td>'
-                  .'<td>'.$this->badge(number_format($avg,2).' / 5',$ac).'</td>'
+                  .'<td>'.$this->badge($spct.'%',$ac).'</td>'
                   .'<td>'.esc_html(wp_date('d/m/Y',strtotime($cstat->first_sub))).'</td>'
                   .'<td>'.esc_html(wp_date('d/m/Y',strtotime($cstat->last_sub))).'</td>'
                   .'</tr>';
@@ -1158,7 +1170,7 @@ class FairPlay_LMS_Reports_Controller {
                  INNER JOIN {$wpdb->users} u ON uc.user_id = u.ID
                  LEFT JOIN `{$quiz_table}` uq ON uq.user_id = uc.user_id AND uq.quiz_id = %d
                  WHERE uc.course_id = %d {$uw_uc}
-                 ORDER BY u.display_name",
+                 ORDER BY u.display_name, uq.user_quiz_id ASC",
                 $quiz_id, $course_id
             ));
         }
@@ -1273,6 +1285,17 @@ class FairPlay_LMS_Reports_Controller {
 
         $can_reset = current_user_can('manage_options');
         $reset_ico = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.39"/></svg>';
+        $view_ico  = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+
+        // Compute sequential attempt_number per user (ordered by user_quiz_id ASC = same order as user_answers.attempt_number)
+        $user_attempt_seq = [];
+        foreach ($rows as &$r) {
+            $uid = (int)$r->user_id;
+            if (!isset($user_attempt_seq[$uid])) $user_attempt_seq[$uid] = 0;
+            if (!empty($r->user_quiz_id)) $user_attempt_seq[$uid]++;
+            $r->attempt_number = !empty($r->user_quiz_id) ? $user_attempt_seq[$uid] : null;
+        }
+        unset($r);
 
         $table  = $this->table_open(['Usuario', 'Fecha de Realización', 'Duración', 'Resultado', 'Puntuación', 'Opciones']);
         foreach ($rows as $r) {
@@ -1293,9 +1316,13 @@ class FairPlay_LMS_Reports_Controller {
                 ? $this->format_duration($end_ts - $start_ts)
                 : '—';
             $score    = $r->score !== null ? number_format((float)$r->score, 2).'%' : '—';
-            $opts     = $can_reset
+            $opts = '';
+            if (!empty($r->attempt_number)) {
+                $opts .= '<button class="button button-small fplms-test-answers-btn" data-quiz-id="'.esc_attr($quiz_id).'" data-user-id="'.esc_attr($r->user_id).'" data-attempt="'.esc_attr($r->attempt_number).'" data-user-name="'.esc_attr($r->display_name).'" style="color:#0070c0;margin-right:4px">'.$view_ico.'Ver Resp.</button>';
+            }
+            $opts .= $can_reset
                 ? '<button class="button button-small fplms-test-reset-btn" data-quiz-id="'.esc_attr($quiz_id).'" data-user-id="'.esc_attr($r->user_id).'" data-user-name="'.esc_attr($r->display_name).'" style="color:#c00">'.$reset_ico.'Resetear</button>'
-                : '—';
+                : '';
             $table .= '<tr>'
                     . '<td><strong>'.esc_html($r->display_name).'</strong><br><small style="color:#888">'.esc_html($r->user_email).'</small></td>'
                     . '<td style="white-space:nowrap">'.esc_html($fecha).'</td>'
@@ -1341,6 +1368,58 @@ class FairPlay_LMS_Reports_Controller {
         if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $times_tbl)) === $times_tbl)
             $wpdb->delete($times_tbl, ['user_id' => $user_id, 'quiz_id' => $quiz_id], ['%d', '%d']);
         wp_send_json_success(['message' => 'Evaluación reseteada correctamente.', 'deleted' => (int)$deleted]);
+    }
+
+    // TEST REPORT — VIEW per-attempt questions & answers
+    public function ajax_report_test_answers(): void {
+        if (!$this->verify_request()) return;
+        global $wpdb;
+        $quiz_id = isset($_POST['quiz_id'])        ? (int)$_POST['quiz_id']        : 0;
+        $user_id = isset($_POST['user_id'])        ? (int)$_POST['user_id']        : 0;
+        $attempt = isset($_POST['attempt_number']) ? (int)$_POST['attempt_number'] : 1;
+        if (!$quiz_id || !$user_id) { wp_send_json_error(['message' => 'Parámetros inválidos.']); return; }
+
+        $ans_tbl = $wpdb->prefix.'stm_lms_user_answers';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $ans_tbl)) !== $ans_tbl) {
+            wp_send_json_error(['message' => 'Tabla de respuestas no encontrada.']); return;
+        }
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $answers = (array)$wpdb->get_results($wpdb->prepare(
+            "SELECT question_id, user_answer, correct_answer
+             FROM `{$ans_tbl}`
+             WHERE user_id = %d AND quiz_id = %d AND attempt_number = %d
+             ORDER BY user_answer_id ASC",
+            $user_id, $quiz_id, $attempt
+        ));
+
+        if (empty($answers)) {
+            wp_send_json_success(['html' => '<p style="color:#888;padding:12px 0">No hay respuestas registradas para este intento.</p>']);
+            return;
+        }
+
+        $html  = '<table class="widefat striped fplms-rpt-table">';
+        $html .= '<thead><tr><th>#</th><th>Pregunta</th><th>Respuesta del usuario</th><th>Resultado</th></tr></thead><tbody>';
+        foreach ($answers as $i => $a) {
+            $q_title = get_the_title((int)$a->question_id) ?: 'Pregunta #'.(int)$a->question_id;
+            $correct  = (bool)$a->correct_answer;
+            $html .= '<tr>'
+                   . '<td style="width:32px;color:#aaa;font-size:11px">'.($i+1).'</td>'
+                   . '<td>'.esc_html($q_title).'</td>'
+                   . '<td>'.esc_html($a->user_answer ?: '—').'</td>'
+                   . '<td>'.($correct ? $this->badge('Correcta','green') : $this->badge('Incorrecta','red')).'</td>'
+                   . '</tr>';
+        }
+        $html .= '</tbody></table>';
+
+        $total   = count($answers);
+        $correct = count(array_filter($answers, fn($a) => (bool)$a->correct_answer));
+        $pct     = $total > 0 ? round($correct / $total * 100) : 0;
+        $summary = '<p style="margin:0 0 12px;font-size:13px;color:#555">'
+                 . '<strong>'.$correct.'</strong> de <strong>'.$total.'</strong> preguntas correctas &mdash; '
+                 . $this->badge($pct.'%', $pct >= 70 ? 'green' : ($pct >= 50 ? 'yellow' : 'red'))
+                 . '</p>';
+
+        wp_send_json_success(['html' => $summary.$html]);
     }
 
     // HELPER — SVG donut pie chart. $slices = [['label'=>'', 'value'=>0, 'color'=>'#hex'], ...]
@@ -2562,10 +2641,41 @@ class FairPlay_LMS_Reports_Controller {
                 var detBtn  = e.target.closest('.fplms-test-detail-btn');
                 var backBtn = e.target.closest('#fplms-test-back-btn');
                 var rstBtn  = e.target.closest('.fplms-test-reset-btn');
+                var ansBtn  = e.target.closest('.fplms-test-answers-btn');
                 if (detBtn)  { loadTestDetail(detBtn.dataset.quizId); }
                 else if (backBtn) { currentQuizId = null; loadReport('tests'); }
                 else if (rstBtn)  { resetQuizAttempt(rstBtn.dataset.quizId, rstBtn.dataset.userId, rstBtn.dataset.userName); }
+                else if (ansBtn)  { showTestAnswers(ansBtn.dataset.quizId, ansBtn.dataset.userId, ansBtn.dataset.attempt, ansBtn.dataset.userName); }
             });
+
+            // — Test answers modal —
+            (function(){
+                var modal = document.createElement('div');
+                modal.id = 'fplms-answers-modal';
+                modal.style.cssText = 'display:none;position:fixed;inset:0;z-index:100001;background:rgba(0,0,0,.52);overflow-y:auto;padding:40px 20px';
+                modal.innerHTML = '<div style="background:#fff;border-radius:10px;max-width:820px;margin:0 auto;padding:28px 32px;position:relative">'
+                    + '<button id="fplms-answers-modal-close" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:26px;line-height:1;cursor:pointer;color:#999">&times;</button>'
+                    + '<h3 id="fplms-answers-modal-title" style="margin:0 0 4px;font-size:15px;color:#1d2327"></h3>'
+                    + '<div id="fplms-answers-modal-body" style="margin-top:14px"></div>'
+                    + '</div>';
+                document.body.appendChild(modal);
+                document.getElementById('fplms-answers-modal-close').addEventListener('click', function(){ modal.style.display='none'; });
+                modal.addEventListener('click', function(e){ if(e.target===modal) modal.style.display='none'; });
+            })();
+
+            function showTestAnswers(quizId, userId, attempt, userName) {
+                var modal = document.getElementById('fplms-answers-modal');
+                var title = document.getElementById('fplms-answers-modal-title');
+                var body  = document.getElementById('fplms-answers-modal-body');
+                title.textContent = 'Respuestas de ' + userName + ' \u2014 Intento #' + attempt;
+                body.innerHTML = '<div class="fplms-rpt-loading"><span class="fplms-spin-dot"></span>Cargando respuestas\u2026</div>';
+                modal.style.display = 'block';
+                var postBody = 'action=fplms_report_test_answers&nonce='+encodeURIComponent(NONCE)+'&quiz_id='+encodeURIComponent(quizId)+'&user_id='+encodeURIComponent(userId)+'&attempt_number='+encodeURIComponent(attempt);
+                fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:postBody})
+                    .then(function(r){return r.json();})
+                    .then(function(res){ body.innerHTML = res.success ? res.data.html : '<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>'; })
+                    .catch(function(){ body.innerHTML = '<p class="notice notice-error">Error de conexi\u00f3n.</p>'; });
+            }
         })();
         </script>
         <?php
