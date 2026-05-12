@@ -359,7 +359,7 @@ class FairPlay_LMS_Reports_Controller {
                     $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                            . '<td><strong>'.(int)$r->login_count.'</strong></td>'
                            . '<td>'.$act_badge.'</td>'
-                           . '<td>'.esc_html($r->last_login?wp_date('d/m/Y H:i',strtotime($r->last_login)):'—').'</td></tr>';
+                           . '<td>'.esc_html($r->last_login ? \DateTime::createFromFormat('Y-m-d H:i:s', $r->last_login)->format('d/m/Y H:i') : '—').'</td></tr>';
                 }
                 $html .= $this->paged_table_close();
                 if ($act_exists) {
@@ -494,7 +494,7 @@ class FairPlay_LMS_Reports_Controller {
 
         // 2B. Mayor abandono top 10
         $html .= $this->sub('Capacitaciones con Mayor Abandono (Top 10)');
-        $sorted = array_filter($cstats, fn($r)=>(int)$r->enrolled>0);
+        $sorted = array_filter($cstats, fn($r)=>(int)$r->enrolled>0 && $r->course_status==='publish');
         usort($sorted, fn($a,$b)=>(int)$b->not_started/(max(1,(int)$b->enrolled)) <=> (int)$a->not_started/(max(1,(int)$a->enrolled)));
         $top10 = array_slice($sorted,0,10);
         if (!empty($top10)) {
