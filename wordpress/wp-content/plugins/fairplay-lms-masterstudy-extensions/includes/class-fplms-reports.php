@@ -39,6 +39,7 @@ class FairPlay_LMS_Reports_Controller {
             'fplms_report_test_detail'    => 'ajax_report_test_detail',
             'fplms_report_test_reset'     => 'ajax_report_test_reset',
             'fplms_report_test_answers'   => 'ajax_report_test_answers',
+            'fplms_report_matrix'         => 'ajax_report_matrix',
         ];
         foreach ( $map as $action => $method ) {
             add_action( 'wp_ajax_' . $action, [ $this, $method ] );
@@ -1320,8 +1321,8 @@ class FairPlay_LMS_Reports_Controller {
             if (!empty($r->attempt_number)) {
                 $opts .= '<button class="button button-small fplms-test-answers-btn" data-quiz-id="'.esc_attr($quiz_id).'" data-user-id="'.esc_attr($r->user_id).'" data-attempt="'.esc_attr($r->attempt_number).'" data-user-name="'.esc_attr($r->display_name).'" style="color:#0070c0;margin-right:4px">'.$view_ico.'Ver Resp.</button>';
             }
-            $opts .= $can_reset
-                ? '<button class="button button-small fplms-test-reset-btn" data-quiz-id="'.esc_attr($quiz_id).'" data-user-id="'.esc_attr($r->user_id).'" data-user-name="'.esc_attr($r->display_name).'" style="color:#c00">'.$reset_ico.'Resetear</button>'
+            $opts .= ($can_reset && !empty($r->user_quiz_id))
+                ? '<button class="button button-small fplms-test-reset-btn" data-quiz-id="'.esc_attr($quiz_id).'" data-user-id="'.esc_attr($r->user_id).'" data-user-quiz-id="'.esc_attr($r->user_quiz_id).'" data-attempt="'.esc_attr($r->attempt_number ?? 1).'" data-user-name="'.esc_attr($r->display_name).'" style="color:#c00">'.$reset_ico.'Resetear</button>'
                 : '';
             $table .= '<tr>'
                     . '<td><strong>'.esc_html($r->display_name).'</strong><br><small style="color:#888">'.esc_html($r->user_email).'</small></td>'
@@ -1351,23 +1352,46 @@ class FairPlay_LMS_Reports_Controller {
             wp_send_json_error(['message' => 'Sin permisos para resetear evaluaciones.'], 403); return;
         }
         global $wpdb;
-        $quiz_id = isset($_POST['quiz_id']) ? (int)$_POST['quiz_id'] : 0;
-        $user_id = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
-        if (!$quiz_id || !$user_id) { wp_send_json_error(['message' => 'Parámetros inválidos.']); return; }
-        $quiz_table = null;
-        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->prefix.'stm_lms_user_quizzes')) === $wpdb->prefix.'stm_lms_user_quizzes')
-            $quiz_table = $wpdb->prefix.'stm_lms_user_quizzes';
-        if (!$quiz_table) { wp_send_json_error(['message' => 'Tabla de evaluaciones no encontrada.']); return; }
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        $deleted = $wpdb->delete($quiz_table, ['user_id' => $user_id, 'quiz_id' => $quiz_id], ['%d', '%d']);
-        if (false === $deleted) {
-            wp_send_json_error(['message' => 'Error al resetear: '.$wpdb->last_error]); return;
+        $quiz_id      = isset($_POST['quiz_id'])       ? (int)$_POST['quiz_id']       : 0;
+        $user_id      = isset($_POST['user_id'])       ? (int)$_POST['user_id']       : 0;
+        $user_quiz_id = isset($_POST['user_quiz_id'])  ? (int)$_POST['user_quiz_id']  : 0;
+        $attempt      = isset($_POST['attempt'])       ? (int)$_POST['attempt']       : 0;
+        if (!$quiz_id || !$user_id || !$user_quiz_id) { wp_send_json_error(['message' => 'Parámetros inválidos.']); return; }
+
+        $quiz_table = $wpdb->prefix.'stm_lms_user_quizzes';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $quiz_table)) !== $quiz_table) {
+            wp_send_json_error(['message' => 'Tabla de evaluaciones no encontrada.']); return;
         }
-        // Also delete timing records so the student can be timed fresh on retake
-        $times_tbl = $wpdb->prefix.'stm_lms_user_quizzes_times';
-        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $times_tbl)) === $times_tbl)
-            $wpdb->delete($times_tbl, ['user_id' => $user_id, 'quiz_id' => $quiz_id], ['%d', '%d']);
-        wp_send_json_success(['message' => 'Evaluación reseteada correctamente.', 'deleted' => (int)$deleted]);
+
+        // Delete only this specific attempt row (identified by its PK user_quiz_id)
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $deleted = $wpdb->delete($quiz_table, ['user_quiz_id' => $user_quiz_id, 'user_id' => $user_id, 'quiz_id' => $quiz_id], ['%d', '%d', '%d']);
+        if (false === $deleted) {
+            wp_send_json_error(['message' => 'Error al eliminar el intento: '.$wpdb->last_error]); return;
+        }
+
+        // Delete the answers for this specific attempt_number
+        if ($attempt > 0) {
+            $ans_tbl = $wpdb->prefix.'stm_lms_user_answers';
+            if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $ans_tbl)) === $ans_tbl) {
+                $wpdb->delete($ans_tbl, ['user_id' => $user_id, 'quiz_id' => $quiz_id, 'attempt_number' => $attempt], ['%d', '%d', '%d']);
+            }
+        }
+
+        // Log to audit trail
+        $student    = get_userdata($user_id);
+        $quiz_title = get_the_title($quiz_id) ?: 'Quiz #'.$quiz_id;
+        $logger = new FairPlay_LMS_Audit_Logger();
+        $logger->log_action(
+            'quiz_attempt_deleted',
+            'quiz',
+            $quiz_id,
+            $quiz_title,
+            'Intento #'.$attempt.' de '.($student ? $student->display_name.' ('.$student->user_email.')' : 'user_id='.$user_id),
+            'Eliminado por administrador'
+        );
+
+        wp_send_json_success(['message' => 'Intento eliminado correctamente. El estudiante puede volver a realizar la evaluación.', 'deleted' => (int)$deleted]);
     }
 
     // TEST REPORT — VIEW per-attempt questions & answers
@@ -1422,7 +1446,154 @@ class FairPlay_LMS_Reports_Controller {
         wp_send_json_success(['html' => $summary.$html]);
     }
 
-    // HELPER — SVG donut pie chart. $slices = [['label'=>'', 'value'=>0, 'color'=>'#hex'], ...]
+    // REPORT — MATRIZ DE FORMACION
+    public function ajax_report_matrix(): void {
+        if (!$this->verify_request()) return;
+        global $wpdb;
+        $f    = $this->get_filters();
+        $uids = $this->get_user_ids_for_filters($f);
+        $ms   = $this->ms_table();
+
+        $search   = isset($_POST['matrix_search'])   ? sanitize_text_field(wp_unslash($_POST['matrix_search']))   : '';
+        $page     = isset($_POST['matrix_page'])     ? max(1, (int)$_POST['matrix_page'])                         : 1;
+        $per_page = isset($_POST['matrix_per_page']) ? (int)$_POST['matrix_per_page']                              : 10;
+        if (!in_array($per_page, [10, 20, 50, 100], true)) $per_page = 10;
+
+        $html = $this->render_section_head('Matriz de Formacion', $this->build_export_url('matrix', $f));
+
+        if (!$ms) {
+            $html .= $this->empty_msg('Tabla de matriculas MasterStudy no encontrada.');
+            wp_send_json_success(['html' => $html]); return;
+        }
+
+        // 1. All published courses (max 200)
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $courses = (array)$wpdb->get_results(
+            "SELECT ID, post_title FROM {$wpdb->posts}
+             WHERE post_type='stm-courses' AND post_status='publish'
+             ORDER BY post_title LIMIT 200"
+        );
+        if (empty($courses)) {
+            $html .= $this->empty_msg('No se encontraron cursos publicados.');
+            wp_send_json_success(['html' => $html]); return;
+        }
+
+        // 2. User WHERE from global filters
+        $uid_where = null !== $uids
+            ? (empty($uids) ? 'AND 1=0' : 'AND u.ID IN (' . implode(',', array_map('intval', $uids)) . ')')
+            : '';
+
+        // 3. Matrix search filter (name / email / login)
+        $search_where = '';
+        if ($search !== '') {
+            $like = '%' . $wpdb->esc_like($search) . '%';
+            $search_where = $wpdb->prepare(
+                'AND (u.display_name LIKE %s OR u.user_email LIKE %s OR u.user_login LIKE %s)',
+                $like, $like, $like
+            );
+        }
+
+        // 4. Total count
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $total  = (int)$wpdb->get_var("SELECT COUNT(DISTINCT u.ID) FROM {$wpdb->users} u WHERE 1=1 $uid_where $search_where");
+        $pages  = max(1, (int)ceil($total / $per_page));
+        if ($page > $pages) $page = $pages;
+        $offset = ($page - 1) * $per_page;
+
+        // 5. Paginated users
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $users = (array)$wpdb->get_results($wpdb->prepare(
+            "SELECT u.ID, u.display_name, u.user_email
+             FROM {$wpdb->users} u
+             WHERE 1=1 $uid_where $search_where
+             ORDER BY u.display_name LIMIT %d OFFSET %d",
+            $per_page, $offset
+        ));
+
+        // 6. Enrollment map for current page users
+        $enr_map = [];
+        if (!empty($users)) {
+            $uid_str = implode(',', array_map(fn($u) => (int)$u->ID, $users));
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $enrs = (array)$wpdb->get_results(
+                "SELECT user_id, course_id, progress_percent, status FROM `{$ms}` WHERE user_id IN ($uid_str)"
+            );
+            foreach ($enrs as $e) {
+                $enr_map[(int)$e->user_id][(int)$e->course_id] = [
+                    'progress' => (float)$e->progress_percent,
+                    'status'   => strtolower($e->status ?? ''),
+                ];
+            }
+        }
+
+        // 7. Icons
+        $check_ico = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:0 auto"><polyline points="20 6 9 17 4 12"/></svg>';
+        $dot_ico   = '<svg viewBox="0 0 24 24" width="10" height="10" style="display:block;margin:0 auto"><circle cx="12" cy="12" r="6" fill="#fff"/></svg>';
+
+        // 8. Legend
+        $html .= '<div class="fplms-mx-legend">'
+               . '<span class="fplms-mx-leg-item"><span class="fplms-mx-leg-dot fplms-mx-done">'.$check_ico.'</span>Completado</span>'
+               . '<span class="fplms-mx-leg-item"><span class="fplms-mx-leg-dot fplms-mx-progress"></span>En Progreso</span>'
+               . '<span class="fplms-mx-leg-item"><span class="fplms-mx-leg-dot fplms-mx-assigned">'.$dot_ico.'</span>Asignado (Sin iniciar)</span>'
+               . '<span class="fplms-mx-leg-item"><span class="fplms-mx-leg-dot fplms-mx-empty-dot"></span>No inscrito</span>'
+               . '</div>';
+
+        // 9. Search + per-page controls
+        $pp_opts = implode('', array_map(fn($v) => '<option value="'.$v.'"'.($per_page===$v?' selected':'').'>'.$v.'</option>', [10,20,50,100]));
+        $html .= '<div class="fplms-mx-controls">'
+               . '<input type="text" id="fplms-mx-search" class="fplms-mx-search-input" placeholder="Buscar por nombre, email o usuario..." value="'.esc_attr($search).'" autocomplete="off">'
+               . '<label class="fplms-mx-per-page-label">Mostrar: <select id="fplms-mx-per-page" class="fplms-mx-per-page">'.$pp_opts.'</select></label>'
+               . '</div>';
+
+        // 10. Matrix table
+        $html .= '<div class="fplms-mx-table-wrap"><table class="fplms-mx-table widefat"><thead><tr>';
+        $html .= '<th class="fplms-mx-th-user">Usuario</th>';
+        $html .= '<th class="fplms-mx-th-email">Email</th>';
+        foreach ($courses as $c) {
+            $short = mb_strlen($c->post_title) > 26 ? mb_substr($c->post_title, 0, 24).'…' : $c->post_title;
+            $html .= '<th class="fplms-mx-th-course" title="'.esc_attr($c->post_title).'">'
+                   . '<div class="fplms-mx-th-inner">'.esc_html($short).'</div></th>';
+        }
+        $html .= '</tr></thead><tbody>';
+
+        if (empty($users)) {
+            $cols = count($courses) + 2;
+            $html .= '<tr><td colspan="'.$cols.'" style="text-align:center;color:#aaa;padding:28px 0">No se encontraron estudiantes para los filtros aplicados.</td></tr>';
+        } else {
+            foreach ($users as $u) {
+                $uid  = (int)$u->ID;
+                $html .= '<tr>';
+                $html .= '<td class="fplms-mx-td-user"><strong>'.esc_html($u->display_name).'</strong></td>';
+                $html .= '<td class="fplms-mx-td-email"><small>'.esc_html($u->user_email).'</small></td>';
+                foreach ($courses as $c) {
+                    $cid = (int)$c->ID;
+                    $enr = $enr_map[$uid][$cid] ?? null;
+                    if ($enr === null) {
+                        $html .= '<td class="fplms-mx-cell fplms-mx-empty" title="No inscrito"></td>';
+                    } elseif (in_array($enr['status'], ['completed','passed'], true) || $enr['progress'] >= 100) {
+                        $html .= '<td class="fplms-mx-cell fplms-mx-done" title="Completado">'.$check_ico.'</td>';
+                    } elseif ($enr['progress'] > 0) {
+                        $pct  = round($enr['progress']);
+                        $html .= '<td class="fplms-mx-cell fplms-mx-progress" title="En progreso ('.$pct.'%)"><small>'.$pct.'%</small></td>';
+                    } else {
+                        $html .= '<td class="fplms-mx-cell fplms-mx-assigned" title="Asignado — Sin iniciar">'.$dot_ico.'</td>';
+                    }
+                }
+                $html .= '</tr>';
+            }
+        }
+        $html .= '</tbody></table></div>';
+
+        // 11. Pagination
+        $html .= '<div class="fplms-mx-pagination">'
+               . '<span class="fplms-mx-pag-info">'.number_format($total).' estudiantes — pág. '.$page.' / '.$pages.'</span>'
+               . '<button type="button" class="button button-small fplms-mx-prev"'.($page<=1?' disabled':'').'>&#8249; Anterior</button>'
+               . '<button type="button" class="button button-small fplms-mx-next"'.($page>=$pages?' disabled':'').'>Siguiente &#8250;</button>'
+               . '</div>';
+
+        wp_send_json_success(['html' => $html]);
+    }
+
     private function render_pie_chart(array $slices, int $size = 184): string {
         $total = (int)array_sum(array_column($slices, 'value'));
         if ($total <= 0) {
@@ -2077,7 +2248,64 @@ class FairPlay_LMS_Reports_Controller {
                 ]], $f);
                 break;
 
-            // -- DEFAULT --------------------------------------------------
+            // -- MATRIZ DE FORMACION ---------------------------------------
+            case 'matrix_xls':
+                // All published courses
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $mx_courses = (array)$wpdb->get_results(
+                    "SELECT ID, post_title FROM {$wpdb->posts}
+                     WHERE post_type='stm-courses' AND post_status='publish'
+                     ORDER BY post_title LIMIT 200"
+                );
+                // All matching users (apply global user filter, no pagination)
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $mx_users = (array)$wpdb->get_results(
+                    "SELECT u.ID, u.display_name, u.user_email
+                     FROM {$wpdb->users} u
+                     WHERE 1=1 $uw
+                     ORDER BY u.display_name LIMIT 5000"
+                );
+                // Enrollment map
+                $mx_enr = [];
+                if (!empty($mx_users) && $ms) {
+                    $mx_uid_str = implode(',', array_map(fn($u) => (int)$u->ID, $mx_users));
+                    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $mx_enrs = (array)$wpdb->get_results(
+                        "SELECT user_id, course_id, progress_percent, status FROM `{$ms}` WHERE user_id IN ($mx_uid_str)"
+                    );
+                    foreach ($mx_enrs as $e) {
+                        $mx_enr[(int)$e->user_id][(int)$e->course_id] = [
+                            'progress' => (float)$e->progress_percent,
+                            'status'   => strtolower($e->status ?? ''),
+                        ];
+                    }
+                }
+                // Build headers + data
+                $mx_headers = ['Usuario', 'Email'];
+                foreach ($mx_courses as $c) $mx_headers[] = $c->post_title;
+                $mx_data = [];
+                foreach ($mx_users as $u) {
+                    $row = [$u->display_name, $u->user_email];
+                    foreach ($mx_courses as $c) {
+                        $enr = $mx_enr[(int)$u->ID][(int)$c->ID] ?? null;
+                        if ($enr === null) {
+                            $row[] = '';
+                        } elseif (in_array($enr['status'], ['completed','passed'], true) || $enr['progress'] >= 100) {
+                            $row[] = '✓ Completado';
+                        } elseif ($enr['progress'] > 0) {
+                            $row[] = 'En Progreso (' . round($enr['progress']) . '%)';
+                        } else {
+                            $row[] = 'Asignado';
+                        }
+                    }
+                    $mx_data[] = $row;
+                }
+                $this->output_xls_multi('matriz_formacion', 'Matriz de Formacion', [[
+                    'title'   => 'Matriz de Formacion — '.count($mx_courses).' cursos / '.count($mx_users).' estudiantes',
+                    'headers' => $mx_headers,
+                    'data'    => $mx_data,
+                ]], $f);
+                break;
             default:
                 $users = $this->users->get_users_filtered_by_structure(0, 0, 0, 0);
                 $this->output_xls_multi('usuarios_avance', 'Usuarios — Avance General', [
@@ -2349,7 +2577,7 @@ class FairPlay_LMS_Reports_Controller {
         $tabs = [
             'participation'=>'Participacion','progress'=>'Progreso','performance'=>'Desempeno',
             'certificates'=>'Certificados','time'=>'Tiempo','satisfaction'=>'Satisfaccion','channels'=>'Canales',
-            'tests'=>'Tests',
+            'tests'=>'Tests','matrix'=>'Matriz de Formacion',
         ];
         $icons = [
             'participation' => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="18" y="3" width="4" height="18"/><rect x="10" y="8" width="4" height="13"/><rect x="2" y="13" width="4" height="8"/></svg>',
@@ -2360,6 +2588,7 @@ class FairPlay_LMS_Reports_Controller {
             'satisfaction'  => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
             'channels'      => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
             'tests'         => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+            'matrix'        => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>',
         ];
         ?>
         <div class="wrap fplms-reports-wrap">
@@ -2407,6 +2636,25 @@ class FairPlay_LMS_Reports_Controller {
                 <div class="fplms-rpt-placeholder"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:0 auto 12px"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 9h6M9 12h6M9 15h4"/></svg><p>Selecciona una pestana de reporte para comenzar.</p></div>
             </div>
         </div>
+        <!-- Confirm modal (reset intento) -->
+        <div id="fplms-rpt-confirm-modal" class="fplms-rpt-cmodal-overlay">
+            <div class="fplms-rpt-cmodal">
+                <div id="fplms-rpt-cmodal-header" class="fplms-rpt-cmodal-header fplms-rpt-cmodal-header--red">
+                    <svg id="fplms-rpt-cmodal-icon" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                    <h3 id="fplms-rpt-cmodal-title"></h3>
+                </div>
+                <div class="fplms-rpt-cmodal-body">
+                    <p id="fplms-rpt-cmodal-text"></p>
+                    <div id="fplms-rpt-cmodal-name" class="fplms-rpt-cmodal-name"></div>
+                    <p id="fplms-rpt-cmodal-sub" style="color:#4b5563;font-size:13px;margin:8px 0 0"></p>
+                </div>
+                <div class="fplms-rpt-cmodal-footer">
+                    <button type="button" class="fplms-rpt-cmodal-cancel" id="fplms-rpt-cmodal-cancel">Cancelar</button>
+                    <button type="button" class="fplms-rpt-cmodal-confirm" id="fplms-rpt-cmodal-confirm">Confirmar</button>
+                </div>
+            </div>
+        </div>
+
         <div id="fplms-rpt-modal" style="display:none;position:fixed;inset:0;z-index:100000;align-items:center;justify-content:center;background:rgba(0,0,0,.48)">
             <div style="background:#fff;border-radius:14px;padding:38px 40px 32px;max-width:420px;width:92%;text-align:center;box-shadow:0 16px 48px rgba(0,0,0,.22)">
                 <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="#FFA800" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:0 auto 16px"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/><circle cx="18" cy="18" r="5" fill="#fff" stroke="#22c55e" stroke-width="2"/><path d="m16 18 1.5 1.5L20 16" stroke="#22c55e" stroke-width="2"/></svg>
@@ -2439,6 +2687,57 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-rpt-tab-btn.active{background:#ffa800;color:#fff;border-color:#ffa800;font-weight:700}
         .fplms-rpt-content{background:#fff;border:1.5px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;padding:24px;min-height:320px}
         .fplms-rpt-placeholder{text-align:center;color:#bbb;padding:60px 0;font-size:15px}
+        /* — Matriz de Formacion — */
+        .fplms-mx-legend{display:flex;flex-wrap:wrap;gap:10px 20px;margin:8px 0 14px;padding:10px 14px;background:#f9f9f9;border-radius:6px;border:1px solid #e8e8e8}
+        .fplms-mx-leg-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#555}
+        .fplms-mx-leg-dot{width:22px;height:22px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+        .fplms-mx-leg-dot.fplms-mx-done{background:#22c55e}
+        .fplms-mx-leg-dot.fplms-mx-progress{background:#f59e0b}
+        .fplms-mx-leg-dot.fplms-mx-assigned{background:#3b82f6}
+        .fplms-mx-leg-dot.fplms-mx-empty-dot{background:#f0f0f0;border:1px solid #ddd}
+        .fplms-mx-controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin-bottom:12px}
+        .fplms-mx-search-input{flex:1;min-width:220px;max-width:380px;padding:6px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px}
+        .fplms-mx-per-page-label{font-size:12px;color:#555;display:flex;align-items:center;gap:6px}
+        .fplms-mx-per-page{padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px}
+        .fplms-mx-table-wrap{overflow-x:auto;border-radius:6px;border:1px solid #e0e0e0;margin-bottom:4px}
+        .fplms-mx-table{border-collapse:collapse;width:100%;min-width:400px}
+        .fplms-mx-table thead tr{background:#f3f4f6}
+        .fplms-mx-th-user,.fplms-mx-th-email{font-size:12px;padding:8px 10px;white-space:nowrap;border-bottom:2px solid #d1d5db;text-align:left}
+        .fplms-mx-th-user{min-width:160px;position:sticky;left:0;background:#f3f4f6;z-index:3;box-shadow:2px 0 4px rgba(0,0,0,.06)}
+        .fplms-mx-th-email{min-width:180px;position:sticky;left:160px;background:#f3f4f6;z-index:3;box-shadow:2px 0 4px rgba(0,0,0,.04)}
+        .fplms-mx-th-course{width:38px;min-width:38px;max-width:38px;padding:4px 2px;border-bottom:2px solid #d1d5db;border-left:1px solid #e5e7eb;vertical-align:bottom}
+        .fplms-mx-th-inner{writing-mode:vertical-lr;transform:rotate(180deg);white-space:nowrap;font-size:11px;color:#4b5563;padding-bottom:4px;max-height:110px;overflow:hidden}
+        .fplms-mx-table tbody tr:nth-child(even){background:#fafafa}
+        .fplms-mx-table tbody tr:hover td{background:#f0f7ff!important}
+        .fplms-mx-td-user{position:sticky;left:0;background:inherit;z-index:1;padding:6px 10px;white-space:nowrap;font-size:13px;border-right:1px solid #e5e7eb;box-shadow:2px 0 4px rgba(0,0,0,.04)}
+        .fplms-mx-td-email{position:sticky;left:160px;background:inherit;z-index:1;padding:6px 10px;white-space:nowrap;font-size:12px;color:#6b7280;border-right:1px solid #e5e7eb;box-shadow:2px 0 4px rgba(0,0,0,.02)}
+        .fplms-mx-cell{width:38px;min-width:38px;max-width:38px;text-align:center;padding:4px 2px;border-left:1px solid #e5e7eb;border-bottom:1px solid #f3f4f6}
+        .fplms-mx-done{background:#22c55e}
+        .fplms-mx-progress{background:#f59e0b}
+        .fplms-mx-progress small{color:#fff;font-size:9px;font-weight:700;display:block;line-height:1.6}
+        .fplms-mx-assigned{background:#3b82f6}
+        .fplms-mx-empty{background:#fff}
+        .fplms-mx-pagination{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+        .fplms-mx-pag-info{font-size:12px;color:#6b7280;flex:1;min-width:120px}
+        /* — Confirm modal — */
+        .fplms-rpt-cmodal-overlay{display:none;position:fixed;inset:0;z-index:100002;background:rgba(0,0,0,.52);align-items:center;justify-content:center}
+        .fplms-rpt-cmodal-overlay.active{display:flex}
+        .fplms-rpt-cmodal{background:#fff;border-radius:12px;width:92%;max-width:420px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+        .fplms-rpt-cmodal-header{display:flex;align-items:center;gap:12px;padding:18px 22px;color:#fff}
+        .fplms-rpt-cmodal-header svg{width:26px;height:26px;flex-shrink:0;fill:#fff}
+        .fplms-rpt-cmodal-header h3{margin:0;font-size:15px;font-weight:700;color: white;}
+        .fplms-rpt-cmodal-header--red{background:linear-gradient(135deg,#dc2626,#b91c1c)}
+        .fplms-rpt-cmodal-header--amber{background:linear-gradient(135deg,#d97706,#b45309)}
+        .fplms-rpt-cmodal-body{padding:20px 22px 8px;font-size:13px;color:#374151}
+        .fplms-rpt-cmodal-name{margin:10px 0 0;padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:13px;font-weight:600;color:#991b1b;word-break:break-word}
+        .fplms-rpt-cmodal-name--amber{background:#fffbeb;border-color:#fde68a;color:#92400e}
+        .fplms-rpt-cmodal-footer{display:flex;justify-content:flex-end;gap:10px;padding:16px 22px}
+        .fplms-rpt-cmodal-cancel{background:#f3f4f6;border:1px solid #d1d5db;border-radius:6px;padding:7px 18px;font-size:13px;cursor:pointer;color:#374151}
+        .fplms-rpt-cmodal-cancel:hover{background:#e5e7eb}
+        .fplms-rpt-cmodal-confirm{background:#dc2626;border:none;border-radius:6px;padding:7px 18px;font-size:13px;font-weight:600;cursor:pointer;color:#fff}
+        .fplms-rpt-cmodal-confirm:hover{background:#b91c1c}
+        .fplms-rpt-cmodal-confirm--amber{background:#d97706}
+        .fplms-rpt-cmodal-confirm--amber:hover{background:#b45309}
         .fplms-rpt-loading{text-align:center;padding:50px;color:#888;font-size:14px}
         .fplms-rpt-section-head{display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #ffa800;padding-bottom:10px;margin-bottom:20px}
         .fplms-rpt-title{margin:0;font-size:18px;color:#333}
@@ -2557,9 +2856,22 @@ class FairPlay_LMS_Reports_Controller {
                 bar.innerHTML=ico+'<span class="fplms-fbar-lbl">Filtros activos:</span>'+badges.map(function(b){return '<span class="fplms-fbar-badge">'+b+'</span>';}).join('')+'<span class="fplms-fbar-note">Se aplican a todos los tabs</span>';
             }
             var tabActions={participation:'fplms_report_participation',progress:'fplms_report_progress',performance:'fplms_report_performance',certificates:'fplms_report_certificates',time:'fplms_report_time',satisfaction:'fplms_report_satisfaction',channels:'fplms_report_channels',tests:'fplms_report_tests'};
+            var matrixState={search:'',page:1,perPage:10};
+            var matrixSearchTimer=null;
+            function loadMatrix(){
+                var content=document.getElementById('fplms-rpt-content');
+                content.innerHTML='<div class="fplms-rpt-loading"><span class="fplms-spin-dot"></span>Cargando matriz…</div>';
+                var p=Object.assign({action:'fplms_report_matrix',nonce:NONCE,matrix_search:matrixState.search,matrix_page:matrixState.page,matrix_per_page:matrixState.perPage},getFilters());
+                var body=Object.keys(p).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(p[k]);}).join('&');
+                fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+                    .then(function(r){return r.json();})
+                    .then(function(res){content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>';})
+                    .catch(function(){content.innerHTML='<p class="notice notice-error">Error de conexión.</p>';});
+            }
             function getFilters(){return{date_from:document.getElementById('fplms-rpt-date-from').value||'',date_to:document.getElementById('fplms-rpt-date-to').value||'',channel_id:document.getElementById('fplms-rpt-channel').value||'',city_id:document.getElementById('fplms-rpt-city').value||'',company_id:document.getElementById('fplms-rpt-company').value||'',role_id:document.getElementById('fplms-rpt-role').value||'',user_ids:document.getElementById('fplms-rpt-user-ids').value||''};}
             function loadReport(tab){
                 if(!tab)return; activeTab=tab;
+                if(tab==='matrix'){ matrixState={search:'',page:1,perPage:10}; loadMatrix(); return; }
                 var action=tabActions[tab]; if(!action)return;
                 var content=document.getElementById('fplms-rpt-content');
                 content.innerHTML='<div class="fplms-rpt-loading"><span class="fplms-spin-dot"></span>Cargando reporte…</div>';
@@ -2624,28 +2936,93 @@ class FairPlay_LMS_Reports_Controller {
                     .then(function(r){return r.json();})
                     .then(function(res){content.innerHTML = res.success ? res.data.html : '<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>';});
             }
-            function resetQuizAttempt(quizId, userId, userName) {
-                if (!confirm('\u00bfResetear la evaluaci\u00f3n de ' + userName + '?\nEsta acci\u00f3n eliminar\u00e1 el intento y no se puede deshacer.')) return;
-                var body = 'action=fplms_report_test_reset&nonce='+encodeURIComponent(NONCE)+'&quiz_id='+quizId+'&user_id='+userId;
-                fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
-                    .then(function(r){return r.json();})
-                    .then(function(res){
-                        if (res.success) {
-                            if (currentQuizId) loadTestDetail(currentQuizId);
-                        } else {
-                            alert('Error: '+(res.data ? res.data.message : 'Error desconocido'));
-                        }
-                    });
+            // — Confirm modal for reset —
+            var _fplmsRptConfirmCb = null;
+            function fplmsRptShowConfirm(opts) {
+                document.getElementById('fplms-rpt-cmodal-header').className = 'fplms-rpt-cmodal-header fplms-rpt-cmodal-header--' + (opts.variant || 'red');
+                document.getElementById('fplms-rpt-cmodal-icon').innerHTML = '<path d="' + (opts.iconPath || 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z') + '"/>';
+                document.getElementById('fplms-rpt-cmodal-title').textContent = opts.title || '';
+                document.getElementById('fplms-rpt-cmodal-text').innerHTML   = opts.bodyText || '';
+                var nameEl = document.getElementById('fplms-rpt-cmodal-name');
+                nameEl.textContent = opts.name || '';
+                nameEl.style.display = opts.name ? '' : 'none';
+                nameEl.className = 'fplms-rpt-cmodal-name' + (opts.variant === 'amber' ? ' fplms-rpt-cmodal-name--amber' : '');
+                var subEl = document.getElementById('fplms-rpt-cmodal-sub');
+                subEl.innerHTML = opts.subText || '';
+                subEl.style.display = opts.subText ? '' : 'none';
+                var btn = document.getElementById('fplms-rpt-cmodal-confirm');
+                btn.textContent = opts.btnText || 'Confirmar';
+                btn.className = 'fplms-rpt-cmodal-confirm' + (opts.variant === 'amber' ? ' fplms-rpt-cmodal-confirm--amber' : '');
+                _fplmsRptConfirmCb = opts.onConfirm || null;
+                document.getElementById('fplms-rpt-confirm-modal').classList.add('active');
+            }
+            document.getElementById('fplms-rpt-cmodal-cancel').addEventListener('click', function(){
+                document.getElementById('fplms-rpt-confirm-modal').classList.remove('active');
+                _fplmsRptConfirmCb = null;
+            });
+            document.getElementById('fplms-rpt-cmodal-confirm').addEventListener('click', function(){
+                document.getElementById('fplms-rpt-confirm-modal').classList.remove('active');
+                var cb = _fplmsRptConfirmCb; _fplmsRptConfirmCb = null;
+                if (cb) cb();
+            });
+            document.getElementById('fplms-rpt-confirm-modal').addEventListener('click', function(e){
+                if (e.target === this) { this.classList.remove('active'); _fplmsRptConfirmCb = null; }
+            });
+
+            function resetQuizAttempt(quizId, userId, userQuizId, attempt, userName) {
+                fplmsRptShowConfirm({
+                    variant : 'red',
+                    iconPath: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
+                    title   : 'Eliminar intento #' + attempt,
+                    bodyText: '\u00bfDeseas eliminar el <strong>intento #' + attempt + '</strong> de este estudiante?',
+                    name    : userName,
+                    subText : 'El estudiante recuperar\u00e1 ese intento disponible. <strong>Esta acci\u00f3n no se puede deshacer.</strong>',
+                    btnText : 'S\u00ed, eliminar intento',
+                    onConfirm: function() {
+                        var body = 'action=fplms_report_test_reset&nonce='+encodeURIComponent(NONCE)
+                                 + '&quiz_id='+encodeURIComponent(quizId)
+                                 + '&user_id='+encodeURIComponent(userId)
+                                 + '&user_quiz_id='+encodeURIComponent(userQuizId)
+                                 + '&attempt='+encodeURIComponent(attempt);
+                        fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+                            .then(function(r){return r.json();})
+                            .then(function(res){
+                                if (res.success) {
+                                    if (currentQuizId) loadTestDetail(currentQuizId);
+                                } else {
+                                    alert('Error: '+(res.data ? res.data.message : 'Error desconocido'));
+                                }
+                            });
+                    }
+                });
             }
             document.getElementById('fplms-rpt-content').addEventListener('click', function(e) {
                 var detBtn  = e.target.closest('.fplms-test-detail-btn');
                 var backBtn = e.target.closest('#fplms-test-back-btn');
                 var rstBtn  = e.target.closest('.fplms-test-reset-btn');
                 var ansBtn  = e.target.closest('.fplms-test-answers-btn');
+                var mxPrev  = e.target.closest('.fplms-mx-prev');
+                var mxNext  = e.target.closest('.fplms-mx-next');
                 if (detBtn)  { loadTestDetail(detBtn.dataset.quizId); }
                 else if (backBtn) { currentQuizId = null; loadReport('tests'); }
-                else if (rstBtn)  { resetQuizAttempt(rstBtn.dataset.quizId, rstBtn.dataset.userId, rstBtn.dataset.userName); }
+                else if (rstBtn)  { resetQuizAttempt(rstBtn.dataset.quizId, rstBtn.dataset.userId, rstBtn.dataset.userQuizId, rstBtn.dataset.attempt, rstBtn.dataset.userName); }
                 else if (ansBtn)  { showTestAnswers(ansBtn.dataset.quizId, ansBtn.dataset.userId, ansBtn.dataset.attempt, ansBtn.dataset.userName); }
+                else if (mxPrev && !mxPrev.disabled) { matrixState.page--; loadMatrix(); }
+                else if (mxNext && !mxNext.disabled) { matrixState.page++; loadMatrix(); }
+            });
+            document.getElementById('fplms-rpt-content').addEventListener('input', function(e) {
+                if (e.target.id === 'fplms-mx-search') {
+                    clearTimeout(matrixSearchTimer);
+                    var val = e.target.value;
+                    matrixSearchTimer = setTimeout(function(){ matrixState.search=val; matrixState.page=1; loadMatrix(); }, 420);
+                }
+            });
+            document.getElementById('fplms-rpt-content').addEventListener('change', function(e) {
+                if (e.target.id === 'fplms-mx-per-page') {
+                    matrixState.perPage = parseInt(e.target.value, 10);
+                    matrixState.page = 1;
+                    loadMatrix();
+                }
             });
 
             // — Test answers modal —
