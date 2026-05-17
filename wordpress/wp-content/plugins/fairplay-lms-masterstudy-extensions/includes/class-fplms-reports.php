@@ -60,7 +60,25 @@ class FairPlay_LMS_Reports_Controller {
     }
 
     // FILTER HELPERS
+    private function normalize_activity_thresholds(int $high, int $medium, int $low = 10): array {
+        $high   = $high > 0 ? $high : 50;
+        $medium = $medium >= 0 ? $medium : 10;
+        if ($medium >= $high) $medium = max(0, $high - 1);
+        $low = $low >= 0 ? $low : $medium;
+        $low = $medium;
+        return [
+            'activity_high'   => $high,
+            'activity_medium' => $medium,
+            'activity_low'    => $low,
+        ];
+    }
+
     private function get_filters(): array {
+        $activity = $this->normalize_activity_thresholds(
+            isset( $_POST['activity_high'] ) ? (int) $_POST['activity_high'] : 50,
+            isset( $_POST['activity_medium'] ) ? (int) $_POST['activity_medium'] : 10,
+            isset( $_POST['activity_low'] ) ? (int) $_POST['activity_low'] : 10
+        );
         return [
             'date_from'  => isset( $_POST['date_from'] )  ? sanitize_text_field( wp_unslash( $_POST['date_from'] ) )  : '',
             'date_to'    => isset( $_POST['date_to'] )    ? sanitize_text_field( wp_unslash( $_POST['date_to'] ) )    : '',
@@ -68,6 +86,9 @@ class FairPlay_LMS_Reports_Controller {
             'city_id'    => isset( $_POST['city_id'] )    ? (int) $_POST['city_id']    : 0,
             'company_id' => isset( $_POST['company_id'] ) ? (int) $_POST['company_id'] : 0,
             'role_id'    => isset( $_POST['role_id'] )    ? (int) $_POST['role_id']    : 0,
+            'activity_high'   => $activity['activity_high'],
+            'activity_medium' => $activity['activity_medium'],
+            'activity_low'    => $activity['activity_low'],
             'user_ids'   => isset( $_POST['user_ids'] ) && '' !== $_POST['user_ids']
                 ? array_filter( array_map( 'intval', explode( ',', wp_unslash( $_POST['user_ids'] ) ) ) )
                 : [],
@@ -89,7 +110,6 @@ class FairPlay_LMS_Reports_Controller {
 
     private function uid_in( ?array $uids, string $col = 'u.ID' ): string {
         if ( null === $uids ) return '';
-        if ( empty($uids) ) return ' AND 1=0';
         return ' AND ' . $col . ' IN (' . implode(',', array_map('intval',$uids)) . ')';
     }
 
@@ -274,6 +294,9 @@ class FairPlay_LMS_Reports_Controller {
             'city_id'      => $f['city_id']    ?: '',
             'company_id'   => $f['company_id'] ?: '',
             'role_id'      => $f['role_id']    ?: '',
+            'activity_high'   => $f['activity_high'] ?? 50,
+            'activity_medium' => $f['activity_medium'] ?? 10,
+            'activity_low'    => $f['activity_low'] ?? ($f['activity_medium'] ?? 10),
             'user_ids'     => $uid_str,
             '_wpnonce'     => wp_create_nonce('fplms_export_nonce'),
         ]), admin_url('admin.php') );
@@ -330,6 +353,9 @@ class FairPlay_LMS_Reports_Controller {
         if (!$login_exists) {
             $html .= $this->empty_msg('Tabla de logins no encontrada. Ejecuta el script create-activity-table.php.');
         } else {
+            $activity_high   = (int) ($f['activity_high'] ?? 50);
+            $activity_medium = (int) ($f['activity_medium'] ?? 10);
+            $activity_low    = (int) ($f['activity_low'] ?? $activity_medium);
             $ld      = $this->date_sql('l.login_time', $f['date_from'], $f['date_to']);
             $lw      = null!==$uids ? (empty($uids)?'AND 1=0':'AND l.user_id IN ('.implode(',',array_map('intval',$uids)).')') : '';
             $uw_act  = null!==$uids ? (empty($uids)?'AND 1=0':'AND u.ID IN ('.implode(',',array_map('intval',$uids)).')') : '';
@@ -356,7 +382,7 @@ class FairPlay_LMS_Reports_Controller {
                 $html .= $this->paged_table_open(['Nombre','Email','N. de Ingresos','Actividad','Ultimo Ingreso']);
                 foreach ($logins as $r) {
                     $acts = (int)$r->activity_count;
-                    $act_badge = $acts >= 50 ? $this->badge($acts,'green') : ($acts >= 10 ? $this->badge($acts,'yellow') : $this->badge($acts,'red'));
+                    $act_badge = $acts >= $activity_high ? $this->badge($acts,'green') : ($acts >= $activity_medium ? $this->badge($acts,'yellow') : $this->badge($acts,'red'));
                     $html .= '<tr><td>'.esc_html($r->display_name).'</td><td>'.esc_html($r->user_email).'</td>'
                            . '<td><strong>'.(int)$r->login_count.'</strong></td>'
                            . '<td>'.$act_badge.'</td>'
@@ -366,9 +392,9 @@ class FairPlay_LMS_Reports_Controller {
                 if ($act_exists) {
                     $html .= '<p style="font-size:11px;color:#888;margin:4px 0 0">'
                            . '&#9432; <strong>Actividad</strong>: pings registrados mientras el usuario naveg&oacute; la plataforma (aprox. 1 ping cada 5 minutos de sesion activa). '
-                           . '<span style="background:#46b450;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">&ge;50</span> alta &nbsp;'
-                           . '<span style="background:#ffb900;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">&ge;10</span> media &nbsp;'
-                           . '<span style="background:#dc3232;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">&lt;10</span> baja</p>';
+                           . '<span style="background:#46b450;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">&ge;'.(int)$activity_high.'</span> alta &nbsp;'
+                           . '<span style="background:#ffb900;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">&ge;'.(int)$activity_medium.'</span> media &nbsp;'
+                           . '<span style="background:#dc3232;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">&lt;'.(int)$activity_low.'</span> baja</p>';
                 }
             }
         }
@@ -1503,8 +1529,11 @@ class FairPlay_LMS_Reports_Controller {
         // 5. Paginated users
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $users = (array)$wpdb->get_results($wpdb->prepare(
-            "SELECT u.ID, u.display_name, u.user_email
+            "SELECT u.ID, u.display_name, u.user_email,
+                    um_fn.meta_value AS first_name, um_ln.meta_value AS last_name
              FROM {$wpdb->users} u
+             LEFT JOIN {$wpdb->usermeta} um_fn ON um_fn.user_id=u.ID AND um_fn.meta_key='first_name'
+             LEFT JOIN {$wpdb->usermeta} um_ln ON um_ln.user_id=u.ID AND um_ln.meta_key='last_name'
              WHERE 1=1 $uid_where $search_where
              ORDER BY u.display_name LIMIT %d OFFSET %d",
             $per_page, $offset
@@ -1533,6 +1562,7 @@ class FairPlay_LMS_Reports_Controller {
         // 8. Legend
         $html .= '<div class="fplms-mx-legend">'
                . '<span class="fplms-mx-leg-item"><span class="fplms-mx-leg-dot fplms-mx-done">'.$check_ico.'</span>Completado</span>'
+             . '<span class="fplms-mx-leg-item"><span class="fplms-mx-leg-dot fplms-mx-failed">70%</span>Reprobado</span>'
                . '<span class="fplms-mx-leg-item"><span class="fplms-mx-leg-dot fplms-mx-progress"></span>En Progreso</span>'
                . '<span class="fplms-mx-leg-item"><span class="fplms-mx-leg-dot fplms-mx-assigned">'.$dot_ico.'</span>Asignado (Sin iniciar)</span>'
                . '<span class="fplms-mx-leg-item"><span class="fplms-mx-leg-dot fplms-mx-empty-dot"></span>No inscrito</span>'
@@ -1547,7 +1577,7 @@ class FairPlay_LMS_Reports_Controller {
 
         // 10. Matrix table
         $html .= '<div class="fplms-mx-table-wrap"><table class="fplms-mx-table widefat"><thead><tr>';
-        $html .= '<th class="fplms-mx-th-user">Usuario</th>';
+        $html .= '<th class="fplms-mx-th-user">Nombre</th>';
         $html .= '<th class="fplms-mx-th-email">Email</th>';
         foreach ($courses as $c) {
             $short = mb_strlen($c->post_title) > 26 ? mb_substr($c->post_title, 0, 24).'…' : $c->post_title;
@@ -1563,7 +1593,9 @@ class FairPlay_LMS_Reports_Controller {
             foreach ($users as $u) {
                 $uid  = (int)$u->ID;
                 $html .= '<tr>';
-                $html .= '<td class="fplms-mx-td-user"><strong>'.esc_html($u->display_name).'</strong></td>';
+                $mx_full = trim(($u->first_name ?? '') . ' ' . ($u->last_name ?? ''));
+                if ($mx_full === '') $mx_full = $u->display_name;
+                $html .= '<td class="fplms-mx-td-user"><strong>'.esc_html($mx_full).'</strong></td>';
                 $html .= '<td class="fplms-mx-td-email"><small>'.esc_html($u->user_email).'</small></td>';
                 foreach ($courses as $c) {
                     $cid = (int)$c->ID;
@@ -1572,6 +1604,9 @@ class FairPlay_LMS_Reports_Controller {
                         $html .= '<td class="fplms-mx-cell fplms-mx-empty" title="No inscrito"></td>';
                     } elseif (in_array($enr['status'], ['completed','passed'], true) || $enr['progress'] >= 100) {
                         $html .= '<td class="fplms-mx-cell fplms-mx-done" title="Completado">'.$check_ico.'</td>';
+                    } elseif (in_array($enr['status'], ['failed','not_passed'], true)) {
+                        $score = round($enr['progress']);
+                        $html .= '<td class="fplms-mx-cell fplms-mx-failed" title="Reprobado ('.$score.'%)"><small>'.$score.'%</small></td>';
                     } elseif ($enr['progress'] > 0) {
                         $pct  = round($enr['progress']);
                         $html .= '<td class="fplms-mx-cell fplms-mx-progress" title="En progreso ('.$pct.'%)"><small>'.$pct.'%</small></td>';
@@ -1673,6 +1708,11 @@ class FairPlay_LMS_Reports_Controller {
         $parsed_uids = '' !== $raw_uids
             ? array_values(array_filter(array_map('intval', explode(',', $raw_uids))))
             : [];
+        $activity = $this->normalize_activity_thresholds(
+            isset($_GET['activity_high']) ? (int) $_GET['activity_high'] : 50,
+            isset($_GET['activity_medium']) ? (int) $_GET['activity_medium'] : 10,
+            isset($_GET['activity_low']) ? (int) $_GET['activity_low'] : 10
+        );
         $f=[
             'date_from'  => isset($_GET['date_from'])  ? sanitize_text_field(wp_unslash($_GET['date_from']))  : '',
             'date_to'    => isset($_GET['date_to'])    ? sanitize_text_field(wp_unslash($_GET['date_to']))    : '',
@@ -1680,6 +1720,9 @@ class FairPlay_LMS_Reports_Controller {
             'city_id'    => isset($_GET['city_id'])    ? (int)$_GET['city_id']    : 0,
             'company_id' => isset($_GET['company_id']) ? (int)$_GET['company_id'] : 0,
             'role_id'    => isset($_GET['role_id'])    ? (int)$_GET['role_id']    : 0,
+            'activity_high'   => $activity['activity_high'],
+            'activity_medium' => $activity['activity_medium'],
+            'activity_low'    => $activity['activity_low'],
             'user_ids'   => $parsed_uids,
         ];
         $this->dispatch_xls_export($fmt,$f);
@@ -2260,8 +2303,11 @@ class FairPlay_LMS_Reports_Controller {
                 // All matching users (apply global user filter, no pagination)
                 // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $mx_users = (array)$wpdb->get_results(
-                    "SELECT u.ID, u.display_name, u.user_email
+                    "SELECT u.ID, u.display_name, u.user_email,
+                            um_fn.meta_value AS first_name, um_ln.meta_value AS last_name
                      FROM {$wpdb->users} u
+                     LEFT JOIN {$wpdb->usermeta} um_fn ON um_fn.user_id=u.ID AND um_fn.meta_key='first_name'
+                     LEFT JOIN {$wpdb->usermeta} um_ln ON um_ln.user_id=u.ID AND um_ln.meta_key='last_name'
                      WHERE 1=1 $uw
                      ORDER BY u.display_name LIMIT 5000"
                 );
@@ -2281,30 +2327,39 @@ class FairPlay_LMS_Reports_Controller {
                     }
                 }
                 // Build headers + data
-                $mx_headers = ['Usuario', 'Email'];
-                foreach ($mx_courses as $c) $mx_headers[] = $c->post_title;
-                $mx_data = [];
+                    $mx_rows = [];
                 foreach ($mx_users as $u) {
-                    $row = [$u->display_name, $u->user_email];
+                    $mx_xls_full = trim(($u->first_name ?? '') . ' ' . ($u->last_name ?? ''));
+                    if ($mx_xls_full === '') $mx_xls_full = $u->display_name;
+                        $row = [
+                            'name'  => $mx_xls_full,
+                            'email' => $u->user_email,
+                            'cells' => [],
+                        ];
                     foreach ($mx_courses as $c) {
                         $enr = $mx_enr[(int)$u->ID][(int)$c->ID] ?? null;
                         if ($enr === null) {
-                            $row[] = '';
+                                $row['cells'][] = ['value' => '', 'style' => 's_mx_empty'];
                         } elseif (in_array($enr['status'], ['completed','passed'], true) || $enr['progress'] >= 100) {
-                            $row[] = '✓ Completado';
+                            $row['cells'][] = ['value' => 'APR', 'style' => 's_mx_done'];
+                        } elseif (in_array($enr['status'], ['failed','not_passed'], true)) {
+                            $row['cells'][] = ['value' => round($enr['progress']) . '%', 'style' => 's_mx_failed'];
                         } elseif ($enr['progress'] > 0) {
-                            $row[] = 'En Progreso (' . round($enr['progress']) . '%)';
+                                $row['cells'][] = ['value' => round($enr['progress']) . '%', 'style' => 's_mx_progress'];
                         } else {
-                            $row[] = 'Asignado';
+                            $row['cells'][] = ['value' => '', 'style' => 's_mx_assigned'];
                         }
                     }
-                    $mx_data[] = $row;
+                        $mx_rows[] = $row;
                 }
-                $this->output_xls_multi('matriz_formacion', 'Matriz de Formacion', [[
-                    'title'   => 'Matriz de Formacion — '.count($mx_courses).' cursos / '.count($mx_users).' estudiantes',
-                    'headers' => $mx_headers,
-                    'data'    => $mx_data,
-                ]], $f);
+                    $this->output_matrix_xls(
+                        'matriz_formacion',
+                        'Matriz de Formacion',
+                        $mx_courses,
+                        $mx_rows,
+                        'Matriz de Formacion — '.count($mx_courses).' cursos / '.count($mx_users).' estudiantes',
+                        $f
+                    );
                 break;
             default:
                 $users = $this->users->get_users_filtered_by_structure(0, 0, 0, 0);
@@ -2322,6 +2377,98 @@ class FairPlay_LMS_Reports_Controller {
                     ],
                 ], $f);
         }
+    }
+
+    private function output_matrix_xls(string $slug, string $report_title, array $courses, array $rows, string $section_title, array $filters = []): void {
+        $xe = fn($v) => htmlspecialchars((string)$v, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+
+        $fp = [];
+        if (!empty($filters['date_from'])) $fp[] = 'Desde: ' . $filters['date_from'];
+        if (!empty($filters['date_to']))   $fp[] = 'Hasta: ' . $filters['date_to'];
+        if (!empty($filters['user_ids'])) {
+            $uid_list = is_array($filters['user_ids'])
+                ? $filters['user_ids']
+                : array_values(array_filter(array_map('intval', explode(',', (string)$filters['user_ids']))));
+            $names = [];
+            foreach ($uid_list as $uid) {
+                $ud = get_userdata((int)$uid);
+                if ($ud) $names[] = $ud->display_name;
+            }
+            if (!empty($names)) $fp[] = 'Usuario: ' . implode(', ', $names);
+        }
+        $meta = 'Generado: ' . wp_date('d/m/Y H:i') . (empty($fp) ? '' : ' | ' . implode(' | ', $fp));
+        $merge = count($courses) + 1;
+
+        $styles = '<Styles>'
+            . '<Style ss:ID="s_title"><Font ss:Bold="1" ss:Size="13" ss:Color="#333333"/><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_meta"><Font ss:Italic="1" ss:Size="9" ss:Color="#888888"/><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_sec"><Font ss:Bold="1" ss:Size="11" ss:Color="#FFFFFF"/><Interior ss:Color="#FFA800" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_mx_hdr_fixed"><Font ss:Bold="1" ss:Size="10" ss:Color="#374151"/><Interior ss:Color="#F3F4F6" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#D1D5DB"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/></Borders></Style>'
+            . '<Style ss:ID="s_mx_hdr_course"><Font ss:Bold="1" ss:Size="9" ss:Color="#000000"/><Interior ss:Color="#F3F4F6" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Bottom" ss:WrapText="1" ss:Rotate="45"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#D1D5DB"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/></Borders></Style>'
+            . '<Style ss:ID="s_mx_name"><Font ss:Bold="1" ss:Color="#1F2937"/><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Alignment ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/></Borders></Style>'
+            . '<Style ss:ID="s_mx_email"><Font ss:Color="#6B7280"/><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Alignment ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/></Borders></Style>'
+            . '<Style ss:ID="s_mx_done"><Font ss:Bold="1" ss:Size="8" ss:Color="#FFFFFF"/><Interior ss:Color="#22C55E" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BBF7D0"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BBF7D0"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BBF7D0"/></Borders></Style>'
+            . '<Style ss:ID="s_mx_failed"><Font ss:Bold="1" ss:Size="8" ss:Color="#FFFFFF"/><Interior ss:Color="#EF4444" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#FCA5A5"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#FCA5A5"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#FCA5A5"/></Borders></Style>'
+            . '<Style ss:ID="s_mx_progress"><Font ss:Bold="1" ss:Size="8" ss:Color="#FFFFFF"/><Interior ss:Color="#F59E0B" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#FCD34D"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#FCD34D"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#FCD34D"/></Borders></Style>'
+            . '<Style ss:ID="s_mx_assigned"><Interior ss:Color="#3B82F6" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BFDBFE"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BFDBFE"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BFDBFE"/></Borders></Style>'
+            . '<Style ss:ID="s_mx_empty"><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E5E7EB"/></Borders></Style>'
+            . '<Style ss:ID="s_mx_empty_msg"><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Font ss:Italic="1" ss:Color="#9CA3AF"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+            . '</Styles>';
+
+        $columns = '<Column ss:AutoFitWidth="0" ss:Width="170"/><Column ss:AutoFitWidth="0" ss:Width="220"/>';
+        foreach ($courses as $course) {
+            $columns .= '<Column ss:AutoFitWidth="0" ss:Width="52"/>';
+        }
+
+        $sheet_body  = $columns;
+        $sheet_body .= '<Row ss:Height="22"><Cell ss:StyleID="s_title" ss:MergeAcross="' . $merge . '"><Data ss:Type="String">' . $xe($report_title) . '</Data></Cell></Row>';
+        $sheet_body .= '<Row ss:Height="14"><Cell ss:StyleID="s_meta" ss:MergeAcross="' . $merge . '"><Data ss:Type="String">' . $xe($meta) . '</Data></Cell></Row>';
+        $sheet_body .= '<Row ss:Height="8"/>';
+        $sheet_body .= '<Row ss:Height="20"><Cell ss:StyleID="s_sec" ss:MergeAcross="' . $merge . '"><Data ss:Type="String">' . $xe($section_title) . '</Data></Cell></Row>';
+        $sheet_body .= '<Row ss:Height="92"><Cell ss:StyleID="s_mx_hdr_fixed"><Data ss:Type="String">Nombre</Data></Cell><Cell ss:StyleID="s_mx_hdr_fixed"><Data ss:Type="String">Email</Data></Cell>';
+        foreach ($courses as $course) {
+            $sheet_body .= '<Cell ss:StyleID="s_mx_hdr_course"><Data ss:Type="String">' . $xe($course->post_title) . '</Data></Cell>';
+        }
+        $sheet_body .= '</Row>';
+
+        if (empty($rows)) {
+            $sheet_body .= '<Row ss:Height="22"><Cell ss:StyleID="s_mx_empty_msg" ss:MergeAcross="' . $merge . '"><Data ss:Type="String">(Sin datos para los filtros seleccionados)</Data></Cell></Row>';
+        } else {
+            foreach ($rows as $row) {
+                $sheet_body .= '<Row ss:Height="20">';
+                $sheet_body .= '<Cell ss:StyleID="s_mx_name"><Data ss:Type="String">' . $xe($row['name'] ?? '') . '</Data></Cell>';
+                $sheet_body .= '<Cell ss:StyleID="s_mx_email"><Data ss:Type="String">' . $xe($row['email'] ?? '') . '</Data></Cell>';
+                foreach ((array)($row['cells'] ?? []) as $cell) {
+                    $style = in_array(($cell['style'] ?? ''), ['s_mx_done', 's_mx_failed', 's_mx_progress', 's_mx_assigned', 's_mx_empty'], true)
+                        ? $cell['style']
+                        : 's_mx_empty';
+                    $sheet_body .= '<Cell ss:StyleID="' . $style . '"><Data ss:Type="String">' . $xe($cell['value'] ?? '') . '</Data></Cell>';
+                }
+                $sheet_body .= '</Row>';
+            }
+        }
+
+        $worksheet_options = '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>5</SplitHorizontal><TopRowBottomPane>5</TopRowBottomPane><SplitVertical>2</SplitVertical><LeftColumnRightPane>2</LeftColumnRightPane><ActivePane>0</ActivePane><Panes><Pane><Number>3</Number></Pane><Pane><Number>1</Number></Pane><Pane><Number>2</Number></Pane><Pane><Number>0</Number></Pane></Panes><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions>';
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+             . '<?mso-application progid="Excel.Sheet"?>' . "\n"
+             . '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"'
+             . ' xmlns:o="urn:schemas-microsoft-com:office:office"'
+             . ' xmlns:x="urn:schemas-microsoft-com:office:excel"'
+             . ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+             . $styles
+             . '<Worksheet ss:Name="Matriz de Formacion"><Table>' . $sheet_body . '</Table>' . $worksheet_options . '</Worksheet>'
+             . '</Workbook>';
+
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="fairplay_' . $slug . '_' . gmdate('Ymd_His') . '.xls"');
+        header('Cache-Control: max-age=0');
+        header('Pragma: public');
+        echo $xml;
+        exit;
     }
 
     /**
@@ -2621,6 +2768,26 @@ class FairPlay_LMS_Reports_Controller {
                         <div id="fplms-rpt-suggestions"></div>
                     </div>
                 </div>
+                <div class="fplms-rpt-filters-row fplms-rpt-filters-row-thresholds">
+                    <div class="fplms-rpt-fg fplms-rpt-fg-activity-thresholds">
+                        <label>Actividad</label>
+                        <div class="fplms-rpt-thresholds-row">
+                            <div class="fplms-rpt-threshold-field fplms-rpt-threshold-field--green">
+                                <span>Alta</span>
+                                <input type="number" id="fplms-rpt-activity-high" min="1" step="1" value="50" placeholder="50">
+                            </div>
+                            <div class="fplms-rpt-threshold-field fplms-rpt-threshold-field--orange">
+                                <span>Media</span>
+                                <input type="number" id="fplms-rpt-activity-medium" min="0" step="1" value="10" placeholder="10">
+                            </div>
+                            <div class="fplms-rpt-threshold-field fplms-rpt-threshold-field--red">
+                                <span>Baja</span>
+                                <input type="number" id="fplms-rpt-activity-low" min="0" step="1" value="10" placeholder="10">
+                            </div>
+                        </div>
+                        <small>Por defecto: alta &ge; 50, media &ge; 10, baja &lt; 10</small>
+                    </div>
+                </div>
                 <div class="fplms-rpt-filters-actions">
                     <button id="fplms-rpt-apply" class="button button-primary"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Aplicar Filtros</button>
                     <button id="fplms-rpt-reset" class="button"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Limpiar</button>
@@ -2667,11 +2834,30 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-reports-wrap{max-width:1400px}
         .fplms-rpt-filters{background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:18px 20px 14px;margin:16px 0}
         .fplms-rpt-filters-row{display:flex;flex-wrap:wrap;gap:12px 16px;align-items:flex-end}
+        .fplms-rpt-filters-row + .fplms-rpt-filters-row{margin-top:12px}
+        .fplms-rpt-filters-row-thresholds{padding-top:2px}
         .fplms-rpt-fg{display:flex;flex-direction:column;gap:4px;min-width:148px;position:relative}
         .fplms-rpt-fg-user{min-width:220px}
+        .fplms-rpt-fg-activity-thresholds{min-width:310px;padding:10px 12px 12px;border:1px solid #ead9b8;border-radius:10px;background:linear-gradient(180deg,#fffaf1 0%,#fff 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+        .fplms-rpt-fg-activity-thresholds>label{display:flex;align-items:center;gap:6px;color:#9a5b00}
+        .fplms-rpt-fg-activity-thresholds>label::before{content:'';width:8px;height:8px;border-radius:999px;background:#ffa800;box-shadow:0 0 0 4px rgba(255,168,0,.14)}
         .fplms-rpt-fg label{font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:.4px}
         .fplms-rpt-fg select,.fplms-rpt-fg input[type=date],.fplms-rpt-fg input[type=text]{padding:6px 10px;border:1.5px solid #ddd;border-radius:6px;font-size:13px;background:#fafafa}
+        .fplms-rpt-fg input[type=number]{padding:6px 10px;border:1.5px solid #ddd;border-radius:6px;font-size:13px;background:#fafafa;width:100%}
         .fplms-rpt-fg select:focus,.fplms-rpt-fg input:focus{border-color:#ffa800;outline:none;background:#fff}
+        .fplms-rpt-thresholds-row{display:grid;grid-template-columns:repeat(3,minmax(74px,1fr));gap:8px;align-items:end}
+        .fplms-rpt-threshold-field{display:flex;flex-direction:column;gap:4px;padding:8px;border-radius:8px;border:1px solid #ececec;background:#fff}
+        .fplms-rpt-threshold-field span{font-size:11px;font-weight:700;line-height:1.2}
+        .fplms-rpt-threshold-field--green{border-color:#bbf7d0;background:#f0fdf4}
+        .fplms-rpt-threshold-field--green span{color:#15803d}
+        .fplms-rpt-threshold-field--green input[type=number]{border-color:#86efac;background:#fff}
+        .fplms-rpt-threshold-field--orange{border-color:#fed7aa;background:#fff7ed}
+        .fplms-rpt-threshold-field--orange span{color:#c2410c}
+        .fplms-rpt-threshold-field--orange input[type=number]{border-color:#fdba74;background:#fff}
+        .fplms-rpt-threshold-field--red{border-color:#fecaca;background:#fef2f2}
+        .fplms-rpt-threshold-field--red span{color:#b91c1c}
+        .fplms-rpt-threshold-field--red input[type=number]{border-color:#fca5a5;background:#fff}
+        .fplms-rpt-fg-activity-thresholds small{font-size:11px;color:#888;line-height:1.3;display:block;margin-top:2px}
         .fplms-rpt-filters-actions{margin-top:14px;display:flex;gap:8px}
         #fplms-active-filters-bar{display:none;align-items:center;flex-wrap:wrap;gap:6px;padding:8px 14px;background:#fff8ee;border:1px solid #ffe0a0;border-radius:0 0 6px 6px;margin-bottom:4px;font-size:12px}
         .fplms-fbar-lbl{font-weight:700;color:#c96800;font-size:11px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;margin-left:6px}
@@ -2692,6 +2878,7 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-mx-leg-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#555}
         .fplms-mx-leg-dot{width:22px;height:22px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
         .fplms-mx-leg-dot.fplms-mx-done{background:#22c55e}
+        .fplms-mx-leg-dot.fplms-mx-failed{background:#ef4444;color:#fff;font-size:8px;font-weight:700;line-height:1}
         .fplms-mx-leg-dot.fplms-mx-progress{background:#f59e0b}
         .fplms-mx-leg-dot.fplms-mx-assigned{background:#3b82f6}
         .fplms-mx-leg-dot.fplms-mx-empty-dot{background:#f0f0f0;border:1px solid #ddd}
@@ -2706,14 +2893,19 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-mx-th-user{min-width:160px;position:sticky;left:0;background:#f3f4f6;z-index:3;box-shadow:2px 0 4px rgba(0,0,0,.06)}
         .fplms-mx-th-email{min-width:180px;position:sticky;left:160px;background:#f3f4f6;z-index:3;box-shadow:2px 0 4px rgba(0,0,0,.04)}
         .fplms-mx-th-course{width:38px;min-width:38px;max-width:38px;padding:4px 2px;border-bottom:2px solid #d1d5db;border-left:1px solid #e5e7eb;vertical-align:bottom}
-        .fplms-mx-th-inner{writing-mode:vertical-lr;transform:rotate(180deg);white-space:nowrap;font-size:11px;color:#4b5563;padding-bottom:4px;max-height:110px;overflow:hidden}
+        .fplms-mx-th-inner{writing-mode:vertical-lr;transform:rotate(180deg);white-space:nowrap;font-size:11px;color:#000;padding-bottom:4px;max-height:110px;overflow:hidden}
         .fplms-mx-table tbody tr:nth-child(even){background:#fafafa}
-        .fplms-mx-table tbody tr:hover td{background:#f0f7ff!important}
+        .fplms-mx-table tbody tr:hover td{box-shadow:inset 0 1px 0 #bfdbfe,inset 0 -1px 0 #bfdbfe}
+        .fplms-mx-table tbody tr:hover .fplms-mx-td-user,
+        .fplms-mx-table tbody tr:hover .fplms-mx-td-email,
+        .fplms-mx-table tbody tr:hover .fplms-mx-empty{background:#f0f7ff}
         .fplms-mx-td-user{position:sticky;left:0;background:inherit;z-index:1;padding:6px 10px;white-space:nowrap;font-size:13px;border-right:1px solid #e5e7eb;box-shadow:2px 0 4px rgba(0,0,0,.04)}
         .fplms-mx-td-email{position:sticky;left:160px;background:inherit;z-index:1;padding:6px 10px;white-space:nowrap;font-size:12px;color:#6b7280;border-right:1px solid #e5e7eb;box-shadow:2px 0 4px rgba(0,0,0,.02)}
         .fplms-mx-cell{width:38px;min-width:38px;max-width:38px;text-align:center;padding:4px 2px;border-left:1px solid #e5e7eb;border-bottom:1px solid #f3f4f6}
         .fplms-mx-done{background:#22c55e}
+        .fplms-mx-failed{background:#ef4444}
         .fplms-mx-progress{background:#f59e0b}
+        .fplms-mx-failed small,
         .fplms-mx-progress small{color:#fff;font-size:9px;font-weight:700;display:block;line-height:1.6}
         .fplms-mx-assigned{background:#3b82f6}
         .fplms-mx-empty{background:#fff}
@@ -2839,6 +3031,7 @@ class FairPlay_LMS_Reports_Controller {
                 var bar=document.getElementById('fplms-active-filters-bar');if(!bar)return;
                 var badges=[];
                 var df=document.getElementById('fplms-rpt-date-from'),dt=document.getElementById('fplms-rpt-date-to');
+                var activity=normalizeActivityThresholdInputs();
                 if(df&&df.value)badges.push('Desde: '+df.value);
                 if(dt&&dt.value)badges.push('Hasta: '+dt.value);
                 [{label:'Ciudad',id:'fplms-rpt-city'},{label:'Empresa',id:'fplms-rpt-company'},{label:'Canal',id:'fplms-rpt-channel'},{label:'Cargo',id:'fplms-rpt-role'}].forEach(function(s){
@@ -2850,33 +3043,115 @@ class FairPlay_LMS_Reports_Controller {
                     if(uids&&uids.value) badges.push('Usuario: '+uname.value);
                     else badges.push('\u26a0\ufe0f Usuario: "'+uname.value+'" \u2014 selecciona del desplegable');
                 }
+                if(activity.activity_high!==50||activity.activity_medium!==10||activity.activity_low!==10) badges.push('Actividad: alta >='+activity.activity_high+' / media >='+activity.activity_medium+' / baja <'+activity.activity_low);
                 if(!badges.length){bar.style.display='none';bar.innerHTML='';return;}
                 bar.style.display='flex';
                 var ico='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#c96800" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>';
                 bar.innerHTML=ico+'<span class="fplms-fbar-lbl">Filtros activos:</span>'+badges.map(function(b){return '<span class="fplms-fbar-badge">'+b+'</span>';}).join('')+'<span class="fplms-fbar-note">Se aplican a todos los tabs</span>';
             }
+            function normalizeActivityThresholdInputs(){
+                var highEl=document.getElementById('fplms-rpt-activity-high');
+                var mediumEl=document.getElementById('fplms-rpt-activity-medium');
+                var lowEl=document.getElementById('fplms-rpt-activity-low');
+                var high=highEl?parseInt(highEl.value,10):50;
+                var medium=mediumEl?parseInt(mediumEl.value,10):10;
+                var low=lowEl?parseInt(lowEl.value,10):10;
+                if(!Number.isFinite(high)||high<1) high=50;
+                if(!Number.isFinite(medium)||medium<0) medium=10;
+                if(!Number.isFinite(low)||low<0) low=10;
+                if(medium>=high) medium=Math.max(0,high-1);
+                low=medium;
+                if(highEl) highEl.value=high;
+                if(mediumEl) mediumEl.value=medium;
+                if(lowEl) lowEl.value=low;
+                return {activity_high:high,activity_medium:medium,activity_low:low};
+            }
             var tabActions={participation:'fplms_report_participation',progress:'fplms_report_progress',performance:'fplms_report_performance',certificates:'fplms_report_certificates',time:'fplms_report_time',satisfaction:'fplms_report_satisfaction',channels:'fplms_report_channels',tests:'fplms_report_tests'};
             var matrixState={search:'',page:1,perPage:10};
             var matrixSearchTimer=null;
-            function loadMatrix(){
-                var content=document.getElementById('fplms-rpt-content');
-                content.innerHTML='<div class="fplms-rpt-loading"><span class="fplms-spin-dot"></span>Cargando matriz…</div>';
-                var p=Object.assign({action:'fplms_report_matrix',nonce:NONCE,matrix_search:matrixState.search,matrix_page:matrixState.page,matrix_per_page:matrixState.perPage},getFilters());
-                var body=Object.keys(p).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(p[k]);}).join('&');
-                fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
-                    .then(function(r){return r.json();})
-                    .then(function(res){content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>';})
-                    .catch(function(){content.innerHTML='<p class="notice notice-error">Error de conexión.</p>';});
+            var matrixRequestController=null;
+            var matrixRequestSeq=0;
+            var matrixCache={};
+            function encodeBody(p){return Object.keys(p).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(p[k]);}).join('&');}
+            function getMatrixRequestKey(filters){
+                return [
+                    matrixState.search || '',
+                    matrixState.page || 1,
+                    matrixState.perPage || 10,
+                    filters.date_from || '',
+                    filters.date_to || '',
+                    filters.channel_id || '',
+                    filters.city_id || '',
+                    filters.company_id || '',
+                    filters.role_id || '',
+                    filters.user_ids || ''
+                ].join('|');
             }
-            function getFilters(){return{date_from:document.getElementById('fplms-rpt-date-from').value||'',date_to:document.getElementById('fplms-rpt-date-to').value||'',channel_id:document.getElementById('fplms-rpt-channel').value||'',city_id:document.getElementById('fplms-rpt-city').value||'',company_id:document.getElementById('fplms-rpt-company').value||'',role_id:document.getElementById('fplms-rpt-role').value||'',user_ids:document.getElementById('fplms-rpt-user-ids').value||''};}
+            function setMatrixBusyState(isBusy){
+                var content=document.getElementById('fplms-rpt-content');
+                content.classList.toggle('fplms-rpt-content--busy', !!isBusy);
+                var searchInput=content.querySelector('#fplms-mx-search');
+                var perPage=content.querySelector('#fplms-mx-per-page');
+                if(searchInput) searchInput.classList.toggle('is-loading', !!isBusy);
+                if(perPage) perPage.disabled=!!isBusy;
+            }
+            function loadMatrix(opts){
+                opts=opts||{};
+                var content=document.getElementById('fplms-rpt-content');
+                var filters=getFilters();
+                var cacheKey=getMatrixRequestKey(filters);
+                var p=Object.assign({action:'fplms_report_matrix',nonce:NONCE,matrix_search:matrixState.search,matrix_page:matrixState.page,matrix_per_page:matrixState.perPage},filters);
+                var useSoftLoad=!!opts.soft && !!content.querySelector('.fplms-mx-table-wrap');
+
+                if(!opts.force && matrixCache[cacheKey]){
+                    content.innerHTML=matrixCache[cacheKey];
+                    setMatrixBusyState(false);
+                    return;
+                }
+
+                if(matrixRequestController){
+                    matrixRequestController.abort();
+                }
+                matrixRequestController=new AbortController();
+                matrixRequestSeq++;
+                var requestSeq=matrixRequestSeq;
+
+                if(useSoftLoad){
+                    setMatrixBusyState(true);
+                } else {
+                    content.innerHTML='<div class="fplms-rpt-loading"><span class="fplms-spin-dot"></span>Cargando matriz…</div>';
+                }
+
+                fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:encodeBody(p),signal:matrixRequestController.signal})
+                    .then(function(r){return r.json();})
+                    .then(function(res){
+                        if(requestSeq!==matrixRequestSeq||activeTab!=='matrix') return;
+                        var html=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>';
+                        matrixCache[cacheKey]=html;
+                        content.innerHTML=html;
+                    })
+                    .catch(function(err){
+                        if(err&&err.name==='AbortError') return;
+                        if(requestSeq!==matrixRequestSeq||activeTab!=='matrix') return;
+                        content.innerHTML='<p class="notice notice-error">Error de conexión.</p>';
+                    })
+                    .finally(function(){
+                        if(requestSeq===matrixRequestSeq){
+                            matrixRequestController=null;
+                            setMatrixBusyState(false);
+                        }
+                    });
+            }
+            function getFilters(){var activity=normalizeActivityThresholdInputs();return{date_from:document.getElementById('fplms-rpt-date-from').value||'',date_to:document.getElementById('fplms-rpt-date-to').value||'',channel_id:document.getElementById('fplms-rpt-channel').value||'',city_id:document.getElementById('fplms-rpt-city').value||'',company_id:document.getElementById('fplms-rpt-company').value||'',role_id:document.getElementById('fplms-rpt-role').value||'',activity_high:activity.activity_high,activity_medium:activity.activity_medium,activity_low:activity.activity_low,user_ids:document.getElementById('fplms-rpt-user-ids').value||''};}
             function loadReport(tab){
                 if(!tab)return; activeTab=tab;
-                if(tab==='matrix'){ matrixState={search:'',page:1,perPage:10}; loadMatrix(); return; }
+                if(tab==='matrix'){ matrixState={search:'',page:1,perPage:10}; loadMatrix({force:true}); return; }
+                if(matrixRequestController){ matrixRequestController.abort(); matrixRequestController=null; setMatrixBusyState(false); }
                 var action=tabActions[tab]; if(!action)return;
                 var content=document.getElementById('fplms-rpt-content');
                 content.innerHTML='<div class="fplms-rpt-loading"><span class="fplms-spin-dot"></span>Cargando reporte…</div>';
                 var p=Object.assign({action:action,nonce:NONCE},getFilters());
-                var body=Object.keys(p).map(k=>encodeURIComponent(k)+'='+encodeURIComponent(p[k])).join('&');
+                var body=encodeBody(p);
                 fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
                     .then(r=>r.json()).then(res=>{content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>'; initPagedTables(content); initSvCharts(res.data&&res.data.charts?res.data.charts:[]);})
                     .catch(()=>{content.innerHTML='<p class="notice notice-error">Error de conexion.</p>';});
@@ -2901,6 +3176,7 @@ class FairPlay_LMS_Reports_Controller {
             document.getElementById('fplms-rpt-reset').addEventListener('click',function(){
                 ['fplms-rpt-date-from','fplms-rpt-date-to','fplms-rpt-city','fplms-rpt-company','fplms-rpt-channel','fplms-rpt-role'].forEach(id=>{var el=document.getElementById(id);if(el)el.value='';});
                 document.getElementById('fplms-rpt-user-ids').value='';document.getElementById('fplms-rpt-user-search').value='';
+                document.getElementById('fplms-rpt-activity-high').value='50';document.getElementById('fplms-rpt-activity-medium').value='10';document.getElementById('fplms-rpt-activity-low').value='10';
                 updateFilterBar();
                 if(activeTab)loadReport(activeTab);
             });
@@ -3007,21 +3283,23 @@ class FairPlay_LMS_Reports_Controller {
                 else if (backBtn) { currentQuizId = null; loadReport('tests'); }
                 else if (rstBtn)  { resetQuizAttempt(rstBtn.dataset.quizId, rstBtn.dataset.userId, rstBtn.dataset.userQuizId, rstBtn.dataset.attempt, rstBtn.dataset.userName); }
                 else if (ansBtn)  { showTestAnswers(ansBtn.dataset.quizId, ansBtn.dataset.userId, ansBtn.dataset.attempt, ansBtn.dataset.userName); }
-                else if (mxPrev && !mxPrev.disabled) { matrixState.page--; loadMatrix(); }
-                else if (mxNext && !mxNext.disabled) { matrixState.page++; loadMatrix(); }
+                else if (mxPrev && !mxPrev.disabled) { matrixState.page--; loadMatrix({soft:true}); }
+                else if (mxNext && !mxNext.disabled) { matrixState.page++; loadMatrix({soft:true}); }
             });
             document.getElementById('fplms-rpt-content').addEventListener('input', function(e) {
                 if (e.target.id === 'fplms-mx-search') {
                     clearTimeout(matrixSearchTimer);
-                    var val = e.target.value;
-                    matrixSearchTimer = setTimeout(function(){ matrixState.search=val; matrixState.page=1; loadMatrix(); }, 420);
+                    var val = e.target.value.trim();
+                    if (val === matrixState.search) return;
+                    if (val.length === 1) return;
+                    matrixSearchTimer = setTimeout(function(){ matrixState.search=val; matrixState.page=1; loadMatrix({soft:true}); }, 280);
                 }
             });
             document.getElementById('fplms-rpt-content').addEventListener('change', function(e) {
                 if (e.target.id === 'fplms-mx-per-page') {
                     matrixState.perPage = parseInt(e.target.value, 10);
                     matrixState.page = 1;
-                    loadMatrix();
+                    loadMatrix({soft:true});
                 }
             });
 

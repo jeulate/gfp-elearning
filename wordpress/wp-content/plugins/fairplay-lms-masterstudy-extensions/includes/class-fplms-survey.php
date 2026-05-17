@@ -21,7 +21,7 @@ class FairPlay_LMS_Survey {
 
     // ── Constantes ───────────────────────────────────────────────────────────────
 
-    const DB_VERSION      = '1.0';
+    const DB_VERSION      = '1.1';
     const OPTION_DB_VER   = 'fplms_survey_db_version';
     const TABLE           = 'fplms_survey_responses';
     const META_ENABLED    = '_fplms_survey_enabled';
@@ -51,8 +51,11 @@ class FairPlay_LMS_Survey {
      */
     public function maybe_create_table(): void {
         if ( get_option( self::OPTION_DB_VER ) !== self::DB_VERSION ) {
-            $this->create_table();
-            update_option( self::OPTION_DB_VER, self::DB_VERSION );
+            if ( $this->create_table() ) {
+                update_option( self::OPTION_DB_VER, self::DB_VERSION );
+            }
+        } else {
+            $this->ensure_comment_column();
         }
     }
 
@@ -62,13 +65,14 @@ class FairPlay_LMS_Survey {
         $table   = $wpdb->prefix . self::TABLE;
         $charset = $wpdb->get_charset_collate();
 
-        $sql = "CREATE TABLE IF NOT EXISTS {$table} (
+        $sql = "CREATE TABLE {$table} (
             id           BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
             course_id    BIGINT(20) UNSIGNED NOT NULL,
             user_id      BIGINT(20) UNSIGNED NOT NULL,
             question_idx TINYINT UNSIGNED    NOT NULL DEFAULT 0,
             question     TEXT                NOT NULL,
             score        TINYINT UNSIGNED    NOT NULL,
+            comment      VARCHAR(500)        NOT NULL DEFAULT '',
             submitted_at DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY  (id),
             KEY course_id_idx    (course_id),
@@ -79,7 +83,26 @@ class FairPlay_LMS_Survey {
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta( $sql );
 
-        return $wpdb->last_error === '';
+        if ( $wpdb->last_error !== '' ) {
+            return false;
+        }
+
+        return $this->ensure_comment_column();
+    }
+
+    private function ensure_comment_column(): bool {
+        global $wpdb;
+
+        $table = $wpdb->prefix . self::TABLE;
+        $column_exists = $wpdb->get_var( $wpdb->prepare( "SHOW COLUMNS FROM {$table} LIKE %s", 'comment' ) );
+        if ( $column_exists ) {
+            return true;
+        }
+
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $added = $wpdb->query( "ALTER TABLE {$table} ADD COLUMN comment VARCHAR(500) NOT NULL DEFAULT '' AFTER score" );
+
+        return false !== $added && '' === $wpdb->last_error;
     }
 
     // ── Meta Box (editor de curso) ───────────────────────────────────────────────
@@ -286,12 +309,23 @@ class FairPlay_LMS_Survey {
 
         // Idempotente: si ya envió, devolver éxito sin duplicar
         if ( get_user_meta( $user_id, self::USER_META_DONE . $course_id, true ) ) {
-            wp_send_json_success( [ 'msg' => 'already_done' ] );
-            return;
+            if ( $this->has_saved_submission( $user_id, $course_id ) ) {
+                wp_send_json_success( [ 'msg' => 'already_done' ] );
+                return;
+            }
+
+            delete_user_meta( $user_id, self::USER_META_DONE . $course_id );
         }
 
         if ( ! isset( $_POST['responses'] ) || ! is_array( $_POST['responses'] ) || empty( $_POST['responses'] ) ) {
             wp_send_json_error( 'no_responses' );
+        }
+
+        $comment = isset( $_POST['comment'] )
+            ? sanitize_textarea_field( wp_unslash( $_POST['comment'] ) )
+            : '';
+        if ( strlen( $comment ) > 500 ) {
+            $comment = substr( $comment, 0, 500 );
         }
 
         $questions = $this->get_questions( $course_id );
@@ -299,6 +333,11 @@ class FairPlay_LMS_Survey {
         global $wpdb;
         $table = $wpdb->prefix . self::TABLE;
         $now   = current_time( 'mysql' );
+        if ( ! $this->ensure_comment_column() ) {
+            wp_send_json_error( 'comment_column_missing' );
+        }
+
+        $inserted = 0;
 
         foreach ( $_POST['responses'] as $idx => $score ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             $idx   = (int) $idx;
@@ -306,7 +345,7 @@ class FairPlay_LMS_Survey {
 
             if ( $score < 1 || $score > 5 ) continue;
 
-            $wpdb->insert(
+            $ok = $wpdb->insert(
                 $table,
                 [
                     'course_id'    => $course_id,
@@ -314,10 +353,19 @@ class FairPlay_LMS_Survey {
                     'question_idx' => $idx,
                     'question'     => $questions[ $idx ] ?? '',
                     'score'        => $score,
+                    'comment'      => $comment,
                     'submitted_at' => $now,
                 ],
-                [ '%d', '%d', '%d', '%s', '%d', '%s' ]
+                [ '%d', '%d', '%d', '%s', '%d', '%s', '%s' ]
             );
+
+            if ( false !== $ok ) {
+                $inserted++;
+            }
+        }
+
+        if ( $inserted < 1 ) {
+            wp_send_json_error( 'save_failed' );
         }
 
         update_user_meta( $user_id, self::USER_META_DONE . $course_id, '1' );
@@ -424,6 +472,10 @@ class FairPlay_LMS_Survey {
         if ( ! get_post_meta( $course_id, self::META_ENABLED, true ) ) return;
 
         $already_done = (bool) get_user_meta( $user_id, self::USER_META_DONE . $course_id, true );
+        if ( $already_done && ! $this->has_saved_submission( $user_id, $course_id ) ) {
+            delete_user_meta( $user_id, self::USER_META_DONE . $course_id );
+            $already_done = false;
+        }
 
         $questions = $this->get_questions( $course_id );
         // If no questions and already done, nothing to show
@@ -498,6 +550,33 @@ class FairPlay_LMS_Survey {
         .fplms-sv-inline__actions {
             display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px;
         }
+        .fplms-sv-comment {
+            margin-top: 12px;
+            background: rgba(255,255,255,.05);
+            border: 1px solid rgba(255,255,255,.12);
+            border-radius: 10px;
+            padding: 12px 14px;
+        }
+        .fplms-sv-comment__label {
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+            margin-bottom: 8px; font-size: 12px; font-weight: 600; color: rgba(255,255,255,.82);
+        }
+        .fplms-sv-comment__hint { font-size: 10px; color: rgba(255,255,255,.5); }
+        .fplms-sv-comment textarea {
+            width: 100%; min-height: 92px; resize: vertical; box-sizing: border-box;
+            border-radius: 8px; border: 1.5px solid rgba(255,255,255,.16);
+            background: rgba(17,24,39,.32); color: #fff; padding: 10px 12px;
+            font-size: 13px; line-height: 1.45;
+        }
+        .fplms-sv-comment textarea::placeholder { color: rgba(255,255,255,.42); }
+        .fplms-sv-comment textarea:focus {
+            outline: none; border-color: rgba(245,166,35,.8); box-shadow: 0 0 0 2px rgba(245,166,35,.16);
+        }
+        .fplms-sv-comment__footer {
+            margin-top: 7px; display: flex; justify-content: space-between; gap: 8px;
+            font-size: 11px; color: rgba(255,255,255,.5);
+        }
+        .fplms-sv-comment__count.is-limit { color: #fca5a5; }
         .fplms-sv-submit {
             flex: 1; display: inline-flex; align-items: center; justify-content: center;
             gap: 7px; background: linear-gradient(135deg,#f5a623,#e8941a);
@@ -591,6 +670,17 @@ class FairPlay_LMS_Survey {
                     + (D.message ? '<div class="fplms-sv-inline__message">' + esc(D.message) + '</div>' : '')
                     + '<div id="fplms-sv-body">'
                     + buildQuestionsHtml()
+                    + '<div class="fplms-sv-comment">'
+                    + '<label class="fplms-sv-comment__label" for="fplms-sv-comment">'
+                    + '<span>Comentario o sugerencia</span>'
+                    + '<span class="fplms-sv-comment__hint">Opcional</span>'
+                    + '</label>'
+                    + '<textarea id="fplms-sv-comment" maxlength="500" placeholder="Escribe una sugerencia breve sobre el curso o la experiencia de aprendizaje (m\u00e1x. 500 caracteres)..."></textarea>'
+                    + '<div class="fplms-sv-comment__footer">'
+                    + '<span>Tu comentario ayudar\u00e1 a mejorar futuras capacitaciones.</span>'
+                    + '<span class="fplms-sv-comment__count" id="fplms-sv-comment-count">0 / 500</span>'
+                    + '</div>'
+                    + '</div>'
                     + '<div id="fplms-sv-error" class="fplms-sv-error" style="display:none;"></div>'
                     + '</div>'
                     + '<div class="fplms-sv-inline__actions">'
@@ -603,10 +693,26 @@ class FairPlay_LMS_Survey {
                 );
 
                 document.getElementById('fplms-sv-submit').addEventListener('click', submitSurvey);
+                initCommentCounter();
 
                 // Ocultar estadísticas del currículo para dar espacio a la encuesta
                 var stat = document.querySelector('.masterstudy-single-course-complete__curiculum-statistic');
                 if (stat) stat.style.display = 'none';
+            }
+
+            function initCommentCounter() {
+                var textarea = document.getElementById('fplms-sv-comment');
+                var counter  = document.getElementById('fplms-sv-comment-count');
+                if (!textarea || !counter) return;
+                var sync = function() {
+                    if (textarea.value.length > 500) {
+                        textarea.value = textarea.value.slice(0, 500);
+                    }
+                    counter.textContent = textarea.value.length + ' / 500';
+                    counter.classList.toggle('is-limit', textarea.value.length >= 500);
+                };
+                textarea.addEventListener('input', sync);
+                sync();
             }
 
             function removeSurvey() {
@@ -636,8 +742,10 @@ class FairPlay_LMS_Survey {
             function submitSurvey() {
                 var btn     = document.getElementById('fplms-sv-submit');
                 var errorEl = document.getElementById('fplms-sv-error');
+                var commentEl = document.getElementById('fplms-sv-comment');
                 var responses = {};
                 var allAnswered = true;
+                var comment = commentEl ? commentEl.value.trim() : '';
 
                 D.questions.forEach(function(q, i) {
                     var checked = document.querySelector('input[name="fplms_q_' + i + '"]:checked');
@@ -652,6 +760,10 @@ class FairPlay_LMS_Survey {
                     if (errorEl) { errorEl.textContent = 'Por favor responde todas las preguntas antes de enviar.'; errorEl.style.display = 'block'; }
                     return;
                 }
+                if (comment.length > 500) {
+                    if (errorEl) { errorEl.textContent = 'El comentario no puede exceder 500 caracteres.'; errorEl.style.display = 'block'; }
+                    return;
+                }
                 if (errorEl) errorEl.style.display = 'none';
 
                 btn.disabled = true;
@@ -662,6 +774,7 @@ class FairPlay_LMS_Survey {
                 params.append('action',    'fplms_submit_survey');
                 params.append('nonce',     D.nonceSubmit);
                 params.append('course_id', D.courseId);
+                params.append('comment',   comment);
                 Object.keys(responses).forEach(function(k) {
                     params.append('responses[' + k + ']', responses[k]);
                 });
@@ -824,6 +937,7 @@ class FairPlay_LMS_Survey {
                     'user_name'     => $row['display_name'],
                     'user_email'    => $row['user_email'],
                     'submitted_at'  => $row['submitted_at'],
+                    'comment'       => $row['comment'] ?? '',
                     'scores'        => [],
                     'questions'     => [],
                 ];
@@ -881,10 +995,28 @@ class FairPlay_LMS_Survey {
             .fplms-sv-stat-total   { font-size:11px; color:#9ca3af; margin-top:3px; }
             .fplms-sv-dist-bars    { display:flex; gap:3px; align-items:flex-end; height:26px; margin-top:6px; }
             .fplms-sv-dist-bar     { flex:1; background:#c7d2fe; border-radius:2px 2px 0 0; min-height:2px; }
+            .fplms-sv-table-shell  { border:1px solid #e5e7eb; border-radius:12px; overflow:hidden; background:#fff; }
+            .fplms-sv-table-toolbar {
+                display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+                padding:12px 14px; background:#f9fafb; border-bottom:1px solid #e5e7eb;
+            }
+            .fplms-sv-page-size    { display:flex; align-items:center; gap:8px; color:#4b5563; font-size:12px; }
+            .fplms-sv-page-size select {
+                min-width:74px; padding:6px 10px; border:1px solid #d1d5db; border-radius:8px;
+                background:#fff; color:#111827; font-size:12px;
+            }
+            .fplms-sv-page-summary { font-size:12px; color:#6b7280; }
             .fplms-sv-table        { width:100%; border-collapse:collapse; font-size:13px; margin-top:10px; }
             .fplms-sv-table th     { padding:8px 12px; text-align:left; border-bottom:2px solid #e5e7eb; color:#374151; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.4px; }
             .fplms-sv-table td     { padding:8px 12px; border-bottom:1px solid #f3f4f6; vertical-align:middle; }
             .fplms-sv-table tr:hover td { background:#f9fafb; }
+            .fplms-sv-comment-cell { min-width:260px; max-width:420px; color:#374151; }
+            .fplms-sv-comment-empty { color:#d1d5db; }
+            .fplms-sv-comment-box {
+                max-height:72px; overflow:auto; white-space:pre-wrap; word-break:break-word;
+                padding:8px 10px; border-radius:8px; background:#f9fafb; border:1px solid #e5e7eb;
+                font-size:12px; line-height:1.45;
+            }
             .sv-chip               { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:50%; font-size:13px; font-weight:700; }
             .sv-chip-1 { background:#fee2e2; color:#b91c1c; }
             .sv-chip-2 { background:#fed7aa; color:#9a3412; }
@@ -892,6 +1024,24 @@ class FairPlay_LMS_Survey {
             .sv-chip-4 { background:#dcfce7; color:#166534; }
             .sv-chip-5 { background:#d1fae5; color:#065f46; }
             .fplms-sv-empty        { text-align:center; padding:44px 0; color:#9ca3af; font-size:14px; }
+            .fplms-sv-pagination   {
+                display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap;
+                padding:12px 14px; background:#fff; border-top:1px solid #e5e7eb;
+            }
+            .fplms-sv-page-btn {
+                min-width:34px; height:34px; padding:0 10px; border:1px solid #d1d5db; border-radius:8px;
+                background:#fff; color:#374151; font-size:12px; font-weight:600; cursor:pointer;
+                transition:background .15s,border-color .15s,color .15s;
+            }
+            .fplms-sv-page-btn:hover { background:#eef2ff; border-color:#c7d2fe; color:#4338ca; }
+            .fplms-sv-page-btn.is-active { background:#667eea; border-color:#667eea; color:#fff; }
+            .fplms-sv-page-btn.is-disabled,
+            .fplms-sv-page-btn:disabled { background:#f3f4f6; border-color:#e5e7eb; color:#9ca3af; cursor:not-allowed; }
+            @media (max-width: 782px) {
+                .fplms-sv-table-toolbar { align-items:flex-start; }
+                .fplms-sv-page-summary,
+                .fplms-sv-pagination { justify-content:flex-start; }
+            }
             </style>
 
             <div class="fplms-sv-page-card">
@@ -925,6 +1075,7 @@ class FairPlay_LMS_Survey {
                 <?php else : ?>
                     <?php foreach ( $by_course as $cid => $submissions ) :
                         $ctitle = get_the_title( $cid ) ?: 'Curso #' . $cid;
+                        $submission_count = count( $submissions );
                         $q_list = [];
                         foreach ( $submissions as $sub ) {
                             foreach ( $sub['questions'] as $qi => $qtxt ) { $q_list[ $qi ] = $qtxt; }
@@ -965,48 +1116,75 @@ class FairPlay_LMS_Survey {
                         <?php endif; ?>
 
                         <!-- Tabla de respuestas individuales -->
-                        <table class="fplms-sv-table">
-                            <thead>
-                                <tr>
-                                    <th>Fecha</th>
-                                    <th>Participante</th>
-                                    <?php foreach ( $q_list as $qi => $qtxt ) : ?>
-                                    <th title="<?php echo esc_attr( $qtxt ); ?>">P<?php echo esc_html( $qi + 1 ); ?></th>
-                                    <?php endforeach; ?>
-                                    <th>Promedio</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ( $submissions as $sub ) :
-                                    $avg_sub = count( $sub['scores'] ) > 0
-                                        ? round( array_sum( $sub['scores'] ) / count( $sub['scores'] ), 1 )
-                                        : '—';
-                                ?>
-                                <tr>
-                                    <td><?php echo esc_html( date_i18n( 'd/m/Y H:i', strtotime( $sub['submitted_at'] ) ) ); ?></td>
-                                    <td>
-                                        <div><?php echo esc_html( $sub['user_name'] ); ?></div>
-                                        <div style="font-size:11px;color:#9ca3af;"><?php echo esc_html( $sub['user_email'] ); ?></div>
-                                    </td>
-                                    <?php foreach ( $q_list as $qi => $qtxt ) :
-                                        $sc = $sub['scores'][ $qi ] ?? null;
+                        <div class="fplms-sv-table-shell" data-total-rows="<?php echo esc_attr( $submission_count ); ?>">
+                            <div class="fplms-sv-table-toolbar">
+                                <label class="fplms-sv-page-size">
+                                    <span>Mostrar</span>
+                                    <select class="fplms-sv-page-size-select">
+                                        <?php foreach ( [ 5, 10, 20, 50 ] as $page_size ) : ?>
+                                        <option value="<?php echo esc_attr( $page_size ); ?>" <?php selected( 5, $page_size ); ?>>
+                                            <?php echo esc_html( $page_size ); ?>
+                                        </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <span>registros</span>
+                                </label>
+                                <div class="fplms-sv-page-summary">Mostrando <?php echo esc_html( min( 5, $submission_count ) ); ?> de <?php echo esc_html( $submission_count ); ?> registros</div>
+                            </div>
+
+                            <table class="fplms-sv-table">
+                                <thead>
+                                    <tr>
+                                        <th>Fecha</th>
+                                        <th>Participante</th>
+                                        <th>Comentario</th>
+                                        <?php foreach ( $q_list as $qi => $qtxt ) : ?>
+                                        <th title="<?php echo esc_attr( $qtxt ); ?>">P<?php echo esc_html( $qi + 1 ); ?></th>
+                                        <?php endforeach; ?>
+                                        <th>Promedio</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ( $submissions as $row_index => $sub ) :
+                                        $avg_sub = count( $sub['scores'] ) > 0
+                                            ? round( array_sum( $sub['scores'] ) / count( $sub['scores'] ), 1 )
+                                            : '—';
                                     ?>
-                                    <td>
-                                        <?php if ( $sc !== null ) : ?>
-                                        <span class="sv-chip sv-chip-<?php echo esc_attr( $sc ); ?>"
-                                              title="<?php echo esc_attr( self::$SCALE[ $sc ] ?? '' ); ?>">
-                                            <?php echo esc_html( $sc ); ?>
-                                        </span>
-                                        <?php else : ?>
-                                        <span style="color:#d1d5db;">—</span>
-                                        <?php endif; ?>
-                                    </td>
+                                    <tr class="fplms-sv-table-row" data-row-index="<?php echo esc_attr( $row_index ); ?>">
+                                        <td><?php echo esc_html( date_i18n( 'd/m/Y H:i', strtotime( $sub['submitted_at'] ) ) ); ?></td>
+                                        <td>
+                                            <div><?php echo esc_html( $sub['user_name'] ); ?></div>
+                                            <div style="font-size:11px;color:#9ca3af;"><?php echo esc_html( $sub['user_email'] ); ?></div>
+                                        </td>
+                                        <td class="fplms-sv-comment-cell">
+                                            <?php if ( ! empty( $sub['comment'] ) ) : ?>
+                                            <div class="fplms-sv-comment-box"><?php echo esc_html( $sub['comment'] ); ?></div>
+                                            <?php else : ?>
+                                            <span class="fplms-sv-comment-empty">—</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <?php foreach ( $q_list as $qi => $qtxt ) :
+                                            $sc = $sub['scores'][ $qi ] ?? null;
+                                        ?>
+                                        <td>
+                                            <?php if ( $sc !== null ) : ?>
+                                            <span class="sv-chip sv-chip-<?php echo esc_attr( $sc ); ?>"
+                                                  title="<?php echo esc_attr( self::$SCALE[ $sc ] ?? '' ); ?>">
+                                                <?php echo esc_html( $sc ); ?>
+                                            </span>
+                                            <?php else : ?>
+                                            <span style="color:#d1d5db;">—</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <?php endforeach; ?>
+                                        <td style="font-weight:600;color:#667eea;"><?php echo esc_html( $avg_sub ); ?></td>
+                                    </tr>
                                     <?php endforeach; ?>
-                                    <td style="font-weight:600;color:#667eea;"><?php echo esc_html( $avg_sub ); ?></td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </tbody>
+                            </table>
+
+                            <div class="fplms-sv-pagination" aria-label="Paginación de respuestas"></div>
+                        </div>
 
                     </div><!-- .fplms-sv-course-block -->
                     <?php endforeach; ?>
@@ -1014,6 +1192,83 @@ class FairPlay_LMS_Survey {
 
             </div><!-- .fplms-sv-page-card -->
         </div><!-- .wrap -->
+        <script>
+        (function() {
+            function createButton(label, isDisabled, onClick, extraClass) {
+                var button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'fplms-sv-page-btn' + (extraClass ? ' ' + extraClass : '');
+                button.textContent = label;
+                button.disabled = !!isDisabled;
+                if (isDisabled) {
+                    button.classList.add('is-disabled');
+                } else {
+                    button.addEventListener('click', onClick);
+                }
+                return button;
+            }
+
+            function renderPagination(shell, state) {
+                var rows = shell.querySelectorAll('.fplms-sv-table-row');
+                var pager = shell.querySelector('.fplms-sv-pagination');
+                var summary = shell.querySelector('.fplms-sv-page-summary');
+                var total = rows.length;
+                var start = total ? ((state.page - 1) * state.pageSize) + 1 : 0;
+                var end = Math.min(state.page * state.pageSize, total);
+                var totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+
+                rows.forEach(function(row, index) {
+                    row.style.display = index >= start - 1 && index < end ? '' : 'none';
+                });
+
+                if (summary) {
+                    summary.textContent = total
+                        ? 'Mostrando ' + start + '-' + end + ' de ' + total + ' registros'
+                        : 'Sin registros';
+                }
+
+                pager.innerHTML = '';
+                if (total <= state.pageSize) {
+                    return;
+                }
+
+                pager.appendChild(createButton('Anterior', state.page === 1, function() {
+                    state.page -= 1;
+                    renderPagination(shell, state);
+                }));
+
+                for (var page = 1; page <= totalPages; page++) {
+                    (function(pageNumber) {
+                        pager.appendChild(createButton(String(pageNumber), state.page === pageNumber, function() {
+                            state.page = pageNumber;
+                            renderPagination(shell, state);
+                        }, state.page === pageNumber ? 'is-active' : ''));
+                    })(page);
+                }
+
+                pager.appendChild(createButton('Siguiente', state.page === totalPages, function() {
+                    state.page += 1;
+                    renderPagination(shell, state);
+                }));
+            }
+
+            document.querySelectorAll('.fplms-sv-table-shell').forEach(function(shell) {
+                var select = shell.querySelector('.fplms-sv-page-size-select');
+                var state = {
+                    page: 1,
+                    pageSize: parseInt(select.value || '5', 10)
+                };
+
+                select.addEventListener('change', function() {
+                    state.pageSize = parseInt(select.value || '5', 10);
+                    state.page = 1;
+                    renderPagination(shell, state);
+                });
+
+                renderPagination(shell, state);
+            });
+        })();
+        </script>
         <?php
     }
 
@@ -1057,7 +1312,7 @@ class FairPlay_LMS_Survey {
         header( 'Pragma: no-cache' );
 
         $out     = fopen( 'php://output', 'w' );
-        $headers = [ 'Curso', 'Nombre', 'Email', 'Fecha' ];
+        $headers = [ 'Curso', 'Nombre', 'Email', 'Fecha', 'Comentario' ];
         for ( $i = 0; $i < $max_q; $i++ ) {
             $headers[] = 'P' . ( $i + 1 ) . ' – Pregunta';
             $headers[] = 'P' . ( $i + 1 ) . ' – Puntuación';
@@ -1076,6 +1331,7 @@ class FairPlay_LMS_Survey {
                     'display_name' => $row['display_name'],
                     'user_email'   => $row['user_email'],
                     'submitted_at' => $row['submitted_at'],
+                    'comment'      => $row['comment'] ?? '',
                     'q'            => [],
                 ];
             }
@@ -1087,7 +1343,7 @@ class FairPlay_LMS_Survey {
 
         foreach ( $grouped as $sub ) {
             $course_title = get_the_title( (int) $sub['course_id'] ) ?: 'Curso #' . $sub['course_id'];
-            $csv_row      = [ $course_title, $sub['display_name'], $sub['user_email'], $sub['submitted_at'] ];
+            $csv_row      = [ $course_title, $sub['display_name'], $sub['user_email'], $sub['submitted_at'], $sub['comment'] ?? '' ];
             $scores       = [];
             for ( $i = 0; $i < $max_q; $i++ ) {
                 $q               = $sub['q'][ $i ] ?? null;
@@ -1148,5 +1404,20 @@ class FairPlay_LMS_Survey {
         $raw = get_post_meta( $course_id, self::META_QUESTIONS, true );
         $qs  = is_array( $raw ) ? $raw : ( json_decode( $raw ?: '[]', true ) ?: [] );
         return array_values( array_filter( $qs ) );
+    }
+
+    private function has_saved_submission( int $user_id, int $course_id ): bool {
+        global $wpdb;
+
+        $table = $wpdb->prefix . self::TABLE;
+        $count = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*) FROM {$table} WHERE course_id = %d AND user_id = %d",
+                $course_id,
+                $user_id
+            )
+        );
+
+        return $count > 0;
     }
 }
