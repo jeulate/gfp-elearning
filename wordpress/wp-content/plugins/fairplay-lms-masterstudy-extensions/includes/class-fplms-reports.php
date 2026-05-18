@@ -30,6 +30,7 @@ class FairPlay_LMS_Reports_Controller {
             'fplms_report_participation'  => 'ajax_report_participation',
             'fplms_report_progress'       => 'ajax_report_progress',
             'fplms_report_performance'    => 'ajax_report_performance',
+            'fplms_report_comparisons'    => 'ajax_report_comparisons',
             'fplms_report_certificates'   => 'ajax_report_certificates',
             'fplms_report_time'           => 'ajax_report_time',
             'fplms_report_satisfaction'   => 'ajax_report_satisfaction',
@@ -437,6 +438,7 @@ class FairPlay_LMS_Reports_Controller {
             $key = $r->user_id . '_' . $r->quiz_id . '_' . $r->course_id;
             if (!isset($grouped[$key])) {
                 $grouped[$key] = [
+                    'user_id'      => (int) $r->user_id,
                     'display_name' => $r->display_name,
                     'user_email'   => $r->user_email,
                     'course_name'  => $r->course_name,
@@ -461,6 +463,7 @@ class FairPlay_LMS_Reports_Controller {
                 }
             }
             $agg[] = (object) [
+                'user_id'        => $data['user_id'],
                 'display_name'   => $data['display_name'],
                 'user_email'     => $data['user_email'],
                 'course_name'    => $data['course_name'],
@@ -474,6 +477,224 @@ class FairPlay_LMS_Reports_Controller {
             ];
         }
         return $agg;
+    }
+
+    private function get_comparison_grade_scale(): array {
+        return [
+            ['code' => 'EX', 'label' => 'Excelente',       'range' => '95% - 100%', 'min' => 95.0, 'color' => '#00af50'],
+            ['code' => 'MB', 'label' => 'Muy Bueno',       'range' => '85% - 94%',  'min' => 85.0, 'color' => '#92d14f'],
+            ['code' => 'B',  'label' => 'Bueno',           'range' => '75% - 84%',  'min' => 75.0, 'color' => '#ffc000'],
+            ['code' => 'RE', 'label' => 'Regular',         'range' => '68% - 74%',  'min' => 68.0, 'color' => '#ff3300'],
+            ['code' => 'NS', 'label' => 'No Satisfactorio','range' => '0% - 67%',   'min' => 0.0,  'color' => '#fe0000'],
+        ];
+    }
+
+    private function resolve_comparison_grade(float $score): array {
+        foreach ($this->get_comparison_grade_scale() as $grade) {
+            if ($score >= (float) $grade['min']) {
+                return $grade;
+            }
+        }
+
+        return $this->get_comparison_grade_scale()[count($this->get_comparison_grade_scale()) - 1];
+    }
+
+    private function format_comparison_score(float $score): string {
+        return rtrim(rtrim(number_format($score, 1, '.', ''), '0'), '.');
+    }
+
+    private function build_comparisons_payload(array $f): array {
+        global $wpdb;
+
+        $uids = $this->get_user_ids_for_filters($f);
+        $quiz_table = null;
+        $table_name = $wpdb->prefix . 'stm_lms_user_quizzes';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name)) === $table_name) {
+            $quiz_table = $table_name;
+        }
+
+        $scale = $this->get_comparison_grade_scale();
+        $distribution = [];
+        foreach ($scale as $grade) {
+            $distribution[$grade['code']] = 0;
+        }
+
+        if (!$quiz_table) {
+            return [
+                'quiz_table_found' => false,
+                'rows' => [],
+                'scale' => $scale,
+                'distribution' => $distribution,
+                'total_users' => 0,
+                'total_evaluations' => 0,
+                'overall_average' => 0.0,
+                'overall_grade' => $this->resolve_comparison_grade(0),
+                'top_grade' => null,
+            ];
+        }
+
+        $qw = null !== $uids ? (empty($uids) ? 'AND uq.user_id=0' : 'AND uq.user_id IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $qrows = (array) $wpdb->get_results(
+            "SELECT uq.user_id,uq.course_id,uq.quiz_id,uq.user_quiz_id,
+                    uq.progress AS score,uq.status,
+                    u.display_name,u.user_email,
+                    pc.post_title AS course_name,q.post_title AS quiz_name
+             FROM `{$quiz_table}` uq
+             INNER JOIN {$wpdb->users} u ON uq.user_id=u.ID
+             LEFT JOIN {$wpdb->posts} q ON uq.quiz_id=q.ID
+             LEFT JOIN {$wpdb->posts} pc ON uq.course_id=pc.ID
+             WHERE 1=1 $qw
+             ORDER BY uq.user_id,uq.quiz_id,uq.course_id,uq.user_quiz_id ASC LIMIT 5000"
+        );
+
+        if (empty($qrows)) {
+            return [
+                'quiz_table_found' => true,
+                'rows' => [],
+                'scale' => $scale,
+                'distribution' => $distribution,
+                'total_users' => 0,
+                'total_evaluations' => 0,
+                'overall_average' => 0.0,
+                'overall_grade' => $this->resolve_comparison_grade(0),
+                'top_grade' => null,
+            ];
+        }
+
+        $agg = $this->aggregate_quiz_rows($qrows);
+        $by_user = [];
+        foreach ($agg as $row) {
+            $user_id = (int) ($row->user_id ?? 0);
+            if (!isset($by_user[$user_id])) {
+                $channel_id = $user_id > 0 ? (int) get_user_meta($user_id, 'fplms_channel', true) : 0;
+                $by_user[$user_id] = [
+                    'user_id' => $user_id,
+                    'user_name' => (string) ($row->display_name ?? ''),
+                    'user_email' => (string) ($row->user_email ?? ''),
+                    'channel_name' => $channel_id > 0 ? (string) $this->structures->get_term_name_by_id($channel_id) : 'Sin canal',
+                    'scores' => [],
+                ];
+            }
+            $by_user[$user_id]['scores'][] = (float) ($row->score ?? 0);
+        }
+
+        $rows = [];
+        $sum_average = 0.0;
+        foreach ($by_user as $user_data) {
+            $scores = $user_data['scores'];
+            if (empty($scores)) {
+                continue;
+            }
+
+            $average = round(array_sum($scores) / count($scores), 1);
+            $grade = $this->resolve_comparison_grade($average);
+            $distribution[$grade['code']]++;
+            $sum_average += $average;
+
+            $rows[] = [
+                'user_name' => $user_data['user_name'] !== '' ? $user_data['user_name'] : $user_data['user_email'],
+                'channel_name' => $user_data['channel_name'] !== '' ? $user_data['channel_name'] : 'Sin canal',
+                'average' => $average,
+                'average_label' => $this->format_comparison_score($average) . '%',
+                'grade_code' => $grade['code'],
+                'grade_label' => $grade['label'],
+                'range_label' => $grade['range'],
+                'color' => $grade['color'],
+            ];
+        }
+
+        usort($rows, static function (array $left, array $right): int {
+            if ($left['average'] === $right['average']) {
+                return strcasecmp($left['user_name'], $right['user_name']);
+            }
+            return $right['average'] <=> $left['average'];
+        });
+
+        $total_users = count($rows);
+        $overall_average = $total_users > 0 ? round($sum_average / $total_users, 1) : 0.0;
+        $overall_grade = $this->resolve_comparison_grade($overall_average);
+
+        $top_grade = null;
+        foreach ($scale as $grade) {
+            $count = (int) ($distribution[$grade['code']] ?? 0);
+            if ($top_grade === null || $count > (int) $top_grade['count']) {
+                $top_grade = $grade + ['count' => $count];
+            }
+        }
+
+        return [
+            'quiz_table_found' => true,
+            'rows' => $rows,
+            'scale' => $scale,
+            'distribution' => $distribution,
+            'total_users' => $total_users,
+            'total_evaluations' => count($agg),
+            'overall_average' => $overall_average,
+            'overall_grade' => $overall_grade,
+            'top_grade' => $top_grade,
+        ];
+    }
+
+    private function render_comparisons_overview(array $payload): string {
+        $overall_average = (float) ($payload['overall_average'] ?? 0);
+        $overall_grade = (array) ($payload['overall_grade'] ?? $this->resolve_comparison_grade(0));
+        $total_users = (int) ($payload['total_users'] ?? 0);
+        $total_evaluations = (int) ($payload['total_evaluations'] ?? 0);
+        $distribution = (array) ($payload['distribution'] ?? []);
+        $scale = (array) ($payload['scale'] ?? $this->get_comparison_grade_scale());
+        $top_grade = $payload['top_grade'] ?? null;
+
+        $segments = '';
+        foreach ($scale as $grade) {
+            $count = (int) ($distribution[$grade['code']] ?? 0);
+            if ($count < 1) {
+                continue;
+            }
+            $pct = $total_users > 0 ? round($count / $total_users * 100, 1) : 0;
+            $segments .= '<span class="fplms-cmp-dist-seg" style="flex:' . $count . ' 1 0;background:' . esc_attr($grade['color']) . '" title="' . esc_attr($grade['code'] . ' - ' . $grade['label'] . ': ' . $count . ' estudiantes (' . $pct . '%)') . '"></span>';
+        }
+        if ($segments === '') {
+            $segments = '<span class="fplms-cmp-dist-empty">Sin datos</span>';
+        }
+
+        $tiles = '';
+        foreach ($scale as $grade) {
+            $count = (int) ($distribution[$grade['code']] ?? 0);
+            $pct = $total_users > 0 ? round($count / $total_users * 100, 1) : 0;
+            $tiles .= '<div class="fplms-cmp-grade-card" style="--cmp-color:' . esc_attr($grade['color']) . '">'
+                . '<div class="fplms-cmp-grade-top"><span class="fplms-cmp-grade-code">' . esc_html($grade['code']) . '</span><strong>' . $count . '</strong></div>'
+                . '<div class="fplms-cmp-grade-label">' . esc_html($grade['label']) . '</div>'
+                . '<div class="fplms-cmp-grade-range">' . esc_html($grade['range']) . '</div>'
+                . '<div class="fplms-cmp-grade-pct">' . esc_html($this->format_comparison_score($pct)) . '% del total</div>'
+                . '</div>';
+        }
+
+        $top_grade_html = '';
+        if (is_array($top_grade) && !empty($top_grade['label'])) {
+            $top_grade_html = '<div class="fplms-cmp-hero-foot">Desempeño dominante: '
+                . '<span class="fplms-cmp-inline-pill" style="--cmp-color:' . esc_attr((string) $top_grade['color']) . '">' . esc_html((string) $top_grade['code'] . ' - ' . (string) $top_grade['label']) . '</span>'
+                . '</div>';
+        }
+
+        return '<div class="fplms-cmp-layout">'
+            . '<div class="fplms-cmp-hero">'
+            . '<div class="fplms-cmp-hero-eyebrow">Promedio General</div>'
+            . '<div class="fplms-cmp-hero-value">' . esc_html($this->format_comparison_score($overall_average)) . '</div>'
+            . '<div class="fplms-cmp-hero-suffix">puntos</div>'
+            . '<div class="fplms-cmp-inline-pill" style="--cmp-color:' . esc_attr((string) ($overall_grade['color'] ?? '#00af50')) . '">' . esc_html((string) ($overall_grade['code'] ?? 'EX') . ' - ' . (string) ($overall_grade['label'] ?? 'Excelente')) . '</div>'
+            . '<div class="fplms-cmp-hero-meta">' . esc_html(number_format_i18n($total_users)) . ' estudiantes evaluados - ' . esc_html(number_format_i18n($total_evaluations)) . ' evaluaciones consideradas</div>'
+            . $top_grade_html
+            . '</div>'
+            . '<div class="fplms-cmp-summary">'
+            . '<div class="fplms-cmp-summary-head">'
+            . '<div class="fplms-cmp-summary-title">Distribución por desempeño</div>'
+            . '<div class="fplms-cmp-summary-sub">Clasificación basada en la escala de calificaciones configurada</div>'
+            . '</div>'
+            . '<div class="fplms-cmp-dist-bar">' . $segments . '</div>'
+            . '<div class="fplms-cmp-grade-grid">' . $tiles . '</div>'
+            . '</div>'
+            . '</div>';
     }
 
     private function build_export_url(string $report, array $f): string {
@@ -857,6 +1078,50 @@ class FairPlay_LMS_Reports_Controller {
             } else { $html.=$this->empty_msg('Sin datos.'); }
         }
         wp_send_json_success(['html'=>$html]);
+    }
+
+    public function ajax_report_comparisons(): void {
+        if (!$this->verify_request()) return;
+
+        $f = $this->get_filters();
+        $html = $this->render_section_head('Reporte de Comparaciones', $this->build_export_url('comparisons', $f));
+        $payload = $this->build_comparisons_payload($f);
+
+        if (empty($payload['quiz_table_found'])) {
+            $html .= $this->empty_msg('Tabla de resultados de MasterStudy no encontrada.');
+            wp_send_json_success(['html' => $html]);
+            return;
+        }
+
+        if (empty($payload['rows'])) {
+            $html .= $this->empty_msg('Sin datos de evaluaciones para construir la comparación.');
+            wp_send_json_success(['html' => $html]);
+            return;
+        }
+
+        $overall_grade = $payload['overall_grade'];
+        $top_grade = $payload['top_grade'];
+        $html .= $this->stat_cards([
+            ['label' => 'Estudiantes evaluados', 'value' => '<strong>' . (int) $payload['total_users'] . '</strong>', 'color' => 'blue'],
+            ['label' => 'Evaluaciones consideradas', 'value' => '<strong>' . (int) $payload['total_evaluations'] . '</strong>', 'color' => 'orange'],
+            ['label' => 'Desempeño general', 'value' => '<strong>' . esc_html($overall_grade['code'] . ' - ' . $overall_grade['label']) . '</strong>', 'sub' => $this->format_comparison_score((float) $payload['overall_average']) . '%', 'color' => 'green'],
+            ['label' => 'Nivel dominante', 'value' => '<strong>' . esc_html(($top_grade['code'] ?? '—') . ' - ' . ($top_grade['label'] ?? '—')) . '</strong>', 'sub' => isset($top_grade['count']) ? (int) $top_grade['count'] . ' estudiantes' : '', 'color' => 'yellow'],
+        ]);
+        $html .= $this->render_comparisons_overview($payload);
+        $html .= $this->sub('Desempeno por Usuario');
+        $html .= $this->paged_table_open(['Usuario', 'Canal', 'Promedio General', 'Desempeno', 'Rango']);
+        foreach ($payload['rows'] as $row) {
+            $html .= '<tr>'
+                . '<td>' . esc_html($row['user_name']) . '</td>'
+                . '<td>' . esc_html($row['channel_name']) . '</td>'
+                . '<td><strong>' . esc_html($row['average_label']) . '</strong></td>'
+                . '<td><span class="fplms-cmp-inline-pill" style="--cmp-color:' . esc_attr($row['color']) . '">' . esc_html($row['grade_code'] . ' - ' . $row['grade_label']) . '</span></td>'
+                . '<td>' . esc_html($row['range_label']) . '</td>'
+                . '</tr>';
+        }
+        $html .= $this->paged_table_close();
+
+        wp_send_json_success(['html' => $html]);
     }
 
     // REPORT 4 — CERTIFICADOS
@@ -2248,6 +2513,37 @@ class FairPlay_LMS_Reports_Controller {
                 ], $f);
                 break;
 
+            // -- COMPARACIONES --------------------------------------------
+            case str_starts_with($format, 'comparisons'):
+                $comparison_payload = $this->build_comparisons_payload($f);
+                if (empty($comparison_payload['quiz_table_found']) || empty($comparison_payload['rows'])) { echo 'Sin datos.'; exit; }
+                $overall_grade_xls = $comparison_payload['overall_grade'];
+                $this->output_xls_multi('comparaciones', 'Reporte de Comparaciones', [
+                    [
+                        'title'   => 'Resumen General',
+                        'headers' => ['Promedio general', 'Desempeno general', 'Rango general', 'Estudiantes evaluados', 'Evaluaciones consideradas'],
+                        'data'    => [[
+                            $this->format_comparison_score((float) $comparison_payload['overall_average']) . '%',
+                            $overall_grade_xls['code'] . ' - ' . $overall_grade_xls['label'],
+                            $overall_grade_xls['range'],
+                            (int) $comparison_payload['total_users'],
+                            (int) $comparison_payload['total_evaluations'],
+                        ]],
+                    ],
+                    [
+                        'title'   => 'Desempeno por Usuario',
+                        'headers' => ['Usuario', 'Canal', 'Promedio General', 'Desempeno', 'Rango'],
+                        'data'    => array_map(fn($row) => [
+                            $row['user_name'],
+                            $row['channel_name'],
+                            $row['average_label'],
+                            $row['grade_code'] . ' - ' . $row['grade_label'],
+                            $row['range_label'],
+                        ], $comparison_payload['rows']),
+                    ],
+                ], $f);
+                break;
+
             // -- CERTIFICADOS ----------------------------------------------
             case str_starts_with($format, 'certificates'):
                 if (!$ms) { echo 'Sin datos.'; exit; }
@@ -3112,7 +3408,7 @@ class FairPlay_LMS_Reports_Controller {
         $roles     = $this->structures->get_active_terms_for_select(FairPlay_LMS_Config::TAX_ROLE);
         $nonce     = wp_create_nonce('fplms_reports_nonce');
         $tabs = [
-            'participation'=>'Participacion','progress'=>'Progreso','performance'=>'Desempeno',
+            'participation'=>'Participacion','progress'=>'Progreso','performance'=>'Desempeno','comparisons'=>'Comparaciones',
             'certificates'=>'Certificados','time'=>'Tiempo','satisfaction'=>'Satisfaccion','channels'=>'Canales',
             'tests'=>'Tests','matrix'=>'Matriz de Formacion',
         ];
@@ -3120,6 +3416,7 @@ class FairPlay_LMS_Reports_Controller {
             'participation' => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="18" y="3" width="4" height="18"/><rect x="10" y="8" width="4" height="13"/><rect x="2" y="13" width="4" height="8"/></svg>',
             'progress'      => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>',
             'performance'   => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2z"/></svg>',
+            'comparisons'   => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-6"/></svg>',
             'certificates'  => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></svg>',
             'time'          => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
             'satisfaction'  => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
@@ -3276,13 +3573,13 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-mx-search-input{flex:1;min-width:220px;max-width:380px;padding:6px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px}
         .fplms-mx-per-page-label{font-size:12px;color:#555;display:flex;align-items:center;gap:6px}
         .fplms-mx-per-page{padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px}
-        .fplms-mx-table-wrap{overflow-x:auto;border-radius:6px;border:1px solid #e0e0e0;margin-bottom:4px}
+        .fplms-mx-table-wrap{overflow:auto;max-height:70vh;border-radius:6px;border:1px solid #e0e0e0;margin-bottom:4px}
         .fplms-mx-table{border-collapse:collapse;width:100%;min-width:400px}
         .fplms-mx-table thead tr{background:#f3f4f6}
-        .fplms-mx-th-user,.fplms-mx-th-email{font-size:12px;padding:8px 10px;white-space:nowrap;border-bottom:2px solid #d1d5db;text-align:left}
-        .fplms-mx-th-user{min-width:160px;position:sticky;left:0;background:#f3f4f6;z-index:3;box-shadow:2px 0 4px rgba(0,0,0,.06)}
-        .fplms-mx-th-email{min-width:180px;position:sticky;left:160px;background:#f3f4f6;z-index:3;box-shadow:2px 0 4px rgba(0,0,0,.04)}
-        .fplms-mx-th-course{width:38px;min-width:38px;max-width:38px;padding:4px 2px;border-bottom:2px solid #d1d5db;border-left:1px solid #e5e7eb;vertical-align:bottom}
+        .fplms-mx-th-user,.fplms-mx-th-email{font-size:12px;padding:8px 10px;white-space:nowrap;border-bottom:2px solid #d1d5db;text-align:left;position:sticky;top:0;background:#f3f4f6}
+        .fplms-mx-th-user{min-width:160px;left:0;z-index:5;box-shadow:2px 0 4px rgba(0,0,0,.06)}
+        .fplms-mx-th-email{min-width:180px;left:160px;z-index:5;box-shadow:2px 0 4px rgba(0,0,0,.04)}
+        .fplms-mx-th-course{width:38px;min-width:38px;max-width:38px;padding:4px 2px;border-bottom:2px solid #d1d5db;border-left:1px solid #e5e7eb;vertical-align:bottom;position:sticky;top:0;background:#f3f4f6;z-index:4}
         .fplms-mx-th-inner{writing-mode:vertical-lr;transform:rotate(180deg);white-space:nowrap;font-size:11px;color:#000;padding-bottom:4px;max-height:110px;overflow:hidden}
         .fplms-mx-table tbody tr:nth-child(even){background:#fafafa}
         .fplms-mx-table tbody tr:hover td{box-shadow:inset 0 1px 0 #bfdbfe,inset 0 -1px 0 #bfdbfe}
@@ -3301,6 +3598,29 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-mx-empty{background:#fff}
         .fplms-mx-pagination{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
         .fplms-mx-pag-info{font-size:12px;color:#6b7280;flex:1;min-width:120px}
+        .fplms-cmp-layout{display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:18px;margin:0 0 20px}
+        .fplms-cmp-hero,.fplms-cmp-summary{background:#fff;border:1px solid #ececec;border-radius:14px;padding:18px 20px;box-shadow:0 8px 24px rgba(15,23,42,.05)}
+        .fplms-cmp-hero{display:flex;flex-direction:column;justify-content:center;min-height:260px;background:linear-gradient(180deg,#fffdf7 0%,#fff 100%)}
+        .fplms-cmp-hero-eyebrow{font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#a16207;margin-bottom:8px}
+        .fplms-cmp-hero-value{font-size:64px;line-height:1;font-weight:800;color:#111827}
+        .fplms-cmp-hero-suffix{font-size:14px;color:#6b7280;margin-top:6px}
+        .fplms-cmp-hero-meta{font-size:12px;color:#6b7280;margin-top:14px;line-height:1.5}
+        .fplms-cmp-hero-foot{margin-top:12px;font-size:12px;color:#4b5563;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+        .fplms-cmp-summary-head{margin-bottom:14px}
+        .fplms-cmp-summary-title{font-size:15px;font-weight:700;color:#111827}
+        .fplms-cmp-summary-sub{font-size:12px;color:#6b7280;margin-top:4px}
+        .fplms-cmp-dist-bar{display:flex;align-items:center;gap:0;min-height:18px;border-radius:999px;overflow:hidden;background:#f3f4f6;border:1px solid #e5e7eb;margin-bottom:14px}
+        .fplms-cmp-dist-seg{display:block;min-height:18px}
+        .fplms-cmp-dist-empty{display:flex;align-items:center;justify-content:center;width:100%;font-size:11px;color:#9ca3af;padding:8px 0}
+        .fplms-cmp-grade-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+        .fplms-cmp-grade-card{border:1px solid #e5e7eb;border-radius:12px;padding:12px;background:linear-gradient(180deg,#fff 0%,#fafafa 100%);box-shadow:inset 0 0 0 1px var(--cmp-color)}
+        .fplms-cmp-grade-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+        .fplms-cmp-grade-code{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:26px;padding:0 8px;border-radius:999px;background:var(--cmp-color);color:#fff;font-size:12px;font-weight:800}
+        .fplms-cmp-grade-top strong{font-size:20px;color:#111827;line-height:1}
+        .fplms-cmp-grade-label{font-size:13px;font-weight:700;color:#111827}
+        .fplms-cmp-grade-range,.fplms-cmp-grade-pct{font-size:11px;color:#6b7280;margin-top:4px}
+        .fplms-cmp-inline-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:var(--cmp-color);color:#fff;font-size:12px;font-weight:700;line-height:1.2;margin-top:14px;align-self:flex-start}
+        @media (max-width: 960px){.fplms-cmp-layout{grid-template-columns:1fr}.fplms-cmp-hero{min-height:0}.fplms-cmp-hero-value{font-size:52px}}
         /* — Confirm modal — */
         .fplms-rpt-cmodal-overlay{display:none;position:fixed;inset:0;z-index:100002;background:rgba(0,0,0,.52);align-items:center;justify-content:center}
         .fplms-rpt-cmodal-overlay.active{display:flex}
@@ -3533,7 +3853,7 @@ class FairPlay_LMS_Reports_Controller {
                 if(lowEl) lowEl.value=low;
                 return {activity_high:high,activity_medium:medium,activity_low:low};
             }
-            var tabActions={participation:'fplms_report_participation',progress:'fplms_report_progress',performance:'fplms_report_performance',certificates:'fplms_report_certificates',time:'fplms_report_time',satisfaction:'fplms_report_satisfaction',channels:'fplms_report_channels',tests:'fplms_report_tests'};
+            var tabActions={participation:'fplms_report_participation',progress:'fplms_report_progress',performance:'fplms_report_performance',comparisons:'fplms_report_comparisons',certificates:'fplms_report_certificates',time:'fplms_report_time',satisfaction:'fplms_report_satisfaction',channels:'fplms_report_channels',tests:'fplms_report_tests'};
             var matrixState={search:'',page:1,perPage:10};
             var matrixSearchTimer=null;
             var matrixRequestController=null;
