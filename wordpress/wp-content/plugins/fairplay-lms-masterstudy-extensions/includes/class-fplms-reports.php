@@ -200,6 +200,199 @@ class FairPlay_LMS_Reports_Controller {
              . '</div></div>';
     }
 
+    private function render_channel_user_cell(array $users, int $total): string {
+        if ($total < 1) {
+            return '<span class="fplms-rpt-empty-inline">Sin usuarios asignados</span>';
+        }
+
+        $preview = array_slice($users, 0, 5);
+        $items = '';
+        foreach ($preview as $user) {
+            $label = trim((string) ($user->display_name ?? ''));
+            if ($label === '') {
+                $label = (string) ($user->user_email ?? ('Usuario #' . (int) ($user->ID ?? 0)));
+            }
+            $email = trim((string) ($user->user_email ?? ''));
+            $items .= '<span class="fplms-rpt-user-pill">'
+                . '<strong>' . esc_html($label) . '</strong>'
+                . ($email !== '' ? '<small>' . esc_html($email) . '</small>' : '')
+                . '</span>';
+        }
+
+        if ($total > count($preview)) {
+            $items .= '<span class="fplms-rpt-user-more">+' . (int) ($total - count($preview)) . ' mas</span>';
+        }
+
+        return '<div class="fplms-rpt-user-cell">'
+            . '<div class="fplms-rpt-user-count">' . (int) $total . ' usuario' . ($total !== 1 ? 's' : '') . '</div>'
+            . '<div class="fplms-rpt-user-list">' . $items . '</div>'
+            . '</div>';
+    }
+
+    private function get_courses_for_channel(int $channel_id): array {
+        $courses = get_posts([
+            'post_type'      => FairPlay_LMS_Config::MS_PT_COURSE,
+            'post_status'    => 'publish',
+            'posts_per_page' => -1,
+            'orderby'        => 'title',
+            'order'          => 'ASC',
+            'fields'         => 'ids',
+        ]);
+
+        $matched = [];
+        foreach ((array) $courses as $course_id) {
+            $raw_channels = get_post_meta((int) $course_id, FairPlay_LMS_Config::META_COURSE_CHANNELS, true);
+            $channels = array_map('intval', (array) $raw_channels);
+            if (in_array($channel_id, $channels, true)) {
+                $matched[] = (object) [
+                    'ID' => (int) $course_id,
+                    'post_title' => get_the_title((int) $course_id) ?: ('Curso #' . (int) $course_id),
+                ];
+            }
+        }
+
+        return $matched;
+    }
+
+    private function build_channel_report_payload(WP_Term $channel, ?string $ms): array {
+        global $wpdb;
+
+        $cid = (int) $channel->term_id;
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $cuids = array_map('intval', (array) $wpdb->get_col($wpdb->prepare(
+            "SELECT DISTINCT user_id FROM {$wpdb->usermeta} WHERE meta_key='fplms_channel' AND meta_value=%s",
+            (string) $cid
+        )));
+        $uc = count($cuids);
+        $channel_users = [];
+        if (!empty($cuids)) {
+            $uid_sql = implode(',', array_map('intval', $cuids));
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $channel_users = (array) $wpdb->get_results(
+                "SELECT u.ID, u.display_name, u.user_email, um_st.meta_value AS user_status
+                 FROM {$wpdb->users} u
+                 LEFT JOIN {$wpdb->usermeta} um_st ON u.ID=um_st.user_id AND um_st.meta_key='fplms_user_status'
+                 WHERE u.ID IN ($uid_sql)
+                 ORDER BY u.display_name"
+            );
+        }
+
+        $courses = $this->get_courses_for_channel($cid);
+        if ($uc < 1 && empty($courses)) {
+            return [
+                'hidden' => true,
+                'users_count' => 0,
+                'courses_count' => 0,
+                'registered_count' => 0,
+                'completed_count' => 0,
+                'completion_rate' => 0.0,
+                'rows' => [],
+            ];
+        }
+
+        $course_stats = [];
+        $progress_map = [];
+        if ($ms && !empty($cuids) && !empty($courses)) {
+            $uid_sql = implode(',', array_map('intval', $cuids));
+            $course_ids = array_map(fn($course) => (int) $course->ID, $courses);
+            $course_sql = implode(',', array_map('intval', $course_ids));
+
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $stats_rows = (array) $wpdb->get_results(
+                "SELECT course_id,
+                        COUNT(*) AS enrolled,
+                        SUM(CASE WHEN status IN('completed','passed') OR progress_percent>=100 THEN 1 ELSE 0 END) AS completed
+                 FROM `{$ms}`
+                 WHERE course_id IN ($course_sql) AND user_id IN ($uid_sql)
+                 GROUP BY course_id"
+            );
+            foreach ($stats_rows as $stat_row) {
+                $course_stats[(int) $stat_row->course_id] = [
+                    'enrolled' => (int) $stat_row->enrolled,
+                    'completed' => (int) $stat_row->completed,
+                ];
+            }
+
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $progress_rows = (array) $wpdb->get_results(
+                "SELECT user_id, course_id, status, progress_percent
+                 FROM `{$ms}`
+                 WHERE course_id IN ($course_sql) AND user_id IN ($uid_sql)"
+            );
+            foreach ($progress_rows as $progress_row) {
+                $progress_map[(int) $progress_row->user_id][(int) $progress_row->course_id] = [
+                    'completed' => in_array(strtolower((string) ($progress_row->status ?? '')), ['completed', 'passed'], true)
+                        || (float) ($progress_row->progress_percent ?? 0) >= 100,
+                ];
+            }
+        }
+
+        $registered_count = $uc * count($courses);
+        $completed_count = 0;
+        foreach ($courses as $course) {
+            $stats = $course_stats[(int) $course->ID] ?? ['completed' => 0];
+            $completed_count += (int) $stats['completed'];
+        }
+        $completion_rate = $registered_count > 0 ? round($completed_count / $registered_count * 100, 1) : 0.0;
+
+        $rows = [];
+        foreach ($channel_users as $user) {
+            $is_active = empty($user->user_status) || 'active' === $user->user_status;
+            $user_label = trim((string) ($user->display_name ?: ''));
+            if ($user_label === '') {
+                $user_label = (string) ($user->user_email ?: ('Usuario #' . (int) $user->ID));
+            }
+
+            if (empty($courses)) {
+                $rows[] = [
+                    'student_name' => $user_label,
+                    'student_email' => (string) $user->user_email,
+                    'course_name' => 'Sin Curso asignado',
+                    'completed' => false,
+                    'completed_label' => 'No',
+                    'status_label' => $is_active ? 'Activo' : 'Inactivo',
+                ];
+                continue;
+            }
+
+            foreach ($courses as $course) {
+                $course_id = (int) $course->ID;
+                $is_completed = (bool) ($progress_map[(int) $user->ID][$course_id]['completed'] ?? false);
+                $rows[] = [
+                    'student_name' => $user_label,
+                    'student_email' => (string) $user->user_email,
+                    'course_name' => (string) $course->post_title,
+                    'completed' => $is_completed,
+                    'completed_label' => $is_completed ? 'Si' : 'No',
+                    'status_label' => $is_active ? 'Activo' : 'Inactivo',
+                ];
+            }
+        }
+
+        if (empty($rows)) {
+            foreach ($courses as $course) {
+                $rows[] = [
+                    'student_name' => 'Sin usuarios asignados',
+                    'student_email' => '',
+                    'course_name' => (string) $course->post_title,
+                    'completed' => false,
+                    'completed_label' => 'No',
+                    'status_label' => '—',
+                ];
+            }
+        }
+
+        return [
+            'hidden' => false,
+            'users_count' => $uc,
+            'courses_count' => count($courses),
+            'registered_count' => $registered_count,
+            'completed_count' => $completed_count,
+            'completion_rate' => $completion_rate,
+            'rows' => $rows,
+        ];
+    }
+
     /** Parse varied duration strings to minutes: "1:30", "2h 45m", "30 min", "2 horas", "1" */
     private function parse_duration_minutes(string $raw): float {
         $raw = trim($raw);
@@ -1022,49 +1215,94 @@ class FairPlay_LMS_Reports_Controller {
     // REPORT 7 — CANALES
     public function ajax_report_channels(): void {
         if (!$this->verify_request()) return;
-        global $wpdb;
         $f=$this->get_filters(); $ms=$this->ms_table();
         $cha=['taxonomy'=>FairPlay_LMS_Config::TAX_CHANNEL,'hide_empty'=>false];
         if ($f['channel_id']) $cha['include']=[$f['channel_id']];
         $channels=get_terms($cha);
-        $html=$this->render_section_head('Reporte de Canales / Area',$this->build_export_url('channels',$f));
+        $section_head=$this->render_section_head('Reporte de Canales / Area',$this->build_export_url('channels',$f));
+        $html=$section_head;
         if (is_wp_error($channels)||empty($channels)) { $html.=$this->empty_msg('No hay canales configurados.'); wp_send_json_success(['html'=>$html]); return; }
         $comp=[];
+        $empty_channels=0;
+        $shown_channels=0;
         foreach ($channels as $ch) {
-            $cid=(int)$ch->term_id;
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $cuids=array_map('intval',(array)$wpdb->get_col($wpdb->prepare(
-                "SELECT DISTINCT user_id FROM {$wpdb->usermeta} WHERE meta_key='fplms_channel' AND meta_value=%s",(string)$cid
-            )));
-            $uc=count($cuids);
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $courses=(array)$wpdb->get_results($wpdb->prepare(
-                "SELECT p.ID,p.post_title FROM {$wpdb->posts} p
-                 INNER JOIN {$wpdb->postmeta} pm ON p.ID=pm.post_id AND pm.meta_key='fplms_course_channels'
-                 WHERE p.post_type=%s AND p.post_status='publish' AND pm.meta_value LIKE %s ORDER BY p.post_title",
-                FairPlay_LMS_Config::MS_PT_COURSE,'%"'.$cid.'"%'
-            ));
-            $html.='<h3 class="fplms-rpt-sub fplms-rpt-channel-head">'.esc_html($ch->name)
-                  .'<span class="fplms-rpt-channel-count"> ('.$uc.' usuarios | '.count($courses).' cursos)</span></h3>';
-            if (empty($courses)) { $html.=$this->empty_msg('Sin cursos asignados a este canal.'); $comp[$ch->name]=['courses'=>0,'enrolled'=>0,'completed'=>0,'rate'=>0]; continue; }
-            $html.=$this->paged_table_open(['Curso','Usuarios del Canal','Inscritos en Curso','Completados','Tasa Cumplimiento']);
-            $cen=0; $ccp=0;
-            foreach ($courses as $cr) {
-                $rid=(int)$cr->ID;
-                if (!$ms||empty($cuids)) { $html.='<tr><td>'.esc_html($cr->post_title).'</td><td>'.$uc.'</td><td>—</td><td>—</td><td>—</td></tr>'; continue; }
-                $ids=implode(',',array_map('intval',$cuids));
-                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $en=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `{$ms}` WHERE course_id=%d AND user_id IN ($ids)",$rid));
-                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $cp=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `{$ms}` WHERE course_id=%d AND user_id IN ($ids) AND (status IN('completed','passed') OR progress_percent>=100)",$rid));
-                $cen+=$en; $ccp+=$cp;
-                $rt=$en>0?round($cp/$en*100,1):0; $rc=$rt>=70?'green':($rt>=40?'yellow':'red');
-                $html.='<tr><td>'.esc_html($cr->post_title).'</td><td>'.$uc.'</td><td>'.$en.'</td><td>'.$cp.'</td><td>'.$this->badge($rt.'%',$rc).'</td></tr>';
+            $payload = $this->build_channel_report_payload($ch, $ms);
+            if (!empty($payload['hidden'])) {
+                $empty_channels++;
+                continue;
             }
-            $html.=$this->paged_table_close();
-            $cr2=$cen>0?round($ccp/$cen*100,1):0; $cc=$cr2>=70?'green':($cr2>=40?'yellow':'red');
-            $html.='<p class="fplms-rpt-metric" style="text-align:right;margin-top:-8px;">Cumplimiento global del canal: '.$this->badge($cr2.'%',$cc).'</p>';
-            $comp[$ch->name]=['courses'=>count($courses),'enrolled'=>$cen,'completed'=>$ccp,'rate'=>$cr2];
+            $shown_channels++;
+            $html.='<h3 class="fplms-rpt-sub fplms-rpt-channel-head">'.esc_html($ch->name)
+                  .'<span class="fplms-rpt-channel-count"> ('.$payload['users_count'].' usuarios | '.$payload['courses_count'].' cursos)</span></h3>';
+
+            $cc=$payload['completion_rate']>=70?'green':($payload['completion_rate']>=40?'yellow':'red');
+            $registered_sub=$payload['registered_count']>0
+                ? $payload['users_count'].' usuarios x '.$payload['courses_count'].' cursos = '.$payload['registered_count'].' registrados'
+                : 'Sin relaciones usuario-curso en este canal';
+            $rate_sub=$payload['registered_count']>0
+                ? $payload['completed_count'].' completados / '.$payload['registered_count'].' registrados x 100'
+                : '0 completados / 0 registrados = 0%';
+            $html.=$this->stat_cards([
+                ['label'=>'Usuarios del canal','value'=>'<strong>'.$payload['users_count'].'</strong>','sub'=>'Asignados al canal','color'=>'blue'],
+                ['label'=>'Cursos asignados','value'=>'<strong>'.$payload['courses_count'].'</strong>','sub'=>'Visibles en este canal','color'=>'orange'],
+                ['label'=>'Estudiantes registrados','value'=>'<strong>'.$payload['registered_count'].'</strong>','sub'=>$registered_sub,'color'=>'yellow'],
+                ['label'=>'Estudiantes completaron','value'=>'<strong>'.$payload['completed_count'].'</strong>','sub'=>'Cursos completados','color'=>'green'],
+                ['label'=>'Tasa global','value'=>'<strong>'.$payload['completion_rate'].'%</strong>','sub'=>$rate_sub,'color'=>$cc],
+            ]);
+
+            $html.='<div class="fplms-rpt-channel-table" data-channel-name="'.esc_attr($ch->name).'">'
+                  .'<div class="fplms-rpt-channel-tools">'
+                  .'<label class="fplms-rpt-channel-search-wrap">'
+                  .'<span>Buscar curso</span>'
+                  .'<input type="search" class="fplms-rpt-channel-search" placeholder="Buscar por curso, usuarios o cantidades...">'
+                  .'</label>'
+                  .'<label class="fplms-rpt-channel-size-wrap">'
+                  .'<span>Mostrar</span>'
+                  .'<select class="fplms-rpt-channel-size">'
+                  .'<option value="5" selected>5</option>'
+                  .'<option value="10">10</option>'
+                  .'<option value="20">20</option>'
+                  .'<option value="50">50</option>'
+                  .'</select>'
+                  .'</label>'
+                  .'</div>'
+                  .'<div class="fplms-rpt-table-wrap"><table class="widefat striped fplms-rpt-table fplms-rpt-channel-data">'
+                  .'<thead><tr>'
+                  .'<th>Nombre del Estudiante</th>'
+                  .'<th>Curso</th>'
+                  .'<th>Completo el Curso</th>'
+                  .'<th>Estado</th>'
+                  .'</tr></thead><tbody>';
+            $html.=implode('', array_map(function($row){
+                $email_html = $row['student_email'] !== ''
+                    ? '<div class="fplms-rpt-channel-user-email">'.esc_html($row['student_email']).'</div>'
+                    : '';
+                return '<tr class="fplms-rpt-channel-row">'
+                    .'<td><strong>'.esc_html($row['student_name']).'</strong>'.$email_html.'</td>'
+                    .'<td>'.('Sin Curso asignado' === $row['course_name'] ? '<span class="fplms-rpt-empty-inline">Sin Curso asignado</span>' : esc_html($row['course_name'])).'</td>'
+                    .'<td>'.$this->badge($row['completed_label'], $row['completed'] ? 'green' : 'red').'</td>'
+                    .'<td>'.('—' === $row['status_label'] ? '<span class="fplms-rpt-empty-inline">—</span>' : $this->badge($row['status_label'], 'Activo' === $row['status_label'] ? 'green' : 'red')).'</td>'
+                    .'</tr>';
+            }, $payload['rows']));
+            $html.='</tbody></table></div>'
+                  .'<div class="fplms-rpt-channel-empty" style="display:none;">No se encontraron cursos para esta busqueda.</div>'
+                  .'<div class="fplms-rpt-channel-pagination">'
+                  .'<span class="fplms-rpt-channel-page-info"></span>'
+                  .'<button type="button" class="button button-small fplms-rpt-channel-prev">&lsaquo; Anterior</button>'
+                  .'<button type="button" class="button button-small fplms-rpt-channel-next">Siguiente &rsaquo;</button>'
+                  .'</div></div>';
+            $comp[$ch->name]=['courses'=>$payload['courses_count'],'enrolled'=>$payload['registered_count'],'completed'=>$payload['completed_count'],'rate'=>$payload['completion_rate']];
+        }
+        if ($empty_channels > 0) {
+            $html = $section_head
+                  . $this->stat_cards([
+                        ['label'=>'Canales mostrados','value'=>'<strong>'.$shown_channels.'</strong>','sub'=>'Con usuarios o cursos','color'=>'blue'],
+                        ['label'=>'Canales ocultos','value'=>'<strong>'.$empty_channels.'</strong>','sub'=>'Sin usuarios ni cursos asignados','color'=>'yellow'],
+                    ])
+                  . preg_replace('/^<div class="fplms-rpt-section-head">.*?<\/div>/s', '', $html, 1);
+        }
+        if ($shown_channels < 1) {
+            $html .= $this->empty_msg('No hay canales con usuarios o cursos asignados para mostrar.');
         }
         if (count($comp)>1) {
             $html.='<hr style="margin:28px 0;border-color:#eee;">'.$this->sub('Comparacion Global entre Canales');
@@ -2166,32 +2404,69 @@ class FairPlay_LMS_Reports_Controller {
             // -- CANALES --------------------------------------------------
             case str_starts_with($format, 'channels'):
                 if (!$ms) { echo 'Sin datos.'; exit; }
-                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $ch_rows = (array) $wpdb->get_results(
-                    "SELECT t.name AS canal,
-                            COUNT(DISTINCT uc.user_id) AS inscritos,
-                            SUM(CASE WHEN uc.status IN('completed','passed') OR uc.progress_percent>=100 THEN 1 ELSE 0 END) AS completados,
-                            ROUND(SUM(CASE WHEN uc.status IN('completed','passed') OR uc.progress_percent>=100 THEN 1 ELSE 0 END)/COUNT(DISTINCT uc.user_id)*100,1) AS tasa,
-                            p.post_title AS curso
-                     FROM {$wpdb->term_taxonomy} tt
-                     INNER JOIN {$wpdb->terms} t ON tt.term_id=t.term_id
-                     INNER JOIN {$wpdb->postmeta} pm ON pm.meta_key='fplms_course_channels'
-                         AND pm.meta_value LIKE CONCAT('%\"',tt.term_id,'\"%')
-                     INNER JOIN {$wpdb->posts} p ON pm.post_id=p.ID
-                         AND p.post_type='stm-courses' AND p.post_status='publish'
-                     INNER JOIN `{$ms}` uc ON uc.course_id=p.ID
-                     WHERE tt.taxonomy='fplms_channel' $mw
-                     GROUP BY tt.term_id,p.ID ORDER BY t.name,p.post_title LIMIT 5000"
-                );
-                $this->output_xls_multi('canales', 'Reporte de Canales', [
-                    [
-                        'title'   => 'Cumplimiento por Canal y Curso',
-                        'headers' => ['Canal', 'Curso', 'Inscritos', 'Completados', 'Tasa Cumplimiento %'],
-                        'data'    => array_map(fn($r) => [
-                            $r->canal, $r->curso, (int)$r->inscritos, (int)$r->completados, $r->tasa,
-                        ], $ch_rows),
+                $cha_x = ['taxonomy'=>FairPlay_LMS_Config::TAX_CHANNEL,'hide_empty'=>false];
+                if ($f['channel_id']) $cha_x['include']=[$f['channel_id']];
+                $channels_x = get_terms($cha_x);
+                if (is_wp_error($channels_x) || empty($channels_x)) { echo 'Sin datos.'; exit; }
+                $sheets = [];
+                $comparison_rows = [];
+                foreach ($channels_x as $channel_x) {
+                    $payload = $this->build_channel_report_payload($channel_x, $ms);
+                    if (!empty($payload['hidden'])) continue;
+                    $sheets[] = [
+                        'sheet_name' => $channel_x->name,
+                        'title' => 'Canal: ' . $channel_x->name,
+                        'tables' => [
+                            [
+                                'title' => 'Resumen del Canal',
+                                'headers' => ['Usuarios del canal', 'Cursos asignados', 'Estudiantes registrados', 'Estudiantes completaron', 'Tasa global', 'Formula registrados', 'Formula tasa'],
+                                'data' => [[
+                                    $payload['users_count'],
+                                    $payload['courses_count'],
+                                    $payload['registered_count'],
+                                    $payload['completed_count'],
+                                    $payload['completion_rate'] . '%',
+                                    $payload['users_count'] . ' usuarios x ' . $payload['courses_count'] . ' cursos = ' . $payload['registered_count'] . ' registrados',
+                                    ($payload['registered_count'] > 0
+                                        ? $payload['completed_count'] . ' completados / ' . $payload['registered_count'] . ' registrados x 100'
+                                        : '0 completados / 0 registrados = 0%'),
+                                ]],
+                            ],
+                            [
+                                'title' => 'Detalle de Registros',
+                                'headers' => ['Nombre del estudiante', 'Email', 'Curso', 'Completo el curso', 'Estado'],
+                                'data' => array_map(fn($row) => [
+                                    $row['student_name'],
+                                    $row['student_email'],
+                                    $row['course_name'],
+                                    $row['completed_label'],
+                                    $row['status_label'],
+                                ], $payload['rows']),
+                            ],
+                        ],
+                    ];
+                    $comparison_rows[] = [
+                        $channel_x->name,
+                        $payload['users_count'],
+                        $payload['courses_count'],
+                        $payload['registered_count'],
+                        $payload['completed_count'],
+                        $payload['completion_rate'] . '%',
+                    ];
+                }
+                if (empty($sheets)) { echo 'Sin datos.'; exit; }
+                $sheets[] = [
+                    'sheet_name' => 'Comparacion Canales',
+                    'title' => 'Comparacion entre Canales',
+                    'tables' => [
+                        [
+                            'title' => 'Comparacion Global',
+                            'headers' => ['Canal', 'Usuarios del canal', 'Cursos asignados', 'Estudiantes registrados', 'Estudiantes completaron', 'Tasa global'],
+                            'data' => $comparison_rows,
+                        ],
                     ],
-                ], $f);
+                ];
+                $this->output_xls_grouped('canales', 'Reporte de Canales', $sheets, $f);
                 break;
 
             // -- TESTS DETAIL ----------------------------------------------
@@ -2606,6 +2881,121 @@ class FairPlay_LMS_Reports_Controller {
         exit;
     }
 
+    private function output_xls_grouped(string $slug, string $report_title, array $sheets, array $filters = []): void {
+        $xe = fn($v) => htmlspecialchars((string)$v, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+
+        $fp = [];
+        if (!empty($filters['date_from'])) $fp[] = 'Desde: ' . $filters['date_from'];
+        if (!empty($filters['date_to']))   $fp[] = 'Hasta: ' . $filters['date_to'];
+        if (!empty($filters['user_ids'])) {
+            $uid_list = is_array($filters['user_ids'])
+                ? $filters['user_ids']
+                : array_values(array_filter(array_map('intval', explode(',', (string)$filters['user_ids']))));
+            $names = [];
+            foreach ($uid_list as $uid) {
+                $ud = get_userdata((int)$uid);
+                if ($ud) $names[] = $ud->display_name;
+            }
+            if (!empty($names)) $fp[] = 'Usuario: ' . implode(', ', $names);
+        }
+        $meta = 'Generado: ' . wp_date('d/m/Y H:i') . (empty($fp) ? '' : ' | ' . implode(' | ', $fp));
+
+        $used_names = [];
+        $make_sheet_name = function(string $title, int $idx) use (&$used_names): string {
+            $clean = preg_replace('/[\/\\\?\*\[\]:]/', '', $title);
+            $clean = trim((string) $clean);
+            if ($clean === '') $clean = 'Hoja' . $idx;
+            $clean = mb_substr($clean, 0, 31);
+            $base  = $clean;
+            $i     = 2;
+            while (isset($used_names[$clean])) {
+                $suffix = ' ' . $i++;
+                $clean  = mb_substr($base, 0, 31 - mb_strlen($suffix)) . $suffix;
+            }
+            $used_names[$clean] = true;
+            return $clean;
+        };
+
+        $styles = '<Styles>'
+            . '<Style ss:ID="s_title"><Font ss:Bold="1" ss:Size="13" ss:Color="#333333"/><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_meta"><Font ss:Italic="1" ss:Size="9" ss:Color="#888888"/><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/></Style>'
+            . '<Style ss:ID="s_sec"><Font ss:Bold="1" ss:Size="11" ss:Color="#FFFFFF"/><Interior ss:Color="#FFA800" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_hdr"><Font ss:Bold="1" ss:Size="10" ss:Color="#FFFFFF"/><Interior ss:Color="#CC8600" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#AA6E00"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#AA6E00"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#AA6E00"/></Borders></Style>'
+            . '<Style ss:ID="s_even"><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Alignment ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F0F0F0"/></Borders></Style>'
+            . '<Style ss:ID="s_odd"><Interior ss:Color="#FFF8EE" ss:Pattern="Solid"/><Alignment ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F0E8D8"/></Borders></Style>'
+            . '</Styles>';
+
+        $worksheets = '';
+        foreach ($sheets as $idx => $sheet) {
+            $sheet_name = $make_sheet_name((string) ($sheet['sheet_name'] ?? $sheet['title'] ?? ('Hoja ' . ($idx + 1))), $idx + 1);
+            $tables = (array) ($sheet['tables'] ?? []);
+            $max_cols = 1;
+            foreach ($tables as $table) {
+                $max_cols = max($max_cols, count((array) ($table['headers'] ?? [])));
+            }
+            $merge = max(0, $max_cols - 1);
+
+            $sheet_body  = '';
+            $sheet_body .= '<Row ss:Height="22"><Cell ss:StyleID="s_title" ss:MergeAcross="' . $merge . '"><Data ss:Type="String">' . $xe($report_title) . '</Data></Cell></Row>';
+            $sheet_body .= '<Row ss:Height="14"><Cell ss:StyleID="s_meta" ss:MergeAcross="' . $merge . '"><Data ss:Type="String">' . $xe($meta) . '</Data></Cell></Row>';
+            $sheet_body .= '<Row ss:Height="8"/>';
+            $sheet_body .= '<Row ss:Height="20"><Cell ss:StyleID="s_sec" ss:MergeAcross="' . $merge . '"><Data ss:Type="String">' . $xe((string) ($sheet['title'] ?? $sheet_name)) . '</Data></Cell></Row>';
+
+            foreach ($tables as $table_idx => $table) {
+                $table_headers = (array) ($table['headers'] ?? []);
+                $table_merge = max(0, count($table_headers) - 1);
+                $sheet_body .= '<Row ss:Height="6"/>';
+                $sheet_body .= '<Row ss:Height="20"><Cell ss:StyleID="s_sec" ss:MergeAcross="' . $table_merge . '"><Data ss:Type="String">' . $xe((string) ($table['title'] ?? ('Bloque ' . ($table_idx + 1)))) . '</Data></Cell></Row>';
+                $hdr = implode('', array_map(
+                    fn($h) => '<Cell ss:StyleID="s_hdr"><Data ss:Type="String">' . $xe($h) . '</Data></Cell>',
+                    $table_headers
+                ));
+                $sheet_body .= '<Row ss:Height="20">' . $hdr . '</Row>';
+
+                $rows = (array) ($table['data'] ?? []);
+                if (empty($rows)) {
+                    $sheet_body .= '<Row ss:Height="18"><Cell ss:StyleID="s_even" ss:MergeAcross="' . $table_merge . '"><Data ss:Type="String">(Sin datos para los filtros seleccionados)</Data></Cell></Row>';
+                    continue;
+                }
+
+                $row_idx = 0;
+                foreach ($rows as $row) {
+                    $sty = ($row_idx % 2 === 0) ? 's_even' : 's_odd';
+                    $sheet_body .= '<Row ss:Height="18">';
+                    foreach ((array) $row as $cell) {
+                        $v    = (string) $cell;
+                        $type = (is_numeric($v) && !preg_match('/^0\d/', $v) && $v !== '') ? 'Number' : 'String';
+                        $sheet_body .= '<Cell ss:StyleID="' . $sty . '"><Data ss:Type="' . $type . '">' . $xe($v) . '</Data></Cell>';
+                    }
+                    $sheet_body .= '</Row>';
+                    $row_idx++;
+                }
+            }
+
+            $worksheets .= '<Worksheet ss:Name="' . $xe($sheet_name) . '"><Table>' . $sheet_body . '</Table></Worksheet>';
+        }
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+             . '<?mso-application progid="Excel.Sheet"?>' . "\n"
+             . '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"'
+             . ' xmlns:o="urn:schemas-microsoft-com:office:office"'
+             . ' xmlns:x="urn:schemas-microsoft-com:office:excel"'
+             . ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+             . $styles
+             . $worksheets
+             . '</Workbook>';
+
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="fairplay_' . $slug . '_' . gmdate('Ymd_His') . '.xls"');
+        header('Cache-Control: max-age=0');
+        header('Pragma: public');
+        echo $xml;
+        exit;
+    }
+
     private function output_xls(string $slug, string $title, array $headers, array $data, array $filters = []): void {
         $ncols  = count($headers);
         $merge  = max(0, $ncols - 1);
@@ -2937,6 +3327,28 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-rpt-sub{font-size:14px;color:#444;margin:22px 0 8px;border-left:3px solid #ffa800;padding-left:10px}
         .fplms-rpt-channel-head{background:#fff8ee;border-radius:0 6px 6px 0;padding:8px 12px}
         .fplms-rpt-channel-count{font-size:12px;font-weight:400;color:#888}
+        .fplms-rpt-channel-table{background:#fff;border:1px solid #ececec;border-radius:10px;padding:14px 14px 10px;margin:0 0 22px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+        .fplms-rpt-channel-tools{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+        .fplms-rpt-channel-search-wrap,.fplms-rpt-channel-size-wrap{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:#555}
+        .fplms-rpt-channel-search{width:min(340px,70vw);max-width:100%;height:32px;padding:0 12px;border:1.5px solid #d8d8d8;border-radius:8px;font-size:12px}
+        .fplms-rpt-channel-search:focus{outline:none;border-color:#ffa800;box-shadow:0 0 0 2px rgba(255,168,0,.15)}
+        .fplms-rpt-channel-size{appearance:none;-webkit-appearance:none;height:32px;padding:0 30px 0 10px;border:1.5px solid #ffa800;border-radius:8px;background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23ffa800' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E") no-repeat right 10px center;background-size:10px 6px;font-size:12px;font-weight:700;color:#333;cursor:pointer}
+        .fplms-rpt-channel-data th:nth-child(1){min-width:260px}
+        .fplms-rpt-channel-data th:nth-child(2){min-width:220px}
+        .fplms-rpt-user-cell{display:flex;flex-direction:column;gap:8px}
+        .fplms-rpt-user-count{font-size:11px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.4px}
+        .fplms-rpt-user-list{display:flex;flex-wrap:wrap;gap:6px}
+        .fplms-rpt-user-pill{display:inline-flex;flex-direction:column;gap:1px;padding:6px 9px;border-radius:8px;background:#f7f7f7;border:1px solid #ececec;max-width:180px}
+        .fplms-rpt-user-pill strong{font-size:11px;color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .fplms-rpt-user-pill small{font-size:10px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .fplms-rpt-user-more{display:inline-flex;align-items:center;padding:6px 9px;border-radius:8px;background:#fff8ee;border:1px dashed #ffcb7d;color:#b06b00;font-size:11px;font-weight:700}
+        .fplms-rpt-empty-inline{font-size:12px;color:#999}
+        .fplms-rpt-channel-pagination{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid #f1f1f1}
+        .fplms-rpt-channel-page-info{flex:1;min-width:160px;font-size:12px;color:#777}
+        .fplms-rpt-channel-prev,.fplms-rpt-channel-next{font-size:12px!important;padding:4px 12px!important;line-height:22px!important;height:auto!important;border-color:#ffa800!important;color:#ffa800!important;font-weight:600!important}
+        .fplms-rpt-channel-prev:hover,.fplms-rpt-channel-next:hover{background:#fff8ee!important;border-color:#e08800!important;color:#e08800!important}
+        .fplms-rpt-channel-prev:disabled,.fplms-rpt-channel-next:disabled{opacity:.35;cursor:not-allowed;border-color:#ddd!important;color:#aaa!important}
+        .fplms-rpt-channel-empty{display:none;color:#999;font-size:12px;padding:10px 12px;background:#fafafa;border:1px dashed #e2e2e2;border-radius:8px;margin-top:4px}
         .fplms-rpt-metric{font-size:13px;color:#555;margin:4px 0 10px}
         .fplms-stat-cards{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 20px}
         .fplms-sc{background:#fff;border:1.5px solid #e8e8e8;border-radius:10px;padding:12px 18px;min-width:130px;flex:1;position:relative;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.05)}
@@ -3025,6 +3437,61 @@ class FairPlay_LMS_Reports_Controller {
                     prevEl.addEventListener('click', function() { if (page > 1) { page--; render(); } });
                     nextEl.addEventListener('click', function() { if (page < Math.ceil(rows.length / perPage)) { page++; render(); } });
                     render();
+                });
+            }
+            function initChannelTables(container){
+                container.querySelectorAll('.fplms-rpt-channel-table').forEach(function(wrap){
+                    var allRows=Array.from(wrap.querySelectorAll('tbody tr.fplms-rpt-channel-row'));
+                    if(!allRows.length) return;
+                    var searchEl=wrap.querySelector('.fplms-rpt-channel-search');
+                    var sizeEl=wrap.querySelector('.fplms-rpt-channel-size');
+                    var infoEl=wrap.querySelector('.fplms-rpt-channel-page-info');
+                    var prevEl=wrap.querySelector('.fplms-rpt-channel-prev');
+                    var nextEl=wrap.querySelector('.fplms-rpt-channel-next');
+                    var emptyEl=wrap.querySelector('.fplms-rpt-channel-empty');
+                    var filteredRows=allRows.slice();
+                    var page=1;
+                    var perPage=parseInt(sizeEl.value||'5',10);
+
+                    function applyVisibility(){
+                        var total=filteredRows.length;
+                        var pages=Math.max(1,Math.ceil(total/perPage));
+                        if(page>pages) page=pages;
+                        var start=(page-1)*perPage;
+                        var end=start+perPage;
+
+                        allRows.forEach(function(row){ row.style.display='none'; });
+                        filteredRows.forEach(function(row,index){
+                            row.style.display=(index>=start&&index<end)?'':'none';
+                        });
+
+                        if(infoEl){
+                            if(total){
+                                infoEl.textContent='Mostrando '+(start+1)+'-'+Math.min(end,total)+' de '+total+' cursos';
+                            } else {
+                                infoEl.textContent='Sin resultados';
+                            }
+                        }
+                        if(emptyEl) emptyEl.style.display=total?'none':'block';
+                        if(prevEl) prevEl.disabled=page<=1||!total;
+                        if(nextEl) nextEl.disabled=page>=pages||!total;
+                    }
+
+                    function refilter(){
+                        var q=(searchEl&&searchEl.value?searchEl.value:'').trim().toLowerCase();
+                        filteredRows=allRows.filter(function(row){
+                            return !q||row.textContent.toLowerCase().indexOf(q)!==-1;
+                        });
+                        page=1;
+                        applyVisibility();
+                    }
+
+                    if(searchEl) searchEl.addEventListener('input', refilter);
+                    if(sizeEl) sizeEl.addEventListener('change', function(){ perPage=parseInt(this.value||'5',10); page=1; applyVisibility(); });
+                    if(prevEl) prevEl.addEventListener('click', function(){ if(page>1){ page--; applyVisibility(); } });
+                    if(nextEl) nextEl.addEventListener('click', function(){ var pages=Math.max(1,Math.ceil(filteredRows.length/perPage)); if(page<pages){ page++; applyVisibility(); } });
+
+                    applyVisibility();
                 });
             }
             function updateFilterBar(){
@@ -3153,7 +3620,7 @@ class FairPlay_LMS_Reports_Controller {
                 var p=Object.assign({action:action,nonce:NONCE},getFilters());
                 var body=encodeBody(p);
                 fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
-                    .then(r=>r.json()).then(res=>{content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>'; initPagedTables(content); initSvCharts(res.data&&res.data.charts?res.data.charts:[]);})
+                    .then(r=>r.json()).then(res=>{content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>'; initPagedTables(content); initChannelTables(content); initSvCharts(res.data&&res.data.charts?res.data.charts:[]);})
                     .catch(()=>{content.innerHTML='<p class="notice notice-error">Error de conexion.</p>';});
             }
             document.querySelector('.fplms-rpt-tabs-nav').addEventListener('click',function(e){
