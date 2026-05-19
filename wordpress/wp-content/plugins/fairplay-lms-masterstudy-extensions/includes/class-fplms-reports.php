@@ -439,6 +439,8 @@ class FairPlay_LMS_Reports_Controller {
             if (!isset($grouped[$key])) {
                 $grouped[$key] = [
                     'user_id'      => (int) $r->user_id,
+                    'course_id'    => (int) $r->course_id,
+                    'quiz_id'      => (int) $r->quiz_id,
                     'display_name' => $r->display_name,
                     'user_email'   => $r->user_email,
                     'course_name'  => $r->course_name,
@@ -464,6 +466,8 @@ class FairPlay_LMS_Reports_Controller {
             }
             $agg[] = (object) [
                 'user_id'        => $data['user_id'],
+                'course_id'      => $data['course_id'],
+                'quiz_id'        => $data['quiz_id'],
                 'display_name'   => $data['display_name'],
                 'user_email'     => $data['user_email'],
                 'course_name'    => $data['course_name'],
@@ -503,6 +507,95 @@ class FairPlay_LMS_Reports_Controller {
         return rtrim(rtrim(number_format($score, 1, '.', ''), '0'), '.');
     }
 
+    private function get_user_full_name(int $user_id, string $fallback_name = '', string $fallback_email = ''): string {
+        static $cache = [];
+
+        if ($user_id > 0 && isset($cache[$user_id])) {
+            return $cache[$user_id];
+        }
+
+        $full_name = '';
+        if ($user_id > 0) {
+            $first_name = trim((string) get_user_meta($user_id, 'first_name', true));
+            $last_name = trim((string) get_user_meta($user_id, 'last_name', true));
+            $full_name = trim($first_name . ' ' . $last_name);
+        }
+
+        if ($full_name === '') {
+            $full_name = trim($fallback_name);
+        }
+        if ($full_name === '') {
+            $full_name = trim($fallback_email);
+        }
+        if ($full_name === '') {
+            $full_name = 'Usuario #' . $user_id;
+        }
+
+        if ($user_id > 0) {
+            $cache[$user_id] = $full_name;
+        }
+
+        return $full_name;
+    }
+
+    private function format_matrix_course_grade(float $score): string {
+        return $this->format_comparison_score($score) . '%';
+    }
+
+    private function build_course_grade_map(?array $user_ids = null): array {
+        global $wpdb;
+
+        $quiz_table = $wpdb->prefix . 'stm_lms_user_quizzes';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $quiz_table)) !== $quiz_table) {
+            return [];
+        }
+
+        $where = '';
+        if (null !== $user_ids) {
+            $where = empty($user_ids)
+                ? 'AND uq.user_id=0'
+                : 'AND uq.user_id IN (' . implode(',', array_map('intval', $user_ids)) . ')';
+        }
+
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $qrows = (array) $wpdb->get_results(
+            "SELECT uq.user_id,uq.course_id,uq.quiz_id,uq.user_quiz_id,
+                    uq.progress AS score,uq.status,
+                    u.display_name,u.user_email,
+                    pc.post_title AS course_name,q.post_title AS quiz_name
+             FROM `{$quiz_table}` uq
+             INNER JOIN {$wpdb->users} u ON uq.user_id=u.ID
+             LEFT JOIN {$wpdb->posts} q ON uq.quiz_id=q.ID
+             LEFT JOIN {$wpdb->posts} pc ON uq.course_id=pc.ID
+             WHERE 1=1 $where
+             ORDER BY uq.user_id,uq.quiz_id,uq.course_id,uq.user_quiz_id ASC LIMIT 10000"
+        );
+
+        if (empty($qrows)) {
+            return [];
+        }
+
+        $course_grade_map = [];
+        foreach ($this->aggregate_quiz_rows($qrows) as $row) {
+            $user_id = (int) ($row->user_id ?? 0);
+            $course_id = (int) ($row->course_id ?? 0);
+            if ($user_id < 1 || $course_id < 1) {
+                continue;
+            }
+            $course_grade_map[$user_id][$course_id][] = (float) ($row->score ?? 0);
+        }
+
+        foreach ($course_grade_map as $user_id => $courses) {
+            foreach ($courses as $course_id => $scores) {
+                $course_grade_map[$user_id][$course_id] = empty($scores)
+                    ? null
+                    : round(array_sum($scores) / count($scores), 1);
+            }
+        }
+
+        return $course_grade_map;
+    }
+
     private function build_comparisons_payload(array $f): array {
         global $wpdb;
 
@@ -521,7 +614,7 @@ class FairPlay_LMS_Reports_Controller {
 
         if (!$quiz_table) {
             return [
-                'quiz_table_found' => false,
+            'quiz_table_found' => false,
                 'rows' => [],
                 'scale' => $scale,
                 'distribution' => $distribution,
@@ -562,38 +655,67 @@ class FairPlay_LMS_Reports_Controller {
             ];
         }
 
+        $valid_statuses = ['passed', 'completed', 'failed', 'not_passed'];
         $agg = $this->aggregate_quiz_rows($qrows);
+
         $by_user = [];
+        $total_evaluations = 0;
         foreach ($agg as $row) {
+            $status = strtolower((string) ($row->status ?? ''));
             $user_id = (int) ($row->user_id ?? 0);
+            $course_id = (int) ($row->course_id ?? 0);
+            if ($user_id < 1 || $course_id < 1 || !in_array($status, $valid_statuses, true)) {
+                continue;
+            }
             if (!isset($by_user[$user_id])) {
                 $channel_id = $user_id > 0 ? (int) get_user_meta($user_id, 'fplms_channel', true) : 0;
                 $by_user[$user_id] = [
                     'user_id' => $user_id,
-                    'user_name' => (string) ($row->display_name ?? ''),
+                    'user_name' => $this->get_user_full_name(
+                        $user_id,
+                        (string) ($row->display_name ?? ''),
+                        (string) ($row->user_email ?? '')
+                    ),
                     'user_email' => (string) ($row->user_email ?? ''),
+                    'channel_id' => $channel_id,
                     'channel_name' => $channel_id > 0 ? (string) $this->structures->get_term_name_by_id($channel_id) : 'Sin canal',
+                    'courses' => [],
+                ];
+            }
+            if (!isset($by_user[$user_id]['courses'][$course_id])) {
+                $by_user[$user_id]['courses'][$course_id] = [
+                    'course_name' => (string) ($row->course_name ?? ('Curso #' . $course_id)),
                     'scores' => [],
                 ];
             }
-            $by_user[$user_id]['scores'][] = (float) ($row->score ?? 0);
+            $by_user[$user_id]['courses'][$course_id]['scores'][] = (float) ($row->score ?? 0);
+            $total_evaluations++;
         }
 
         $rows = [];
         $sum_average = 0.0;
         foreach ($by_user as $user_data) {
-            $scores = $user_data['scores'];
-            if (empty($scores)) {
+            $course_averages = [];
+            foreach ((array) ($user_data['courses'] ?? []) as $course_data) {
+                $scores = (array) ($course_data['scores'] ?? []);
+                if (empty($scores)) {
+                    continue;
+                }
+                $course_averages[] = round(array_sum($scores) / count($scores), 1);
+            }
+
+            if (empty($course_averages)) {
                 continue;
             }
 
-            $average = round(array_sum($scores) / count($scores), 1);
+            $average = round(array_sum($course_averages) / count($course_averages), 1);
             $grade = $this->resolve_comparison_grade($average);
             $distribution[$grade['code']]++;
             $sum_average += $average;
 
             $rows[] = [
                 'user_name' => $user_data['user_name'] !== '' ? $user_data['user_name'] : $user_data['user_email'],
+                'channel_id' => (int) ($user_data['channel_id'] ?? 0),
                 'channel_name' => $user_data['channel_name'] !== '' ? $user_data['channel_name'] : 'Sin canal',
                 'average' => $average,
                 'average_label' => $this->format_comparison_score($average) . '%',
@@ -629,7 +751,7 @@ class FairPlay_LMS_Reports_Controller {
             'scale' => $scale,
             'distribution' => $distribution,
             'total_users' => $total_users,
-            'total_evaluations' => count($agg),
+            'total_evaluations' => $total_evaluations,
             'overall_average' => $overall_average,
             'overall_grade' => $overall_grade,
             'top_grade' => $top_grade,
@@ -694,6 +816,204 @@ class FairPlay_LMS_Reports_Controller {
             . '<div class="fplms-cmp-dist-bar">' . $segments . '</div>'
             . '<div class="fplms-cmp-grade-grid">' . $tiles . '</div>'
             . '</div>'
+            . '</div>';
+    }
+
+    private function build_channel_comparison_payload(array $payload): array {
+        $scale = (array) ($payload['scale'] ?? $this->get_comparison_grade_scale());
+        $channels = [];
+
+        foreach ((array) ($payload['rows'] ?? []) as $row) {
+            $channel_id = (int) ($row['channel_id'] ?? 0);
+            $channel_key = $channel_id > 0 ? (string) $channel_id : 'no-channel';
+
+            if (!isset($channels[$channel_key])) {
+                $distribution = [];
+                foreach ($scale as $grade) {
+                    $distribution[$grade['code']] = 0;
+                }
+
+                $channels[$channel_key] = [
+                    'id' => $channel_id,
+                    'name' => (string) ($row['channel_name'] ?? ($channel_id > 0 ? ('Canal #' . $channel_id) : 'Sin canal')),
+                    'total_users' => 0,
+                    'sum_average' => 0.0,
+                    'average' => 0.0,
+                    'average_label' => '0%',
+                    'grade_code' => '',
+                    'grade_label' => '',
+                    'range_label' => '',
+                    'color' => '#00af50',
+                    'distribution' => $distribution,
+                    'rows' => [],
+                ];
+            }
+
+            $grade_code = (string) ($row['grade_code'] ?? '');
+            $channels[$channel_key]['total_users']++;
+            $channels[$channel_key]['sum_average'] += (float) ($row['average'] ?? 0);
+            if (isset($channels[$channel_key]['distribution'][$grade_code])) {
+                $channels[$channel_key]['distribution'][$grade_code]++;
+            }
+            $channels[$channel_key]['rows'][] = $row;
+        }
+
+        foreach ($channels as &$channel) {
+            $total = (int) $channel['total_users'];
+            $average = $total > 0 ? round((float) $channel['sum_average'] / $total, 1) : 0.0;
+            $grade = $this->resolve_comparison_grade($average);
+
+            $channel['average'] = $average;
+            $channel['average_label'] = $this->format_comparison_score($average);
+            $channel['grade_code'] = $grade['code'];
+            $channel['grade_label'] = $grade['label'];
+            $channel['range_label'] = $grade['range'];
+            $channel['color'] = $grade['color'];
+            unset($channel['sum_average']);
+        }
+        unset($channel);
+
+        uasort($channels, static function (array $left, array $right): int {
+            return strcasecmp($left['name'], $right['name']);
+        });
+
+        return [
+            'channels' => array_values($channels),
+            'scale' => $scale,
+        ];
+    }
+
+    private function resolve_channel_comparison_context(array $filters, array $base_payload): array {
+        $payload = $base_payload;
+        $note = '';
+        $comparison = $this->build_channel_comparison_payload($payload);
+        $channel_count = count((array) ($comparison['channels'] ?? []));
+
+        if ($channel_count < 2) {
+            $channel_filters = $filters;
+            $channel_filters['channel_id'] = 0;
+            $channel_filters['user_ids'] = [];
+            $payload = $this->build_comparisons_payload($channel_filters);
+            $comparison = $this->build_channel_comparison_payload($payload);
+            $channel_count = count((array) ($comparison['channels'] ?? []));
+            if ($channel_count >= 2) {
+                $note = 'La comparación entre canales se amplió automáticamente para ignorar el filtro puntual de canal y la selección individual de usuarios.';
+            }
+        }
+
+        if ($channel_count < 2) {
+            $payload = $this->build_comparisons_payload([
+                'date_from' => '',
+                'date_to' => '',
+                'channel_id' => 0,
+                'city_id' => 0,
+                'company_id' => 0,
+                'role_id' => 0,
+                'activity_high' => $filters['activity_high'] ?? 50,
+                'activity_medium' => $filters['activity_medium'] ?? 10,
+                'activity_low' => $filters['activity_low'] ?? 10,
+                'user_ids' => [],
+            ]);
+            $comparison = $this->build_channel_comparison_payload($payload);
+            $channel_count = count((array) ($comparison['channels'] ?? []));
+            if ($channel_count >= 2) {
+                $note = 'La comparación entre canales se muestra con base global para mantener visible el comparativo cuando los filtros activos reducen el resultado a un solo canal.';
+            }
+        }
+
+        return [
+            'payload' => $payload,
+            'comparison' => $comparison,
+            'note' => $note,
+        ];
+    }
+
+    private function build_channel_comparison_table_rows(array $channel_a, array $channel_b, array $scale): array {
+        $rows = [];
+        foreach ($scale as $grade) {
+            $count_a = (int) (($channel_a['distribution'][$grade['code']] ?? 0));
+            $count_b = (int) (($channel_b['distribution'][$grade['code']] ?? 0));
+            $total_a = (int) ($channel_a['total_users'] ?? 0);
+            $total_b = (int) ($channel_b['total_users'] ?? 0);
+            $pct_a = $total_a > 0 ? round($count_a / $total_a * 100, 1) : 0;
+            $pct_b = $total_b > 0 ? round($count_b / $total_b * 100, 1) : 0;
+            $rows[] = [
+                $grade['label'] . ' (' . $grade['range'] . ')',
+                $count_a,
+                $this->format_comparison_score($pct_a) . '%',
+                $count_b,
+                $this->format_comparison_score($pct_b) . '%',
+            ];
+        }
+
+        $rows[] = [
+            'Total',
+            (int) ($channel_a['total_users'] ?? 0),
+            '100%',
+            (int) ($channel_b['total_users'] ?? 0),
+            '100%',
+        ];
+
+        return $rows;
+    }
+
+    private function render_channel_comparison_section(array $payload, string $context_note = ''): string {
+        $comparison = $this->build_channel_comparison_payload($payload);
+        $channels = (array) ($comparison['channels'] ?? []);
+        if (count($channels) < 2) {
+            return $this->sub('Comparacion entre Canales')
+                . $this->empty_msg('Se requieren al menos dos canales con usuarios evaluados dentro de los filtros aplicados para realizar la comparación.');
+        }
+
+        $note_html = $context_note !== ''
+            ? '<div class="fplms-cmp-channel-note">' . esc_html($context_note) . '</div>'
+            : '';
+
+        $default_a = (int) ($channels[0]['id'] ?? 0);
+        $default_b = (int) ($channels[1]['id'] ?? $default_a);
+        $options = '';
+        foreach ($channels as $channel) {
+            $options .= '<option value="' . (int) $channel['id'] . '">' . esc_html((string) $channel['name']) . '</option>';
+        }
+
+        $json = wp_json_encode([
+            'channels' => $channels,
+            'scale' => $comparison['scale'],
+            'defaultA' => $default_a,
+            'defaultB' => $default_b,
+        ]);
+
+        return $this->sub('Comparacion entre Canales')
+            . '<div class="fplms-cmp-channel-section">'
+            . $note_html
+            . '<div class="fplms-cmp-channel-boards">'
+            . '<div class="fplms-cmp-compare-card" data-slot="a">'
+            . '<div class="fplms-cmp-compare-head"><span>Canal A</span><select class="fplms-cmp-channel-select" data-target="a">' . $options . '</select></div>'
+            . '<div class="fplms-cmp-compare-body" id="fplms-cmp-channel-card-a"></div>'
+            . '</div>'
+            . '<div class="fplms-cmp-compare-vs">VS</div>'
+            . '<div class="fplms-cmp-compare-card" data-slot="b">'
+            . '<div class="fplms-cmp-compare-head"><span>Canal B</span><select class="fplms-cmp-channel-select" data-target="b">' . $options . '</select></div>'
+            . '<div class="fplms-cmp-compare-body" id="fplms-cmp-channel-card-b"></div>'
+            . '</div>'
+            . '</div>'
+            . '<div class="fplms-cmp-compare-table-wrap">'
+            . '<table class="widefat striped fplms-rpt-table fplms-cmp-compare-table">'
+            . '<thead>'
+            . '<tr>'
+            . '<th rowspan="2">Rango de Desempeño</th>'
+            . '<th colspan="2" id="fplms-cmp-head-a">Canal A</th>'
+            . '<th colspan="2" id="fplms-cmp-head-b">Canal B</th>'
+            . '</tr>'
+            . '<tr>'
+            . '<th>Usuarios</th><th>Porcentaje (%)</th>'
+            . '<th>Usuarios</th><th>Porcentaje (%)</th>'
+            . '</tr>'
+            . '</thead>'
+            . '<tbody id="fplms-cmp-compare-tbody"></tbody>'
+            . '</table>'
+            . '</div>'
+            . '<script type="application/json" id="fplms-cmp-channel-data">' . $json . '</script>'
             . '</div>';
     }
 
@@ -1120,6 +1440,11 @@ class FairPlay_LMS_Reports_Controller {
                 . '</tr>';
         }
         $html .= $this->paged_table_close();
+        $channel_context = $this->resolve_channel_comparison_context($f, $payload);
+        $html .= $this->render_channel_comparison_section(
+            (array) ($channel_context['payload'] ?? []),
+            (string) ($channel_context['note'] ?? '')
+        );
 
         wp_send_json_success(['html' => $html]);
     }
@@ -1510,7 +1835,7 @@ class FairPlay_LMS_Reports_Controller {
             $html.=$this->stat_cards([
                 ['label'=>'Usuarios del canal','value'=>'<strong>'.$payload['users_count'].'</strong>','sub'=>'Asignados al canal','color'=>'blue'],
                 ['label'=>'Cursos asignados','value'=>'<strong>'.$payload['courses_count'].'</strong>','sub'=>'Visibles en este canal','color'=>'orange'],
-                ['label'=>'Estudiantes registrados','value'=>'<strong>'.$payload['registered_count'].'</strong>','sub'=>$registered_sub,'color'=>'yellow'],
+                ['label'=>'Estudiantes matriculados','value'=>'<strong>'.$payload['registered_count'].'</strong>','sub'=>$registered_sub,'color'=>'yellow'],
                 ['label'=>'Estudiantes completaron','value'=>'<strong>'.$payload['completed_count'].'</strong>','sub'=>'Cursos completados','color'=>'green'],
                 ['label'=>'Tasa global','value'=>'<strong>'.$payload['completion_rate'].'%</strong>','sub'=>$rate_sub,'color'=>$cc],
             ]);
@@ -1562,7 +1887,7 @@ class FairPlay_LMS_Reports_Controller {
             $html = $section_head
                   . $this->stat_cards([
                         ['label'=>'Canales mostrados','value'=>'<strong>'.$shown_channels.'</strong>','sub'=>'Con usuarios o cursos','color'=>'blue'],
-                        ['label'=>'Canales ocultos','value'=>'<strong>'.$empty_channels.'</strong>','sub'=>'Sin usuarios ni cursos asignados','color'=>'yellow'],
+                        ['label'=>'Canales Vacios','value'=>'<strong>'.$empty_channels.'</strong>','sub'=>'Sin usuarios ni cursos asignados','color'=>'yellow'],
                     ])
                   . preg_replace('/^<div class="fplms-rpt-section-head">.*?<\/div>/s', '', $html, 1);
         }
@@ -1571,7 +1896,7 @@ class FairPlay_LMS_Reports_Controller {
         }
         if (count($comp)>1) {
             $html.='<hr style="margin:28px 0;border-color:#eee;">'.$this->sub('Comparacion Global entre Canales');
-            $html.=$this->paged_table_open(['Canal','Cursos','Total Inscripciones','Completadas','Tasa Cumplimiento']);
+            $html.=$this->paged_table_open(['Canal','Cursos','Total Matriculados','Completadas','Tasa Cumplimiento']);
             foreach ($comp as $nm=>$cd) {
                 $rt=$cd['rate']??0; $rc=$rt>=70?'green':($rt>=40?'yellow':'red');
                 $html.='<tr><td><strong>'.esc_html($nm).'</strong></td><td>'.(int)$cd['courses'].'</td>'
@@ -2057,6 +2382,7 @@ class FairPlay_LMS_Reports_Controller {
                 ];
             }
         }
+        $course_grade_map = $this->build_course_grade_map(array_map(fn($u) => (int) $u->ID, $users));
 
         // 7. Icons
         $check_ico = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:0 auto"><polyline points="20 6 9 17 4 12"/></svg>';
@@ -2106,7 +2432,13 @@ class FairPlay_LMS_Reports_Controller {
                     if ($enr === null) {
                         $html .= '<td class="fplms-mx-cell fplms-mx-empty" title="No inscrito"></td>';
                     } elseif (in_array($enr['status'], ['completed','passed'], true) || $enr['progress'] >= 100) {
-                        $html .= '<td class="fplms-mx-cell fplms-mx-done" title="Completado">'.$check_ico.'</td>';
+                        $score = $course_grade_map[$uid][$cid] ?? null;
+                        if (null !== $score) {
+                            $score_label = $this->format_matrix_course_grade((float) $score);
+                            $html .= '<td class="fplms-mx-cell fplms-mx-done" title="Completado (' . esc_attr($score_label) . ')"><small>' . esc_html($score_label) . '</small></td>';
+                        } else {
+                            $html .= '<td class="fplms-mx-cell fplms-mx-done" title="Completado">'.$check_ico.'</td>';
+                        }
                     } elseif (in_array($enr['status'], ['failed','not_passed'], true)) {
                         $score = round($enr['progress']);
                         $html .= '<td class="fplms-mx-cell fplms-mx-failed" title="Reprobado ('.$score.'%)"><small>'.$score.'%</small></td>';
@@ -2517,31 +2849,8 @@ class FairPlay_LMS_Reports_Controller {
             case str_starts_with($format, 'comparisons'):
                 $comparison_payload = $this->build_comparisons_payload($f);
                 if (empty($comparison_payload['quiz_table_found']) || empty($comparison_payload['rows'])) { echo 'Sin datos.'; exit; }
-                $overall_grade_xls = $comparison_payload['overall_grade'];
-                $this->output_xls_multi('comparaciones', 'Reporte de Comparaciones', [
-                    [
-                        'title'   => 'Resumen General',
-                        'headers' => ['Promedio general', 'Desempeno general', 'Rango general', 'Estudiantes evaluados', 'Evaluaciones consideradas'],
-                        'data'    => [[
-                            $this->format_comparison_score((float) $comparison_payload['overall_average']) . '%',
-                            $overall_grade_xls['code'] . ' - ' . $overall_grade_xls['label'],
-                            $overall_grade_xls['range'],
-                            (int) $comparison_payload['total_users'],
-                            (int) $comparison_payload['total_evaluations'],
-                        ]],
-                    ],
-                    [
-                        'title'   => 'Desempeno por Usuario',
-                        'headers' => ['Usuario', 'Canal', 'Promedio General', 'Desempeno', 'Rango'],
-                        'data'    => array_map(fn($row) => [
-                            $row['user_name'],
-                            $row['channel_name'],
-                            $row['average_label'],
-                            $row['grade_code'] . ' - ' . $row['grade_label'],
-                            $row['range_label'],
-                        ], $comparison_payload['rows']),
-                    ],
-                ], $f);
+                $channel_context_xls = $this->resolve_channel_comparison_context($f, $comparison_payload);
+                $this->output_xls_comparisons('comparaciones', 'Reporte de Comparaciones', $comparison_payload, $channel_context_xls, $f);
                 break;
 
             // -- CERTIFICADOS ----------------------------------------------
@@ -2715,7 +3024,7 @@ class FairPlay_LMS_Reports_Controller {
                         'tables' => [
                             [
                                 'title' => 'Resumen del Canal',
-                                'headers' => ['Usuarios del canal', 'Cursos asignados', 'Estudiantes registrados', 'Estudiantes completaron', 'Tasa global', 'Formula registrados', 'Formula tasa'],
+                                'headers' => ['Usuarios del canal', 'Cursos asignados', 'Estudiantes matriculados', 'Estudiantes completaron', 'Tasa global', 'Formula matriculados', 'Formula tasa'],
                                 'data' => [[
                                     $payload['users_count'],
                                     $payload['courses_count'],
@@ -2743,7 +3052,6 @@ class FairPlay_LMS_Reports_Controller {
                     ];
                     $comparison_rows[] = [
                         $channel_x->name,
-                        $payload['users_count'],
                         $payload['courses_count'],
                         $payload['registered_count'],
                         $payload['completed_count'],
@@ -2757,7 +3065,7 @@ class FairPlay_LMS_Reports_Controller {
                     'tables' => [
                         [
                             'title' => 'Comparacion Global',
-                            'headers' => ['Canal', 'Usuarios del canal', 'Cursos asignados', 'Estudiantes registrados', 'Estudiantes completaron', 'Tasa global'],
+                            'headers' => ['Canal', 'Cursos', 'Total Matriculados', 'Completadas', 'Tasa Cumplimiento'],
                             'data' => $comparison_rows,
                         ],
                     ],
@@ -2897,6 +3205,7 @@ class FairPlay_LMS_Reports_Controller {
                         ];
                     }
                 }
+                $mx_course_grade_map = $this->build_course_grade_map(array_map(fn($u) => (int) $u->ID, $mx_users));
                 // Build headers + data
                     $mx_rows = [];
                 foreach ($mx_users as $u) {
@@ -2912,7 +3221,8 @@ class FairPlay_LMS_Reports_Controller {
                         if ($enr === null) {
                                 $row['cells'][] = ['value' => '', 'style' => 's_mx_empty'];
                         } elseif (in_array($enr['status'], ['completed','passed'], true) || $enr['progress'] >= 100) {
-                            $row['cells'][] = ['value' => 'APR', 'style' => 's_mx_done'];
+                            $score = $mx_course_grade_map[(int) $u->ID][(int) $c->ID] ?? null;
+                            $row['cells'][] = ['value' => null !== $score ? $this->format_matrix_course_grade((float) $score) : 'APR', 'style' => 's_mx_done'];
                         } elseif (in_array($enr['status'], ['failed','not_passed'], true)) {
                             $row['cells'][] = ['value' => round($enr['progress']) . '%', 'style' => 's_mx_failed'];
                         } elseif ($enr['progress'] > 0) {
@@ -3292,6 +3602,108 @@ class FairPlay_LMS_Reports_Controller {
         exit;
     }
 
+    private function output_xls_comparisons(string $slug, string $report_title, array $payload, array $channel_context, array $filters = []): void {
+        $xe = fn($v) => htmlspecialchars((string) $v, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+
+        $fp = [];
+        if (!empty($filters['date_from'])) $fp[] = 'Desde: ' . $filters['date_from'];
+        if (!empty($filters['date_to']))   $fp[] = 'Hasta: ' . $filters['date_to'];
+        if (!empty($filters['user_ids'])) {
+            $uid_list = is_array($filters['user_ids'])
+                ? $filters['user_ids']
+                : array_values(array_filter(array_map('intval', explode(',', (string) $filters['user_ids']))));
+            $names = [];
+            foreach ($uid_list as $uid) {
+                $ud = get_userdata((int) $uid);
+                if ($ud) $names[] = $ud->display_name;
+            }
+            if (!empty($names)) $fp[] = 'Usuario: ' . implode(', ', $names);
+        }
+        $meta = 'Generado: ' . wp_date('d/m/Y H:i') . (empty($fp) ? '' : ' | ' . implode(' | ', $fp));
+
+        $styles = '<Styles>'
+            . '<Style ss:ID="s_title"><Font ss:Bold="1" ss:Size="13" ss:Color="#333333"/><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_meta"><Font ss:Italic="1" ss:Size="9" ss:Color="#888888"/><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/></Style>'
+            . '<Style ss:ID="s_sec"><Font ss:Bold="1" ss:Size="11" ss:Color="#FFFFFF"/><Interior ss:Color="#FFA800" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_note"><Font ss:Size="10" ss:Color="#1D4ED8"/><Interior ss:Color="#EFF6FF" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#BFDBFE"/></Borders></Style>'
+            . '<Style ss:ID="s_hdr"><Font ss:Bold="1" ss:Size="10" ss:Color="#FFFFFF"/><Interior ss:Color="#CC8600" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#AA6E00"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#AA6E00"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#AA6E00"/></Borders></Style>'
+            . '<Style ss:ID="s_even"><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/><Alignment ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F0F0F0"/></Borders></Style>'
+            . '<Style ss:ID="s_odd"><Interior ss:Color="#FFF8EE" ss:Pattern="Solid"/><Alignment ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#F0E8D8"/></Borders></Style>'
+            . '<Style ss:ID="s_card_lbl"><Font ss:Bold="1" ss:Size="10" ss:Color="#7C4A03"/><Interior ss:Color="#FFF3D6" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_card_val"><Font ss:Bold="1" ss:Size="18" ss:Color="#FFFFFF"/><Interior ss:Color="#FFA800" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+            . '<Style ss:ID="s_card_sub"><Font ss:Size="10" ss:Color="#5B6475"/><Interior ss:Color="#FFF8EE" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/></Style>'
+            . '</Styles>';
+
+        $overall_grade = (array) ($payload['overall_grade'] ?? []);
+        $user_rows = (array) ($payload['rows'] ?? []);
+        $comparison = (array) ($channel_context['comparison'] ?? []);
+        $channels = array_values((array) ($comparison['channels'] ?? []));
+        $channel_note = (string) ($channel_context['note'] ?? '');
+        $channel_a = $channels[0] ?? null;
+        $channel_b = $channels[1] ?? null;
+        $scale = (array) ($comparison['scale'] ?? $this->get_comparison_grade_scale());
+
+        $user_sheet  = '';
+        $user_sheet .= '<Row ss:Height="22"><Cell ss:StyleID="s_title" ss:MergeAcross="4"><Data ss:Type="String">' . $xe($report_title) . '</Data></Cell></Row>';
+        $user_sheet .= '<Row ss:Height="14"><Cell ss:StyleID="s_meta" ss:MergeAcross="4"><Data ss:Type="String">' . $xe($meta) . '</Data></Cell></Row>';
+        $user_sheet .= '<Row ss:Height="8"/>';
+        $user_sheet .= '<Row ss:Height="20"><Cell ss:StyleID="s_sec" ss:MergeAcross="4"><Data ss:Type="String">Desempeno por Usuario</Data></Cell></Row>';
+        $user_sheet .= '<Row ss:Height="18"><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Promedio General</Data></Cell><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Estudiantes Evaluados</Data></Cell><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Evaluaciones Consideradas</Data></Cell></Row>';
+        $user_sheet .= '<Row ss:Height="34"><Cell ss:StyleID="s_card_val" ss:MergeAcross="1"><Data ss:Type="String">' . $xe($this->format_comparison_score((float) ($payload['overall_average'] ?? 0)) . '%') . '</Data></Cell><Cell ss:StyleID="s_card_val" ss:MergeAcross="1"><Data ss:Type="Number">' . $xe((int) ($payload['total_users'] ?? 0)) . '</Data></Cell><Cell ss:StyleID="s_card_val" ss:MergeAcross="1"><Data ss:Type="Number">' . $xe((int) ($payload['total_evaluations'] ?? 0)) . '</Data></Cell></Row>';
+        $user_sheet .= '<Row ss:Height="24"><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">' . $xe(($overall_grade['code'] ?? '—') . ' - ' . ($overall_grade['label'] ?? '—') . ' | ' . ($overall_grade['range'] ?? '')) . '</Data></Cell><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">Usuarios con promedio general calculado</Data></Cell><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">Evaluaciones agregadas desde el tab de desempeno</Data></Cell></Row>';
+        $user_sheet .= '<Row ss:Height="8"/>';
+        $user_sheet .= '<Row ss:Height="20"><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Usuario</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Canal</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Promedio General</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Desempeno</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Rango</Data></Cell></Row>';
+        if (empty($user_rows)) {
+            $user_sheet .= '<Row ss:Height="18"><Cell ss:StyleID="s_even" ss:MergeAcross="4"><Data ss:Type="String">(Sin datos para los filtros seleccionados)</Data></Cell></Row>';
+        } else {
+            foreach (array_values($user_rows) as $idx => $row) {
+                $sty = ($idx % 2 === 0) ? 's_even' : 's_odd';
+                $user_sheet .= '<Row ss:Height="18"><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe($row['user_name'] ?? '') . '</Data></Cell><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe($row['channel_name'] ?? '') . '</Data></Cell><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe($row['average_label'] ?? '') . '</Data></Cell><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe(($row['grade_code'] ?? '') . ' - ' . ($row['grade_label'] ?? '')) . '</Data></Cell><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe($row['range_label'] ?? '') . '</Data></Cell></Row>';
+            }
+        }
+
+        $channel_sheet  = '';
+        $channel_sheet .= '<Row ss:Height="22"><Cell ss:StyleID="s_title" ss:MergeAcross="4"><Data ss:Type="String">' . $xe($report_title) . '</Data></Cell></Row>';
+        $channel_sheet .= '<Row ss:Height="14"><Cell ss:StyleID="s_meta" ss:MergeAcross="4"><Data ss:Type="String">' . $xe($meta) . '</Data></Cell></Row>';
+        $channel_sheet .= '<Row ss:Height="8"/>';
+        $channel_sheet .= '<Row ss:Height="20"><Cell ss:StyleID="s_sec" ss:MergeAcross="4"><Data ss:Type="String">Comparacion entre Canales</Data></Cell></Row>';
+        if ($channel_note !== '') {
+            $channel_sheet .= '<Row ss:Height="28"><Cell ss:StyleID="s_note" ss:MergeAcross="4"><Data ss:Type="String">' . $xe($channel_note) . '</Data></Cell></Row>';
+        }
+
+        if ($channel_a && $channel_b) {
+            $channel_sheet .= '<Row ss:Height="18"><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">' . $xe((string) ($channel_a['name'] ?? 'Canal A')) . '</Data></Cell><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Promedio General</Data></Cell><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">' . $xe((string) ($channel_b['name'] ?? 'Canal B')) . '</Data></Cell></Row>';
+            $channel_sheet .= '<Row ss:Height="34"><Cell ss:StyleID="s_card_val" ss:MergeAcross="1"><Data ss:Type="String">' . $xe(($channel_a['average_label'] ?? '0') . '%') . '</Data></Cell><Cell ss:StyleID="s_card_val" ss:MergeAcross="1"><Data ss:Type="String">' . $xe($this->format_comparison_score((float) ($payload['overall_average'] ?? 0)) . '%') . '</Data></Cell><Cell ss:StyleID="s_card_val" ss:MergeAcross="1"><Data ss:Type="String">' . $xe(($channel_b['average_label'] ?? '0') . '%') . '</Data></Cell></Row>';
+            $channel_sheet .= '<Row ss:Height="26"><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">' . $xe(($channel_a['grade_code'] ?? '') . ' - ' . ($channel_a['grade_label'] ?? '') . ' | ' . ($channel_a['range_label'] ?? '') . ' | ' . (int) ($channel_a['total_users'] ?? 0) . ' usuarios') . '</Data></Cell><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">' . $xe(($overall_grade['code'] ?? '—') . ' - ' . ($overall_grade['label'] ?? '—') . ' | ' . ($overall_grade['range'] ?? '')) . '</Data></Cell><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">' . $xe(($channel_b['grade_code'] ?? '') . ' - ' . ($channel_b['grade_label'] ?? '') . ' | ' . ($channel_b['range_label'] ?? '') . ' | ' . (int) ($channel_b['total_users'] ?? 0) . ' usuarios') . '</Data></Cell></Row>';
+            $channel_sheet .= '<Row ss:Height="8"/>';
+            $channel_sheet .= '<Row ss:Height="20"><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Rango de Desempeno</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Usuarios ' . $xe((string) ($channel_a['name'] ?? 'Canal A')) . '</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Porcentaje ' . $xe((string) ($channel_a['name'] ?? 'Canal A')) . '</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Usuarios ' . $xe((string) ($channel_b['name'] ?? 'Canal B')) . '</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Porcentaje ' . $xe((string) ($channel_b['name'] ?? 'Canal B')) . '</Data></Cell></Row>';
+            foreach ($this->build_channel_comparison_table_rows($channel_a, $channel_b, $scale) as $idx => $row) {
+                $sty = ($idx % 2 === 0) ? 's_even' : 's_odd';
+                $channel_sheet .= '<Row ss:Height="18"><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe($row[0]) . '</Data></Cell><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe($row[1]) . '</Data></Cell><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe($row[2]) . '</Data></Cell><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe($row[3]) . '</Data></Cell><Cell ss:StyleID="' . $sty . '"><Data ss:Type="String">' . $xe($row[4]) . '</Data></Cell></Row>';
+            }
+        } else {
+            $channel_sheet .= '<Row ss:Height="18"><Cell ss:StyleID="s_even" ss:MergeAcross="4"><Data ss:Type="String">(No se encontraron al menos dos canales para exportar la comparación)</Data></Cell></Row>';
+        }
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+            . '<?mso-application progid="Excel.Sheet"?>' . "\n"
+            . '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+            . $styles
+            . '<Worksheet ss:Name="Desempeno Usuario"><Table>' . $user_sheet . '</Table></Worksheet>'
+            . '<Worksheet ss:Name="Comparacion Canales"><Table>' . $channel_sheet . '</Table></Worksheet>'
+            . '</Workbook>';
+
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="fairplay_' . $slug . '_' . gmdate('Ymd_His') . '.xls"');
+        header('Cache-Control: max-age=0');
+        header('Pragma: public');
+        echo $xml;
+        exit;
+    }
+
     private function output_xls(string $slug, string $title, array $headers, array $data, array $filters = []): void {
         $ncols  = count($headers);
         $merge  = max(0, $ncols - 1);
@@ -3592,6 +4004,7 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-mx-done{background:#22c55e}
         .fplms-mx-failed{background:#ef4444}
         .fplms-mx-progress{background:#f59e0b}
+        .fplms-mx-done small,
         .fplms-mx-failed small,
         .fplms-mx-progress small{color:#fff;font-size:9px;font-weight:700;display:block;line-height:1.6}
         .fplms-mx-assigned{background:#3b82f6}
@@ -3620,7 +4033,40 @@ class FairPlay_LMS_Reports_Controller {
         .fplms-cmp-grade-label{font-size:13px;font-weight:700;color:#111827}
         .fplms-cmp-grade-range,.fplms-cmp-grade-pct{font-size:11px;color:#6b7280;margin-top:4px}
         .fplms-cmp-inline-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:var(--cmp-color);color:#fff;font-size:12px;font-weight:700;line-height:1.2;margin-top:14px;align-self:flex-start}
-        @media (max-width: 960px){.fplms-cmp-layout{grid-template-columns:1fr}.fplms-cmp-hero{min-height:0}.fplms-cmp-hero-value{font-size:52px}}
+        .fplms-cmp-channel-section{margin-top:18px}
+        .fplms-cmp-channel-boards{display:grid;grid-template-columns:minmax(0,1fr) 76px minmax(0,1fr);gap:14px;align-items:stretch;margin-bottom:18px}
+        .fplms-cmp-compare-card{background:#fff;border:1px solid #ececec;border-radius:14px;padding:16px 18px;box-shadow:0 8px 24px rgba(15,23,42,.04)}
+        .fplms-cmp-compare-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+        .fplms-cmp-compare-head span{font-size:13px;font-weight:700;color:#374151}
+        .fplms-cmp-channel-select{min-width:180px;max-width:100%;padding:8px 12px;border:1.5px solid #d6d6d6;border-radius:8px;background:#fafafa;font-size:13px;color:#111827}
+        .fplms-cmp-channel-select:focus{outline:none;border-color:#ffa800;background:#fff;box-shadow:0 0 0 3px rgba(255,168,0,.14)}
+        .fplms-cmp-compare-body{min-height:168px}
+        .fplms-cmp-compare-vs{width:76px;height:76px;border-radius:999px;background:linear-gradient(180deg,#fff 0%,#f7f7f7 100%);border:1px solid #ececec;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:#4b5563;box-shadow:0 8px 24px rgba(15,23,42,.06);justify-self:center;align-self:center}
+        .fplms-cmp-channel-panel{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+        .fplms-cmp-channel-name{font-size:18px;font-weight:700;color:#111827;margin-bottom:4px}
+        .fplms-cmp-channel-meta{font-size:12px;color:#6b7280;margin-bottom:12px}
+        .fplms-cmp-channel-note{margin-bottom:14px;padding:10px 12px;border-radius:10px;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;font-size:12px;line-height:1.5}
+        .fplms-cmp-channel-legend{margin-top:10px;padding:9px 12px;border-radius:10px;background:#fff8ee;border:1px solid #ffe0a0;font-size:11px;line-height:1.5;color:#7c4a03;text-align:left;max-width:320px}
+        .fplms-cmp-channel-legend strong{color:#9a5b00}
+        .fplms-cmp-gauge{position:relative;width:210px;height:116px;margin:0 auto 8px;overflow:hidden}
+        .fplms-cmp-gauge::before{content:'';position:absolute;left:50%;top:100%;width:210px;height:210px;transform:translate(-50%,-50%) rotate(180deg);border-radius:50%;background:var(--cmp-active-color,#00af50)}
+        .fplms-cmp-gauge::after{content:'';position:absolute;left:50%;top:100%;width:164px;height:164px;transform:translate(-50%,-50%) rotate(180deg);border-radius:50%;background:#fff}
+        .fplms-cmp-gauge-needle{position:absolute;left:50%;bottom:0;width:4px;height:88px;background:var(--cmp-active-color,#1f2937);border-radius:999px;transform-origin:bottom center;transform:translateX(-50%) rotate(var(--needle-angle));z-index:2;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+        .fplms-cmp-gauge-center{position:absolute;left:50%;bottom:0;width:18px;height:18px;border-radius:50%;background:var(--cmp-active-color,#1f2937);transform:translate(-50%,50%);z-index:3;border:3px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,.16)}
+        .fplms-cmp-gauge-value{position:relative;z-index:4;margin-top:-12px;font-size:42px;line-height:1;font-weight:800;color:#111827}
+        .fplms-cmp-gauge-grade{font-size:16px;font-weight:700;color:var(--cmp-active-color,#374151);margin-top:4px}
+        .fplms-cmp-gauge-range{font-size:11px;color:#6b7280;margin-top:6px}
+        .fplms-cmp-compare-table-wrap{overflow-x:auto}
+        .fplms-cmp-compare-table{min-width:760px}
+        .fplms-cmp-compare-table thead tr:first-child th{text-align:center}
+        .fplms-cmp-compare-table thead tr:nth-child(2) th{text-align:center}
+        .fplms-cmp-compare-table td{text-align:center}
+        .fplms-cmp-compare-table td:first-child,.fplms-cmp-compare-table th:first-child{text-align:left}
+        .fplms-cmp-range-cell{display:flex;align-items:center;gap:8px;font-weight:600;color:#374151}
+        .fplms-cmp-range-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;background:var(--cmp-color)}
+        .fplms-cmp-total-row td{font-weight:700;background:#fffaf1}
+        .fplms-cmp-empty-note{padding:18px;border:1px dashed #e5e7eb;border-radius:10px;background:#fafafa;color:#6b7280;font-size:13px;text-align:center}
+        @media (max-width: 960px){.fplms-cmp-layout{grid-template-columns:1fr}.fplms-cmp-hero{min-height:0}.fplms-cmp-hero-value{font-size:52px}.fplms-cmp-channel-boards{grid-template-columns:1fr}.fplms-cmp-compare-vs{order:2}.fplms-cmp-compare-card[data-slot="b"]{order:3}.fplms-cmp-channel-select{min-width:0;width:100%}.fplms-cmp-compare-head{flex-direction:column;align-items:stretch}}
         /* — Confirm modal — */
         .fplms-rpt-cmodal-overlay{display:none;position:fixed;inset:0;z-index:100002;background:rgba(0,0,0,.52);align-items:center;justify-content:center}
         .fplms-rpt-cmodal-overlay.active{display:flex}
@@ -3814,6 +4260,108 @@ class FairPlay_LMS_Reports_Controller {
                     applyVisibility();
                 });
             }
+            function initComparisonsTab(container){
+                var dataEl=container.querySelector('#fplms-cmp-channel-data');
+                if(!dataEl||dataEl.dataset.initialized==='1') return;
+                dataEl.dataset.initialized='1';
+                var data;
+                try{data=JSON.parse(dataEl.textContent||'{}');}catch(e){return;}
+                if(!data||!Array.isArray(data.channels)||data.channels.length<2) return;
+                var scale=Array.isArray(data.scale)?data.scale:[];
+                var channelMap={};
+                data.channels.forEach(function(channel){channelMap[String(channel.id)]=channel;});
+                var selectA=container.querySelector('.fplms-cmp-channel-select[data-target="a"]');
+                var selectB=container.querySelector('.fplms-cmp-channel-select[data-target="b"]');
+                var cardA=container.querySelector('#fplms-cmp-channel-card-a');
+                var cardB=container.querySelector('#fplms-cmp-channel-card-b');
+                var headA=container.querySelector('#fplms-cmp-head-a');
+                var headB=container.querySelector('#fplms-cmp-head-b');
+                var tbody=container.querySelector('#fplms-cmp-compare-tbody');
+                if(!selectA||!selectB||!cardA||!cardB||!headA||!headB||!tbody) return;
+
+                var defaultA=String(data.defaultA||data.channels[0].id);
+                var defaultB=String(data.defaultB||data.channels[1].id||data.channels[0].id);
+                selectA.value=channelMap[defaultA]?defaultA:String(data.channels[0].id);
+                selectB.value=channelMap[defaultB]?defaultB:String(data.channels[1]?data.channels[1].id:data.channels[0].id);
+
+                function escapeHtml(value){
+                    return String(value==null?'':value)
+                        .replace(/&/g,'&amp;')
+                        .replace(/</g,'&lt;')
+                        .replace(/>/g,'&gt;')
+                        .replace(/"/g,'&quot;')
+                        .replace(/'/g,'&#39;');
+                }
+                function formatPct(value){
+                    var num=Number(value||0);
+                    if(!Number.isFinite(num)) num=0;
+                    var str=num.toFixed(1);
+                    str=str.replace(/\.0$/,'');
+                    return str;
+                }
+                function getNeedleAngle(score){
+                    var clamped=Math.max(0,Math.min(100,Number(score||0)));
+                    return (-90+(clamped*1.8));
+                }
+                function renderCard(channel){
+                    if(!channel){
+                        return '<div class="fplms-cmp-empty-note">Sin datos disponibles para este canal.</div>';
+                    }
+                    return '<div class="fplms-cmp-channel-panel">'
+                        + '<div class="fplms-cmp-channel-name">'+escapeHtml(channel.name)+'</div>'
+                        + '<div class="fplms-cmp-channel-meta">'+escapeHtml(channel.total_users)+' usuario(s) con promedio general</div>'
+                        + '<div class="fplms-cmp-gauge" style="--needle-angle:'+getNeedleAngle(channel.average)+'deg;--cmp-active-color:'+escapeHtml(channel.color||'#1f2937')+'">'
+                        + '<div class="fplms-cmp-gauge-needle"></div>'
+                        + '<div class="fplms-cmp-gauge-center"></div>'
+                        + '</div>'
+                        + '<div class="fplms-cmp-gauge-value">'+escapeHtml(formatPct(channel.average))+'</div>'
+                        + '<div class="fplms-cmp-gauge-grade">'+escapeHtml(channel.grade_label)+'</div>'
+                        + '<div class="fplms-cmp-gauge-range">'+escapeHtml(channel.range_label)+'</div>'
+                        + '<div class="fplms-cmp-channel-legend"><strong>Porcentaje:</strong> usuarios del rango / total de estudiantes evaluados del canal x 100. Solo considera cursos completados y notas finales aprobadas o reprobadas.</div>'
+                        + '</div>';
+                }
+                function getDistributionCount(channel,code){
+                    return channel&&channel.distribution&&Object.prototype.hasOwnProperty.call(channel.distribution,code)?Number(channel.distribution[code]||0):0;
+                }
+                function renderTable(channelA,channelB){
+                    var rows='';
+                    scale.forEach(function(grade){
+                        var countA=getDistributionCount(channelA,grade.code);
+                        var countB=getDistributionCount(channelB,grade.code);
+                        var totalA=Math.max(1,Number(channelA&&channelA.total_users||0));
+                        var totalB=Math.max(1,Number(channelB&&channelB.total_users||0));
+                        var pctA=(Number(channelA&&channelA.total_users||0)>0)?(countA/totalA*100):0;
+                        var pctB=(Number(channelB&&channelB.total_users||0)>0)?(countB/totalB*100):0;
+                        rows+='<tr>'
+                            + '<td><div class="fplms-cmp-range-cell" style="--cmp-color:'+escapeHtml(grade.color)+'"><span class="fplms-cmp-range-dot"></span>'+escapeHtml(grade.label+' ('+grade.range+')')+'</div></td>'
+                            + '<td>'+escapeHtml(countA)+'</td>'
+                            + '<td>'+escapeHtml(formatPct(pctA))+'%</td>'
+                            + '<td>'+escapeHtml(countB)+'</td>'
+                            + '<td>'+escapeHtml(formatPct(pctB))+'%</td>'
+                            + '</tr>';
+                    });
+                    rows+='<tr class="fplms-cmp-total-row">'
+                        + '<td>Total</td>'
+                        + '<td>'+escapeHtml(channelA&&channelA.total_users||0)+'</td>'
+                        + '<td>100%</td>'
+                        + '<td>'+escapeHtml(channelB&&channelB.total_users||0)+'</td>'
+                        + '<td>100%</td>'
+                        + '</tr>';
+                    tbody.innerHTML=rows;
+                }
+                function sync(){
+                    var channelA=channelMap[String(selectA.value)]||null;
+                    var channelB=channelMap[String(selectB.value)]||null;
+                    headA.textContent=channelA?channelA.name:'Canal A';
+                    headB.textContent=channelB?channelB.name:'Canal B';
+                    cardA.innerHTML=renderCard(channelA);
+                    cardB.innerHTML=renderCard(channelB);
+                    renderTable(channelA,channelB);
+                }
+                selectA.addEventListener('change',sync);
+                selectB.addEventListener('change',sync);
+                sync();
+            }
             function updateFilterBar(){
                 var bar=document.getElementById('fplms-active-filters-bar');if(!bar)return;
                 var badges=[];
@@ -3940,7 +4488,7 @@ class FairPlay_LMS_Reports_Controller {
                 var p=Object.assign({action:action,nonce:NONCE},getFilters());
                 var body=encodeBody(p);
                 fetch(AJAXURL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
-                    .then(r=>r.json()).then(res=>{content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>'; initPagedTables(content); initChannelTables(content); initSvCharts(res.data&&res.data.charts?res.data.charts:[]);})
+                    .then(r=>r.json()).then(res=>{content.innerHTML=res.success?res.data.html:'<p class="notice notice-error">'+(res.data?res.data.message:'Error')+'</p>'; initPagedTables(content); initChannelTables(content); initComparisonsTab(content); initSvCharts(res.data&&res.data.charts?res.data.charts:[]);})
                     .catch(()=>{content.innerHTML='<p class="notice notice-error">Error de conexion.</p>';});
             }
             document.querySelector('.fplms-rpt-tabs-nav').addEventListener('click',function(e){
