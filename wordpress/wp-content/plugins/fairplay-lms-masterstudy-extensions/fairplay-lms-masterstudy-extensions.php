@@ -94,6 +94,7 @@ require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-quiz-weights.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-survey.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-pages.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-admin-menu.php';
+require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-nav-menu.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-plugin.php';
 
 // Activación / desactivación

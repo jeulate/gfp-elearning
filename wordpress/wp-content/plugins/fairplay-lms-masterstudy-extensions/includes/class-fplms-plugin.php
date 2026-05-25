@@ -95,6 +95,11 @@ class FairPlay_LMS_Plugin {
      */
     private $survey;
 
+    /**
+     * @var FairPlay_LMS_Nav_Menu
+     */
+    private $nav_menu;
+
     public function __construct() {
 
         $this->structures     = new FairPlay_LMS_Structures_Controller();
@@ -112,6 +117,7 @@ class FairPlay_LMS_Plugin {
         $this->quiz_availability  = new FairPlay_LMS_Quiz_Availability();
         $this->quiz_weights       = new FairPlay_LMS_Quiz_Weights();
         $this->survey             = new FairPlay_LMS_Survey();
+        $this->nav_menu           = new FairPlay_LMS_Nav_Menu();
         $this->menu           = new FairPlay_LMS_Admin_Menu(
             $this->pages,
             $this->structures,
@@ -130,6 +136,9 @@ class FairPlay_LMS_Plugin {
 
         // Menú admin
         add_action( 'admin_menu', [ $this->menu, 'register' ] );
+
+        // Menú por rol (frontend: visitantes / estudiantes / instructores)
+        $this->nav_menu->register_hooks();
 
         // Estructuras
         add_action( 'init',       [ $this->structures, 'register_taxonomies' ] );
