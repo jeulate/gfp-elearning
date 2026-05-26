@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * FairPlay LMS Audit Log Admin Interface
  *
@@ -370,6 +370,35 @@ class FairPlay_LMS_Audit_Admin {
 		.fplms-audit-dl-item{display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:13px;color:#374151;cursor:pointer;border:none;background:none;width:100%;text-align:left;}
 		.fplms-audit-dl-item:hover{background:#f3f4f6;}
 		.fplms-audit-cb{cursor:pointer;width:15px;height:15px;margin:0;}
+		/* Responsive table */
+		.fplms-audit-table-scroll{overflow:auto;-webkit-overflow-scrolling:touch;max-height:calc(100vh - 280px);border:1px solid #e2e8f0;border-radius:4px;}
+		.fplms-audit-table-scroll table{min-width:900px;}
+		.fplms-audit-table-scroll thead th{position:sticky;top:0;z-index:2;background:#f9fafb;}
+		/* Truncar texto largo en columna Entidad */
+		.fplms-audit-table-scroll table td:nth-child(7),
+		.fplms-audit-table-scroll table th:nth-child(7){max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+		/* ≤1280px: ocultar IP */
+		@media(max-width:1280px){
+			.fplms-audit-table-scroll table th:nth-child(8),
+			.fplms-audit-table-scroll table td:nth-child(8){display:none;}
+		}
+		/* ≤1024px: ocultar también Tipo */
+		@media(max-width:1024px){
+			.fplms-audit-table-scroll table th:nth-child(6),
+			.fplms-audit-table-scroll table td:nth-child(6){display:none;}
+		}
+		/* ≤768px: ocultar también Usuario */
+		@media(max-width:768px){
+			.fplms-audit-table-scroll table th:nth-child(4),
+			.fplms-audit-table-scroll table td:nth-child(4){display:none;}
+		}
+		/* SOBRESCRIBIR FOOTER DE WORDPRESS EN ESTA PÁGINA */
+		#wpfooter{
+			position:relative !important;
+			bottom:auto !important;
+			left:auto !important;
+			right:auto !important;
+		}
 		</style>
 		<div class="fplms-audit-table">
 			<div style="background: #fff; padding: 15px; border: 1px solid #ccd0d4;">
@@ -425,19 +454,20 @@ class FairPlay_LMS_Audit_Admin {
 						<span>No se encontraron registros con los filtros aplicados.</span>
 					</p>
 				<?php else : ?>
+					<div class="fplms-audit-table-scroll">
 					<table class="wp-list-table widefat fixed striped" style="margin-top: 15px;">
 						<thead>
 							<tr>
 								<th style="width:34px;text-align:center;"><input type="checkbox" id="fplms-audit-select-all" class="fplms-audit-cb" title="Seleccionar todo"></th>
-								<th style="width: 60px;">ID</th>
-								<th style="width: 150px;">Fecha/Hora</th>
-								<th style="width: 120px;">Usuario</th>
-								<th style="width: 180px;">Acción</th>
-								<th style="width: 100px;">Tipo</th>
-								<th>Entidad</th>
-								<th style="width: 100px;">IP</th>
-								<th style="width: 80px;">Detalles</th>
-								<th style="width: 150px;">Acciones</th>
+								<th style="width: 55px;">ID</th>
+								<th style="width: 140px;">Fecha/Hora</th>
+								<th style="width: 110px;">Usuario</th>
+								<th style="width: 160px;">Acción</th>
+								<th style="width: 90px;">Tipo</th>
+								<th style="width: 160px;">Entidad</th>
+								<th style="width: 105px;">IP</th>
+								<th style="width: 75px;">Detalles</th>
+								<th style="width: 130px;">Acciones</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -454,7 +484,8 @@ class FairPlay_LMS_Audit_Admin {
 									data-entity-id="<?php echo esc_attr( $log['entity_id'] ); ?>"
 									data-ip="<?php echo esc_attr( $log['ip_address'] ?? '' ); ?>"
 									data-old="<?php echo esc_attr( $log['old_value'] ?? '' ); ?>"
-									data-new="<?php echo esc_attr( $log['new_value'] ?? '' ); ?>">
+									data-new="<?php echo esc_attr( $log['new_value'] ?? '' ); ?>"
+									data-changes="<?php echo esc_attr( $this->compute_changes_text( $log['old_value'] ?? '', $log['new_value'] ?? '', $log['action'] ) ); ?>">
 									<td style="text-align:center;"><input type="checkbox" class="fplms-audit-cb" style="margin:0;"></td>
 									<td><strong><?php echo esc_html( $log['id'] ); ?></strong></td>
 									<td><?php echo esc_html( $dt_r->format( 'd/m/Y H:i' ) ); ?></td>
@@ -484,47 +515,9 @@ class FairPlay_LMS_Audit_Admin {
 								</tr>
 								<tr id="fplms-details-<?php echo esc_attr( $log['id'] ); ?>" style="display: none;">
 									<td colspan="10" style="background: #f9f9f9; padding: 15px;">
-										<?php
-										// Intentar mostrar cambios en formato mejorado si ambos valores son JSON
-										if ( $log['old_value'] && $log['new_value'] ) {
-											// Verificar si son JSON válidos
-											$old_json = json_decode( $log['old_value'], true );
-											$new_json = json_decode( $log['new_value'], true );
-											
-											if ( is_array( $old_json ) && is_array( $new_json ) ) {
-												// Usar vista mejorada para JSON
-												echo $this->render_changes_only( $log['old_value'], $log['new_value'], $log['action'] );
-											} else {
-												// Vista tradicional para datos no-JSON
-												?>
-												<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-													<div>
-														<strong>Valor Anterior:</strong>
-														<pre style="background: #fff; padding: 10px; border: 1px solid #ddd; max-height: 200px; overflow: auto; font-size: 11px;"><?php echo esc_html( $log['old_value'] ); ?></pre>
-													</div>
-													<div>
-														<strong>Valor Nuevo:</strong>
-														<pre style="background: #fff; padding: 10px; border: 1px solid #ddd; max-height: 200px; overflow: auto; font-size: 11px;"><?php echo esc_html( $log['new_value'] ); ?></pre>
-													</div>
-												</div>
-												<?php
-											}
-										} else {
-											// Si solo hay un valor
-											?>
-											<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-												<div>
-													<strong>Valor Anterior:</strong>
-													<pre style="background: #fff; padding: 10px; border: 1px solid #ddd; max-height: 200px; overflow: auto; font-size: 11px;"><?php echo esc_html( $log['old_value'] ?: 'N/A' ); ?></pre>
-												</div>
-												<div>
-													<strong>Valor Nuevo:</strong>
-													<pre style="background: #fff; padding: 10px; border: 1px solid #ddd; max-height: 200px; overflow: auto; font-size: 11px;"><?php echo esc_html( $log['new_value'] ?: 'N/A' ); ?></pre>
-												</div>
-											</div>
-											<?php
-										}
-										?>
+										<div style="overflow: auto; max-height: 380px; max-width: 100%;">
+											<?php echo $this->render_changes_only( $log['old_value'] ?? '', $log['new_value'] ?? '', $log['action'] ); ?>
+										</div>
 										<div style="margin-top: 10px; font-size: 12px; color: #666;">
 											<strong>User Agent:</strong> <?php echo esc_html( $log['user_agent'] ?? 'N/A' ); ?>
 										</div>
@@ -533,6 +526,7 @@ class FairPlay_LMS_Audit_Admin {
 							<?php endforeach; ?>
 						</tbody>
 					</table>
+					</div><!-- .fplms-audit-table-scroll -->
 
 					<?php $this->render_pagination( $current_page, $total_pages, $per_page ); ?>
 				<?php endif; ?>
@@ -924,7 +918,7 @@ class FairPlay_LMS_Audit_Admin {
 			}).join('') + '</tr></thead><tbody>';
 			rows.forEach(function(row) {
 				var d = row.dataset;
-				var changes = fplmsComputeChanges(d.old || '', d['new'] || '');
+				var changes = d.changes || fplmsComputeChanges(d.old || '', d['new'] || '');
 				var vals = [d.logId, d.date, d.time, d.user, d.action, d.type, d.entity, d.entityId, changes, d.ip];
 				t += '<tr>' + vals.map(function(v, i) {
 					var wrap = i === 8 ? 'white-space:pre-wrap;max-width:300px;' : '';
@@ -954,7 +948,7 @@ class FairPlay_LMS_Audit_Admin {
 			var t = '<table><thead><tr>' + headers.map(function(h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>';
 			rows.forEach(function(row) {
 				var d = row.dataset;
-				var changes = fplmsComputeChanges(d.old || '', d['new'] || '').replace(/\n/g,'<br>');
+				var changes = (d.changes || fplmsComputeChanges(d.old || '', d['new'] || '')).replace(/\n/g,'<br>');
 				var vals = [d.logId, d.date, d.time, d.user, d.action, d.type, d.entity, changes, d.ip];
 				t += '<tr>' + vals.map(function(v, i) {
 					return '<td>' + (i === 7 ? (v||'') : fplmsHtmlEsc(v||'')) + '</td>';
@@ -1140,6 +1134,140 @@ class FairPlay_LMS_Audit_Admin {
 	}
 
 	/**
+	 * Resuelve un array de IDs de términos a sus nombres legibles.
+	 *
+	 * @param array  $ids      IDs de términos WordPress.
+	 * @param string $taxonomy Slug de la taxonomía.
+	 * @return string Nombres separados por coma, o "(vacío)" si el array está vacío.
+	 */
+	private function resolve_term_ids( array $ids, string $taxonomy ): string {
+		if ( empty( $ids ) ) {
+			return '(vacío)';
+		}
+		$names = [];
+		foreach ( $ids as $id ) {
+			$term = get_term( (int) $id, $taxonomy );
+			if ( $term && ! is_wp_error( $term ) ) {
+				$names[] = $term->name;
+			} else {
+				$names[] = 'ID ' . (int) $id;
+			}
+		}
+		return implode( ', ', $names );
+	}
+
+	/**
+	 * Generar texto plano de cambios con IDs resueltos a nombres (para exportación).
+	 *
+	 * @param string $old_value JSON antiguo.
+	 * @param string $new_value JSON nuevo.
+	 * @param string $action    Tipo de acción.
+	 * @return string Texto multilínea: "Campo: «antes» → «después»"
+	 */
+	private function compute_changes_text( string $old_value, string $new_value, string $action = '' ): string {
+		$old_data = json_decode( $old_value, true );
+		$new_data = json_decode( $new_value, true );
+
+		// Fallback: ninguno es array válido
+		if ( ! is_array( $old_data ) && ! is_array( $new_data ) ) {
+			$parts = [];
+			if ( $old_value ) {
+				$parts[] = 'Anterior: ' . substr( $old_value, 0, 120 );
+			}
+			if ( $new_value ) {
+				$parts[] = 'Nuevo: ' . substr( $new_value, 0, 120 );
+			}
+			return implode( ' | ', $parts );
+		}
+
+		$old_data = is_array( $old_data ) ? $old_data : [];
+		$new_data = is_array( $new_data ) ? $new_data : [];
+
+		$structure_tax_map = [
+			'cities'       => FairPlay_LMS_Config::TAX_CITY,
+			'companies'    => FairPlay_LMS_Config::TAX_COMPANY,
+			'channels'     => FairPlay_LMS_Config::TAX_CHANNEL,
+			'branches'     => FairPlay_LMS_Config::TAX_BRANCH,
+			'roles'        => FairPlay_LMS_Config::TAX_ROLE,
+			'city_ids'     => FairPlay_LMS_Config::TAX_CITY,
+			'company_ids'  => FairPlay_LMS_Config::TAX_COMPANY,
+			'channel_ids'  => FairPlay_LMS_Config::TAX_CHANNEL,
+			'branch_ids'   => FairPlay_LMS_Config::TAX_BRANCH,
+			'role_ids'     => FairPlay_LMS_Config::TAX_ROLE,
+		];
+
+		$single_id_tax_map = [
+			'city_id'    => FairPlay_LMS_Config::TAX_CITY,
+			'company_id' => FairPlay_LMS_Config::TAX_COMPANY,
+			'channel_id' => FairPlay_LMS_Config::TAX_CHANNEL,
+			'branch_id'  => FairPlay_LMS_Config::TAX_BRANCH,
+			'role_id'    => FairPlay_LMS_Config::TAX_ROLE,
+		];
+
+		$field_labels = [
+			'cities'         => 'Ciudades',       'city_ids'       => 'Ciudades',
+			'companies'      => 'Empresas',        'company_ids'    => 'Empresas',
+			'channels'       => 'Canales',         'channel_ids'    => 'Canales',
+			'branches'       => 'Sucursales',      'branch_ids'     => 'Sucursales',
+			'roles'          => 'Cargos',          'role_ids'       => 'Cargos',
+			'email'          => 'Email',           'first_name'     => 'Nombre',
+			'last_name'      => 'Apellido',        'id_usuario'     => 'ID Usuario',
+			'role'           => 'Rol',             'city_id'        => 'Ciudad',
+			'company_id'     => 'Empresa',         'channel_id'     => 'Canal',
+			'branch_id'      => 'Sucursal',        'role_id'        => 'Cargo',
+			'name'           => 'Nombre',          'slug'           => 'Slug',
+			'description'    => 'Descripción',     'active'         => 'Estado',
+			'status'         => 'Estado',          'status_text'    => 'Estado',
+			'branches_count' => 'Cant. Sucursales','title'          => 'Título',
+			'price'          => 'Precio',          'duration'       => 'Duración',
+			'level'          => 'Nivel',           'passing_grade'  => 'Nota Mínima',
+			'questions_count'=> 'Nº Preguntas',
+		];
+
+		$lines    = [];
+		$all_keys = array_unique( array_merge( array_keys( $old_data ), array_keys( $new_data ) ) );
+
+		foreach ( $all_keys as $key ) {
+			$old_raw = $old_data[ $key ] ?? '';
+			$new_raw = $new_data[ $key ] ?? '';
+
+			if ( isset( $structure_tax_map[ $key ] ) ) {
+				$tax     = $structure_tax_map[ $key ];
+				$old_ids = is_array( $old_raw ) ? $old_raw : ( is_string( $old_raw ) ? json_decode( $old_raw, true ) ?? [] : [] );
+				$new_ids = is_array( $new_raw ) ? $new_raw : ( is_string( $new_raw ) ? json_decode( $new_raw, true ) ?? [] : [] );
+				$old_val = $this->resolve_term_ids( array_map( 'intval', $old_ids ), $tax );
+				$new_val = $this->resolve_term_ids( array_map( 'intval', $new_ids ), $tax );
+			} elseif ( isset( $single_id_tax_map[ $key ] ) ) {
+				$tax     = $single_id_tax_map[ $key ];
+				$old_id  = (int) $old_raw;
+				$new_id  = (int) $new_raw;
+				$t       = $old_id > 0 ? get_term( $old_id, $tax ) : null;
+				$old_val = ( $t && ! is_wp_error( $t ) ) ? $t->name : ( $old_id > 0 ? 'ID ' . $old_id : '' );
+				$t       = $new_id > 0 ? get_term( $new_id, $tax ) : null;
+				$new_val = ( $t && ! is_wp_error( $t ) ) ? $t->name : ( $new_id > 0 ? 'ID ' . $new_id : '' );
+			} else {
+				$old_val = is_array( $old_raw ) ? implode( ', ', $old_raw ) : (string) $old_raw;
+				$new_val = is_array( $new_raw ) ? implode( ', ', $new_raw ) : (string) $new_raw;
+			}
+
+			if ( (string) $old_val !== (string) $new_val ) {
+				$label   = $field_labels[ $key ] ?? ucwords( str_replace( '_', ' ', $key ) );
+				$old_str = $old_val ?: '(sin asignar)';
+				$new_str = $new_val ?: '(sin asignar)';
+				if ( mb_strlen( $old_str ) > 120 ) {
+					$old_str = mb_substr( $old_str, 0, 117 ) . '...';
+				}
+				if ( mb_strlen( $new_str ) > 120 ) {
+					$new_str = mb_substr( $new_str, 0, 117 ) . '...';
+				}
+				$lines[] = $label . ': "' . $old_str . '" → "' . $new_str . '"';
+			}
+		}
+
+		return implode( "\n", $lines );
+	}
+
+	/**
 	 * Comparar valores antiguos y nuevos para mostrar solo los cambios
 	 *
 	 * @param string $old_value Valor anterior en JSON
@@ -1151,8 +1279,13 @@ class FairPlay_LMS_Audit_Admin {
 		$old_data = json_decode( $old_value, true );
 		$new_data = json_decode( $new_value, true );
 
-		// Si no son arrays válidos, mostrar como antes
-		if ( ! is_array( $old_data ) || ! is_array( $new_data ) ) {
+		// Determinar modo: creación, eliminación o modificación
+		$is_creation = ! is_array( $old_data ) && is_array( $new_data );
+		$is_deletion = is_array( $old_data ) && ! is_array( $new_data );
+		$is_both     = is_array( $old_data ) && is_array( $new_data );
+
+		// Fallback solo si ninguno tiene datos estructurados
+		if ( ! $is_creation && ! $is_deletion && ! $is_both ) {
 			return '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
 				<div>
 					<strong>Valor Anterior:</strong>
@@ -1165,20 +1298,62 @@ class FairPlay_LMS_Audit_Admin {
 			</div>';
 		}
 
+		// Normalizar a arrays para procesamiento unificado
+		$old_data = is_array( $old_data ) ? $old_data : [];
+		$new_data = is_array( $new_data ) ? $new_data : [];
+
+		// Mapeo de clave JSON → taxonomía para resolución de IDs (arrays)
+		$structure_tax_map = [
+			// claves sin sufijo (asignación de cursos)
+			'cities'       => FairPlay_LMS_Config::TAX_CITY,
+			'companies'    => FairPlay_LMS_Config::TAX_COMPANY,
+			'channels'     => FairPlay_LMS_Config::TAX_CHANNEL,
+			'branches'     => FairPlay_LMS_Config::TAX_BRANCH,
+			'roles'        => FairPlay_LMS_Config::TAX_ROLE,
+			// claves con sufijo _ids (estructuras: sucursales, canales, etc.)
+			'city_ids'     => FairPlay_LMS_Config::TAX_CITY,
+			'company_ids'  => FairPlay_LMS_Config::TAX_COMPANY,
+			'channel_ids'  => FairPlay_LMS_Config::TAX_CHANNEL,
+			'branch_ids'   => FairPlay_LMS_Config::TAX_BRANCH,
+			'role_ids'     => FairPlay_LMS_Config::TAX_ROLE,
+		];
+
+		// Mapeo de clave JSON → taxonomía para IDs escalares simples
+		$single_id_tax_map = [
+			'city_id'    => FairPlay_LMS_Config::TAX_CITY,
+			'company_id' => FairPlay_LMS_Config::TAX_COMPANY,
+			'channel_id' => FairPlay_LMS_Config::TAX_CHANNEL,
+			'branch_id'  => FairPlay_LMS_Config::TAX_BRANCH,
+			'role_id'    => FairPlay_LMS_Config::TAX_ROLE,
+		];
+
 		// Etiquetas amigables para los campos (mapeo expandido)
 		$field_labels = [
+			// Asignación de estructuras a cursos (sin sufijo)
+			'cities'             => 'Ciudades',
+			'companies'          => 'Empresas / Franquicias',
+			'channels'           => 'Canales',
+			'branches'           => 'Sucursales',
+			'roles'              => 'Cargos',
+			// Relaciones en estructuras (con sufijo _ids)
+			'city_ids'           => 'Ciudades',
+			'company_ids'        => 'Empresas / Franquicias',
+			'channel_ids'        => 'Canales',
+			'branch_ids'         => 'Sucursales',
+			'role_ids'           => 'Cargos',
 			// Usuarios
 			'email'              => 'Email',
 			'first_name'         => 'Nombre',
 			'last_name'          => 'Apellido',
 			'id_usuario'         => 'ID Usuario',
 			'role'               => 'Rol',
-			'city_id'            => 'Ciudad (ID)',
-			'company_id'         => 'Empresa (ID)',
-			'channel_id'         => 'Canal (ID)',
-			'branch_id'          => 'Sucursal (ID)',
-			'role_id'            => 'Cargo (ID)',
+			'city_id'            => 'Ciudad',
+			'company_id'         => 'Empresa',
+			'channel_id'         => 'Canal',
+			'branch_id'          => 'Sucursal',
+			'role_id'            => 'Cargo',
 			// Estructuras
+			'branches_count'     => 'Cantidad de Sucursales',
 			'name'               => 'Nombre',
 			'slug'               => 'Slug',
 			'description'        => 'Descripción',
@@ -1221,40 +1396,66 @@ class FairPlay_LMS_Audit_Admin {
 		];
 
 		// Encontrar los campos que cambiaron
-		$changes = [];
+		$changes  = [];
 		$all_keys = array_unique( array_merge( array_keys( $old_data ), array_keys( $new_data ) ) );
-		
+
 		foreach ( $all_keys as $key ) {
-			$old_val = $old_data[ $key ] ?? '';
-			$new_val = $new_data[ $key ] ?? '';
-			
-			// Manejar arrays y objetos
-			if ( is_array( $old_val ) || is_object( $old_val ) ) {
-				$old_val = wp_json_encode( $old_val, JSON_UNESCAPED_UNICODE );
+			$old_raw = $old_data[ $key ] ?? '';
+			$new_raw = $new_data[ $key ] ?? '';
+
+			// Resolución de IDs → nombres para claves de estructura
+			if ( isset( $structure_tax_map[ $key ] ) ) {
+				$tax      = $structure_tax_map[ $key ];
+				$old_ids  = is_array( $old_raw ) ? $old_raw : ( is_string( $old_raw ) ? json_decode( $old_raw, true ) ?? [] : [] );
+				$new_ids  = is_array( $new_raw ) ? $new_raw : ( is_string( $new_raw ) ? json_decode( $new_raw, true ) ?? [] : [] );
+				$old_val  = $this->resolve_term_ids( array_map( 'intval', $old_ids ), $tax );
+				$new_val  = $this->resolve_term_ids( array_map( 'intval', $new_ids ), $tax );
+			} elseif ( isset( $single_id_tax_map[ $key ] ) ) {
+				// Resolución de ID escalar → nombre de término
+				$tax    = $single_id_tax_map[ $key ];
+				$old_id = (int) ( $old_raw ?? 0 );
+				$new_id = (int) ( $new_raw ?? 0 );
+				if ( $old_id > 0 ) {
+					$t       = get_term( $old_id, $tax );
+					$old_val = ( $t && ! is_wp_error( $t ) ) ? $t->name : 'ID ' . $old_id;
+				} else {
+					$old_val = '';
+				}
+				if ( $new_id > 0 ) {
+					$t       = get_term( $new_id, $tax );
+					$new_val = ( $t && ! is_wp_error( $t ) ) ? $t->name : 'ID ' . $new_id;
+				} else {
+					$new_val = '';
+				}
+			} else {
+				$old_val = $old_raw;
+				$new_val = $new_raw;
+
+				// Manejar arrays y objetos genéricos
+				if ( is_array( $old_val ) || is_object( $old_val ) ) {
+					$old_val = wp_json_encode( $old_val, JSON_UNESCAPED_UNICODE );
+				}
+				if ( is_array( $new_val ) || is_object( $new_val ) ) {
+					$new_val = wp_json_encode( $new_val, JSON_UNESCAPED_UNICODE );
+				}
+
+				// Convertir booleanos a texto
+				if ( is_bool( $old_val ) ) { $old_val = $old_val ? 'Sí' : 'No'; }
+				if ( is_bool( $new_val ) ) { $new_val = $new_val ? 'Sí' : 'No'; }
+
+				// Normalizar valores vacíos
+				$old_val = ( $old_val === '' || $old_val === 0 || $old_val === '0' || $old_val === null ) ? '' : $old_val;
+				$new_val = ( $new_val === '' || $new_val === 0 || $new_val === '0' || $new_val === null ) ? '' : $new_val;
 			}
-			if ( is_array( $new_val ) || is_object( $new_val ) ) {
-				$new_val = wp_json_encode( $new_val, JSON_UNESCAPED_UNICODE );
-			}
-			
-			// Convertir booleanos a texto
-			if ( is_bool( $old_val ) ) {
-				$old_val = $old_val ? 'Sí' : 'No';
-			}
-			if ( is_bool( $new_val ) ) {
-				$new_val = $new_val ? 'Sí' : 'No';
-			}
-			
-			// Normalizar valores vacíos
-			$old_val = ( $old_val === '' || $old_val === 0 || $old_val === '0' || $old_val === null ) ? '' : $old_val;
-			$new_val = ( $new_val === '' || $new_val === 0 || $new_val === '0' || $new_val === null ) ? '' : $new_val;
-			
+
 			// Si son diferentes, es un cambio
 			if ( (string) $old_val !== (string) $new_val ) {
 				$label = $field_labels[ $key ] ?? ucwords( str_replace( '_', ' ', $key ) );
-				
-				// Truncar valores muy largos
-				$old_display = $old_val ?: '<em>Sin asignar</em>';
-				$new_display = $new_val ?: '<em>Sin asignar</em>';
+
+				// Placeholder según modo (creación/eliminación usan guion, modificación usa etiqueta)
+				$empty_placeholder = ( $is_creation || $is_deletion ) ? '—' : '<em>Sin asignar</em>';
+				$old_display = $old_val ?: $empty_placeholder;
+				$new_display = $new_val ?: $empty_placeholder;
 				
 				if ( strlen( $old_display ) > 200 && strpos( $old_display, '<em>' ) === false ) {
 					$old_display = substr( $old_display, 0, 200 ) . '...';
@@ -1278,25 +1479,67 @@ class FairPlay_LMS_Audit_Admin {
 			</div>';
 		}
 
+		// Configurar estilo y etiquetas según modo
+		if ( $is_creation ) {
+			$label_old      = 'Antes de crear';
+			$label_new      = 'Datos al crear';
+			$bg_old_header  = '#f5f5f5';
+			$bg_new_header  = '#e8f5e9';
+			$bg_old_cell    = '#fafafa';
+			$color_old      = '#9e9e9e';
+			$bg_new_cell    = '#f6fff8';
+			$color_new      = '#00a32a';
+			$summary_icon   = '✅';
+			$summary_text   = count( $changes ) . ' campo(s) registrado(s) al crear';
+			$summary_bg     = '#f0fff4';
+			$summary_border = '#00a32a';
+		} elseif ( $is_deletion ) {
+			$label_old      = 'Datos antes de eliminar';
+			$label_new      = 'Después de eliminar';
+			$bg_old_header  = '#ffebee';
+			$bg_new_header  = '#f5f5f5';
+			$bg_old_cell    = '#fff8f8';
+			$color_old      = '#d63638';
+			$bg_new_cell    = '#fafafa';
+			$color_new      = '#9e9e9e';
+			$summary_icon   = '🗑️';
+			$summary_text   = count( $changes ) . ' campo(s) del registro eliminado';
+			$summary_bg     = '#fff5f5';
+			$summary_border = '#d63638';
+		} else {
+			$label_old      = 'Valor Anterior';
+			$label_new      = 'Valor Nuevo';
+			$bg_old_header  = '#ffebee';
+			$bg_new_header  = '#e8f5e9';
+			$bg_old_cell    = '#fff8f8';
+			$color_old      = '#d63638';
+			$bg_new_cell    = '#f6fff8';
+			$color_new      = '#00a32a';
+			$summary_icon   = 'ℹ️';
+			$summary_text   = count( $changes ) . ' campo(s) modificado(s)';
+			$summary_bg     = '#e7f5ff';
+			$summary_border = '#2271b1';
+		}
+
 		// Renderizar los cambios en formato tabla
-		$html = '<table style="width: 100%; border-collapse: collapse; font-size: 13px;">';
+		$html  = '<table style="width: 100%; border-collapse: collapse; font-size: 13px;">';
 		$html .= '<thead><tr style="background: #f0f0f1; border-bottom: 2px solid #ddd;">';
 		$html .= '<th style="padding: 10px; text-align: left; width: 30%;">Campo</th>';
-		$html .= '<th style="padding: 10px; text-align: left; width: 35%; background: #ffebee;">Valor Anterior</th>';
-		$html .= '<th style="padding: 10px; text-align: left; width: 35%; background: #e8f5e9;">Valor Nuevo</th>';
+		$html .= '<th style="padding: 10px; text-align: left; width: 35%; background: ' . $bg_old_header . ';">' . $label_old . '</th>';
+		$html .= '<th style="padding: 10px; text-align: left; width: 35%; background: ' . $bg_new_header . ';">' . $label_new . '</th>';
 		$html .= '</tr></thead><tbody>';
 
 		foreach ( $changes as $change ) {
 			$html .= '<tr style="border-bottom: 1px solid #eee;">';
 			$html .= '<td style="padding: 10px; font-weight: 600; color: #2271b1;">' . esc_html( $change['label'] ) . '</td>';
-			$html .= '<td style="padding: 10px; background: #fff8f8; color: #d63638;">' . ( strpos( $change['old'], '<em>' ) !== false ? $change['old'] : esc_html( $change['old'] ) ) . '</td>';
-			$html .= '<td style="padding: 10px; background: #f6fff8; color: #00a32a;">' . ( strpos( $change['new'], '<em>' ) !== false ? $change['new'] : esc_html( $change['new'] ) ) . '</td>';
+			$html .= '<td style="padding: 10px; background: ' . $bg_old_cell . '; color: ' . $color_old . ';">' . ( strpos( $change['old'], '<em>' ) !== false || $change['old'] === '—' ? $change['old'] : esc_html( $change['old'] ) ) . '</td>';
+			$html .= '<td style="padding: 10px; background: ' . $bg_new_cell . '; color: ' . $color_new . ';">' . ( strpos( $change['new'], '<em>' ) !== false || $change['new'] === '—' ? $change['new'] : esc_html( $change['new'] ) ) . '</td>';
 			$html .= '</tr>';
 		}
 
 		$html .= '</tbody></table>';
-		$html .= '<div style="margin-top: 15px; padding: 10px; background: #e7f5ff; border-left: 4px solid #2271b1; font-size: 12px;">';
-		$html .= '<strong>ℹ️ Total de cambios:</strong> ' . count( $changes ) . ' campo(s) modificado(s)';
+		$html .= '<div style="margin-top: 15px; padding: 10px; background: ' . $summary_bg . '; border-left: 4px solid ' . $summary_border . '; font-size: 12px;">';
+		$html .= '<strong>' . $summary_icon . ' Total:</strong> ' . $summary_text;
 		$html .= '</div>';
 
 		return $html;

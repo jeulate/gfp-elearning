@@ -2300,22 +2300,26 @@ class FairPlay_LMS_Users_Controller {
                 <h2>Crear nuevo usuario</h2>
 
                 <?php if ( isset( $_GET['error'] ) ) : ?>
-                    <div id="message" class="error notice notice-error is-dismissible">
-                        <p>
-                            <?php
-                            $error_msg = sanitize_text_field( wp_unslash( $_GET['error'] ) );
-                            
-                            $error_messages = [
-                                'incomplete_data'     => 'Datos incompletos. Verifica que llenes todos los campos requeridos.',
-                                'invalid_id_usuario'  => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
-                                'id_usuario_exists'   => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
-                                'user_exists'         => 'Error al crear el usuario. Verifica que el nombre de usuario o correo no existan.',
-                                'structure_required'  => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
-                            ];
-                            
-                            echo isset( $error_messages[ $error_msg ] ) ? esc_html( $error_messages[ $error_msg ] ) : 'Error al crear el usuario';
-                            ?>
-                        </p>
+                    <?php
+                    $error_msg = sanitize_text_field( wp_unslash( $_GET['error'] ) );
+                    $error_messages = [
+                        'incomplete_data'    => 'Datos incompletos. Verifica que llenes todos los campos requeridos.',
+                        'invalid_id_usuario' => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
+                        'id_usuario_exists'  => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
+                        'user_exists'        => 'El nombre de usuario o correo ya existe. Por favor, verifica e ingresa datos diferentes.',
+                        'structure_required' => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
+                    ];
+                    $error_text = isset( $error_messages[ $error_msg ] ) ? $error_messages[ $error_msg ] : 'Error al crear el usuario.';
+                    ?>
+                    <div id="fplms-create-error-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;">
+                        <div style="background:#fff;border-radius:14px;padding:36px 32px;max-width:420px;width:92%;box-shadow:0 10px 40px rgba(0,0,0,.28);text-align:center;">
+                            <div style="width:56px;height:56px;border-radius:50%;background:#FEF2F2;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;">
+                                <svg viewBox="0 0 24 24" style="width:28px;height:28px;fill:#DC2626;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                            </div>
+                            <h3 style="margin:0 0 10px;font-size:18px;color:#111827;font-weight:700;">Error al crear el usuario</h3>
+                            <p style="margin:0 0 26px;color:#6B7280;font-size:14px;line-height:1.5;"><?php echo esc_html( $error_text ); ?></p>
+                            <button type="button" onclick="document.getElementById('fplms-create-error-overlay').remove()" style="background:#667eea;color:#fff;border:none;border-radius:8px;padding:11px 32px;font-size:14px;cursor:pointer;font-weight:600;letter-spacing:.3px;">Entendido</button>
+                        </div>
                     </div>
                 <?php endif; ?>
 
@@ -2368,11 +2372,11 @@ class FairPlay_LMS_Users_Controller {
                                 <div class="fplms-card-body">
                                     <div class="fplms-form-row">
                                         <div class="fplms-form-group">
-                                            <label for="fplms_first_name">Nombre <span class="required">*</span></label>
+                                            <label for="fplms_first_name">Nombres <span class="required">*</span></label>
                                             <input type="text" id="fplms_first_name" name="fplms_first_name" required>
                                         </div>
                                         <div class="fplms-form-group">
-                                            <label for="fplms_last_name">Apellido <span class="required">*</span></label>
+                                            <label for="fplms_last_name">Apellidos <span class="required">*</span></label>
                                             <input type="text" id="fplms_last_name" name="fplms_last_name" required>
                                         </div>
                                     </div>
@@ -3842,14 +3846,14 @@ class FairPlay_LMS_Users_Controller {
                                     <div class="fplms-form-group">
                                         <label for="fplms_first_name">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12z"/></svg>
-                                            Nombre <span class="required">*</span>
+                                            Nombres <span class="required">*</span>
                                         </label>
                                         <input type="text" id="fplms_first_name" name="fplms_first_name" value="<?php echo esc_attr( $first_name ); ?>" required>
                                     </div>
                                     <div class="fplms-form-group">
                                         <label for="fplms_last_name">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12z"/></svg>
-                                            Apellido <span class="required">*</span>
+                                            Apellidos <span class="required">*</span>
                                         </label>
                                         <input type="text" id="fplms_last_name" name="fplms_last_name" value="<?php echo esc_attr( $last_name ); ?>" required>
                                     </div>
@@ -4241,8 +4245,8 @@ class FairPlay_LMS_Users_Controller {
                             return el.options[el.selectedIndex].text;
                         }
                         var fields = [
-                            { label: 'Nombre',         orig: d.origFirstName,    curr: (document.getElementById('fplms_first_name') || {value:''}).value },
-                            { label: 'Apellido',        orig: d.origLastName,     curr: (document.getElementById('fplms_last_name') || {value:''}).value },
+                            { label: 'Nombres',        orig: d.origFirstName,    curr: (document.getElementById('fplms_first_name') || {value:''}).value },
+                            { label: 'Apellidos',       orig: d.origLastName,     curr: (document.getElementById('fplms_last_name') || {value:''}).value },
                             { label: 'Correo',          orig: d.origEmail,        curr: (document.getElementById('fplms_user_email') || {value:''}).value },
                             { label: 'IDUsuario',       orig: d.origId,           curr: (document.getElementById('fplms_id_usuario') || {value:''}).value },
                             { label: 'Tipo de usuario', orig: d.origRoleName,     curr: getSelText('fplms_user_role') },
@@ -4340,8 +4344,8 @@ class FairPlay_LMS_Users_Controller {
                         var missing = [];
 
                         var basicFields = [
-                            { id: 'fplms_first_name',  label: 'Nombre' },
-                            { id: 'fplms_last_name',   label: 'Apellido' },
+                            { id: 'fplms_first_name',  label: 'Nombres' },
+                            { id: 'fplms_last_name',   label: 'Apellidos' },
                             { id: 'fplms_id_usuario',  label: 'IDUsuario' },
                             { id: 'fplms_user_login',  label: 'Nombre de usuario' },
                             { id: 'fplms_user_email',  label: 'Correo electrónico' },
@@ -4827,11 +4831,11 @@ class FairPlay_LMS_Users_Controller {
                         <div class="fplms-card-body">
                             <div class="fplms-form-row">
                                 <div class="fplms-form-group">
-                                    <label>Nombre</label>
+                                    <label>Nombres</label>
                                     <p class="fplms-view-field"><?php echo esc_html( $first_name ?: '—' ); ?></p>
                                 </div>
                                 <div class="fplms-form-group">
-                                    <label>Apellido</label>
+                                    <label>Apellidos</label>
                                     <p class="fplms-view-field"><?php echo esc_html( $last_name ?: '—' ); ?></p>
                                 </div>
                             </div>
@@ -6070,11 +6074,11 @@ class FairPlay_LMS_Users_Controller {
                             <div class="fplms-card-body">
                                 <div class="fplms-form-row">
                                     <div class="fplms-form-group">
-                                        <label for="fplms_first_name">Nombre <span class="required">*</span></label>
+                                        <label for="fplms_first_name">Nombres <span class="required">*</span></label>
                                         <input type="text" id="fplms_first_name" name="fplms_first_name" required>
                                     </div>
                                     <div class="fplms-form-group">
-                                        <label for="fplms_last_name">Apellido <span class="required">*</span></label>
+                                        <label for="fplms_last_name">Apellidos <span class="required">*</span></label>
                                         <input type="text" id="fplms_last_name" name="fplms_last_name" required>
                                     </div>
                                 </div>

@@ -1704,7 +1704,7 @@ class FairPlay_LMS_Structures_Controller {
 
             <!-- Modal de Confirmación de Guardar Cambios -->
             <div id="fplms-save-modal" class="fplms-modal" style="display:none;">
-                <div class="fplms-modal-content" style="max-width: 450px;">
+                <div class="fplms-modal-content" style="max-width: 540px;">
                     <div class="fplms-modal-header">
                         <h3><?php echo $this->fplms_svg( 'save' ); ?> Confirmar Cambios</h3>
                         <button class="fplms-modal-close" onclick="fplmsCloseSaveModal()">✕</button>
@@ -1712,8 +1712,8 @@ class FairPlay_LMS_Structures_Controller {
                     <div class="fplms-modal-body">
                         <p>¿Estás seguro de que deseas guardar los cambios realizados?</p>
                         <div style="background: #f0f7ff; padding: 12px; border-radius: 4px; border-left: 3px solid #0073aa; margin: 12px 0;">
-                            <p style="margin: 0; color: #0073aa; font-weight: 600;" id="fplms_save_name"></p>
-                            <p style="margin: 4px 0 0 0; color: #666; font-size: 13px;" id="fplms_save_details"></p>
+                            <p style="margin: 0 0 8px 0; color: #0073aa; font-weight: 600;" id="fplms_save_name"></p>
+                            <div id="fplms_save_details" style="margin: 0;"></div>
                         </div>
                         <p style="color: #666; font-size: 12px; margin-bottom: 0;">Los cambios se aplicarán inmediatamente al sistema.</p>
                     </div>
@@ -3232,43 +3232,106 @@ class FairPlay_LMS_Structures_Controller {
                 if (event) event.preventDefault();
 
                 // Validación básica
-                const termName = form.querySelector('input[name="fplms_name"]').value;
-                if (!termName.trim()) {
+                const termName = form.querySelector('input[name="fplms_name"]').value.trim();
+                if (!termName) {
                     alert('Por favor, ingresa un nombre para la estructura');
                     return false;
                 }
 
-                // Obtener relaciones seleccionadas (ciudades, empresas, canales, sucursales)
-                let selectedParents = [];
+                const taxonomy = form.querySelector('input[name="fplms_taxonomy"]').value;
+
+                // Obtener relaciones seleccionadas (IDs y nombres)
                 const parentCheckboxes = form.querySelectorAll('.fplms-parent-option input[type="checkbox"]:checked, .fplms-city-option input[type="checkbox"]:checked');
-                selectedParents = Array.from(parentCheckboxes).map(cb => cb.value);
-                
-                // Obtener descripción si existe
+                const selectedParents = Array.from(parentCheckboxes).map(cb => cb.value);
+                const selectedParentNames = Array.from(parentCheckboxes).map(cb => {
+                    const lbl = cb.closest('label');
+                    const span = lbl ? lbl.querySelector('span') : null;
+                    return span ? span.textContent.trim() : cb.value;
+                });
+
+                // Obtener descripción nueva
                 const descriptionField = form.querySelector('textarea[name="fplms_description"]');
-                const hasDescription = descriptionField && descriptionField.value.trim().length > 0;
-                
-                // Preparar texto de detalles
-                let detailsText = '';
-                if (selectedParents.length > 0) {
-                    detailsText += `${selectedParents.length} relación(es) seleccionada(s)`;
+                const newDesc = descriptionField ? descriptionField.value.trim() : '';
+
+                // Leer valores ORIGINALES desde la fila de datos (hermano anterior al edit-row)
+                const editRow = form.closest('.fplms-edit-row');
+                const origRow = editRow ? editRow.previousElementSibling : null;
+                let origName = '', origDesc = '', origParentNames = '';
+                if (origRow) {
+                    const nameCell = origRow.querySelector('td:nth-child(2) strong');
+                    if (nameCell) origName = nameCell.textContent.trim();
+
+                    const descCell = origRow.querySelector('td:nth-child(3)');
+                    if (descCell) {
+                        const t = descCell.textContent.trim();
+                        origDesc = (t === '-') ? '' : t;
+                    }
+
+                    const relBadge = origRow.querySelector('.fplms-relation-badge');
+                    if (relBadge) origParentNames = relBadge.textContent.trim();
                 }
-                if (hasDescription) {
-                    detailsText += (detailsText ? ' • ' : '') + `Descripción incluida`;
+
+                const newParentNames = selectedParentNames.join(', ');
+
+                // Etiqueta para las relaciones según taxonomía
+                const parentLabelMap = {
+                    'fplms_company':  'Ciudades',
+                    'fplms_channel':  'Empresas',
+                    'fplms_branch':   'Canales',
+                    'fplms_job_role': 'Sucursales',
+                };
+                const parentLabel = parentLabelMap[taxonomy] || 'Relaciones';
+
+                // Construir lista de cambios campo a campo
+                const changes = [];
+                if (origName !== termName) {
+                    changes.push({ field: 'Nombre', from: origName || '(vacío)', to: termName });
                 }
-                if (!detailsText) {
-                    detailsText = 'Sin relaciones adicionales';
+                if (origDesc !== newDesc) {
+                    changes.push({ field: 'Descripción', from: origDesc || '(vacío)', to: newDesc || '(vacío)' });
                 }
-                
+                if (taxonomy !== 'fplms_city') {
+                    const normalOrig = origParentNames.replace(/\s+/g, ' ').trim();
+                    const normalNew  = newParentNames.replace(/\s+/g, ' ').trim();
+                    if (normalOrig !== normalNew) {
+                        changes.push({ field: parentLabel, from: normalOrig || '(sin relación)', to: normalNew || '(sin relación)' });
+                    }
+                }
+
                 // Guardar datos en variable global
                 saveData = { form: form };
-                
-                // Actualizar contenido del modal
-                document.getElementById('fplms_save_name').textContent = `Elemento: "${termName}"`;
-                document.getElementById('fplms_save_details').textContent = detailsText;
-                
+
+                // Actualizar encabezado del modal
+                document.getElementById('fplms_save_name').textContent = 'Elemento: "' + termName + '"';
+
+                // Construir tabla de cambios en HTML
+                const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                let detailsHtml = '';
+                if (changes.length === 0) {
+                    detailsHtml = '<span style="color:#666;font-size:13px;">Sin cambios detectados en nombre, descripción o relaciones.</span>';
+                } else {
+                    detailsHtml = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+                        + '<thead><tr>'
+                        + '<th style="text-align:left;padding:5px 6px;border-bottom:2px solid #c5d9e8;color:#0073aa;white-space:nowrap;">Campo</th>'
+                        + '<th style="text-align:left;padding:5px 6px;border-bottom:2px solid #c5d9e8;color:#0073aa;">Antes</th>'
+                        + '<th style="padding:5px 4px;border-bottom:2px solid #c5d9e8;color:#aaa;">→</th>'
+                        + '<th style="text-align:left;padding:5px 6px;border-bottom:2px solid #c5d9e8;color:#0073aa;">Después</th>'
+                        + '</tr></thead><tbody>';
+                    changes.forEach(function(c) {
+                        detailsHtml += '<tr>'
+                            + '<td style="padding:5px 6px;font-weight:600;color:#444;border-bottom:1px solid #e0ecf8;white-space:nowrap;">' + esc(c.field) + '</td>'
+                            + '<td style="padding:5px 6px;color:#c0392b;background:#fff6f6;border-bottom:1px solid #e0ecf8;max-width:150px;word-break:break-word;">' + esc(c.from) + '</td>'
+                            + '<td style="padding:5px 4px;color:#aaa;border-bottom:1px solid #e0ecf8;text-align:center;">→</td>'
+                            + '<td style="padding:5px 6px;color:#1a7a1a;background:#f5fff5;border-bottom:1px solid #e0ecf8;max-width:150px;word-break:break-word;">' + esc(c.to) + '</td>'
+                            + '</tr>';
+                    });
+                    detailsHtml += '</tbody></table>';
+                }
+                document.getElementById('fplms_save_details').innerHTML = detailsHtml;
+
                 // Mostrar modal
                 document.getElementById('fplms-save-modal').style.display = 'flex';
-                
+
                 return false;
             }
 
@@ -3708,11 +3771,12 @@ class FairPlay_LMS_Structures_Controller {
                     const ids = Array.from(allCheckboxes).map(cb => cb.getAttribute('data-term-id')).filter(id => id).join(',');
                     
                     if (!ids) {
-                        alert('Por favor, selecciona al menos un elemento para exportar.');
-                        return;
+                        // Nada seleccionado: exportar todo en lugar de mostrar alerta
+                        document.getElementById('fplms-export-mode-' + tabKey).value = 'all';
+                        document.getElementById('fplms-export-ids-' + tabKey).value = '';
+                    } else {
+                        document.getElementById('fplms-export-ids-' + tabKey).value = ids;
                     }
-                    
-                    document.getElementById('fplms-export-ids-' + tabKey).value = ids;
                 } else {
                     document.getElementById('fplms-export-ids-' + tabKey).value = '';
                 }
@@ -5280,44 +5344,40 @@ class FairPlay_LMS_Structures_Controller {
 			wp_die( 'No hay datos para exportar' );
 		}
 
-		// Preparar headers
-		$filename = "fplms-{$type}-" . date( 'Y-m-d-His' ) . '.csv';
-
-		header( 'Content-Type: text/csv; charset=utf-8' );
-		header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
-		header( 'Pragma: no-cache' );
-		header( 'Expires: 0' );
-
-		$output = fopen( 'php://output', 'w' );
-
-		// UTF-8 BOM para Excel
-		fprintf( $output, chr( 0xEF ) . chr( 0xBB ) . chr( 0xBF ) );
-
 		// Headers de columnas
-		$headers = [ 'ID', 'Nombre', 'Descripción', 'Estado' ];
+		$col_headers = [ 'ID', 'Nombre', 'Descripción', 'Estado' ];
+
+		$relation_labels = [
+			'company' => 'Ciudades',
+			'channel' => 'Empresas',
+			'branch'  => 'Canales',
+			'role'    => 'Sucursales',
+		];
 
 		if ( $type !== 'city' ) {
-			$relation_labels = [
-				'company' => 'Ciudades',
-				'channel' => 'Empresas',
-				'branch'  => 'Canales',
-				'role'    => 'Sucursales',
-			];
-			$headers[] = $relation_labels[ $type ];
+			$col_headers[] = $relation_labels[ $type ];
 		}
 
-		fputcsv( $output, $headers );
+		$xe = fn( $v ) => htmlspecialchars( (string) $v, ENT_QUOTES | ENT_XML1, 'UTF-8' );
 
-		// Datos
+		// Construir tabla HTML (Excel abre nativamente HTML con este MIME)
+		$t  = '<table border="1" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:11pt;">';
+		$t .= '<thead><tr>';
+		foreach ( $col_headers as $h ) {
+			$t .= '<th style="background:#217346;color:#fff;padding:8px 12px;font-weight:bold;white-space:nowrap;">' . $xe( $h ) . '</th>';
+		}
+		$t .= '</tr></thead><tbody>';
+
 		foreach ( $terms as $term ) {
 			$active      = get_term_meta( $term->term_id, FairPlay_LMS_Config::META_ACTIVE, true );
 			$description = get_term_meta( $term->term_id, FairPlay_LMS_Config::META_TERM_DESCRIPTION, true );
+			$status      = $active === '1' ? 'Activo' : 'Inactivo';
 
-			$row = [
+			$cells = [
 				$term->term_id,
 				$term->name,
 				$description ?: '',
-				$active === '1' ? 'Activo' : 'Inactivo',
+				$status,
 			];
 
 			// Agregar relaciones
@@ -5340,13 +5400,31 @@ class FairPlay_LMS_Structures_Controller {
 					}
 				}
 
-				$row[] = implode( ', ', $relations );
+				$cells[] = implode( ', ', $relations );
 			}
 
-			fputcsv( $output, $row );
+			$t .= '<tr>';
+			foreach ( $cells as $cell ) {
+				$t .= '<td style="padding:6px 10px;">' . $xe( $cell ) . '</td>';
+			}
+			$t .= '</tr>';
 		}
 
-		fclose( $output );
+		$t .= '</tbody></table>';
+
+		$html = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $t . '</body></html>';
+
+		$filename = "fplms-{$type}-" . gmdate( 'Y-m-d-His' ) . '.xls';
+
+		while ( ob_get_level() ) {
+			ob_end_clean();
+		}
+		header( 'Content-Type: application/vnd.ms-excel; charset=UTF-8' );
+		header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+		header( 'Cache-Control: max-age=0' );
+		header( 'Pragma: public' );
+
+		echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 	}
 
 	/**
