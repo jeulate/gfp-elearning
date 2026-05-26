@@ -116,6 +116,8 @@ class FairPlay_LMS_Admin_Menu {
             [ $this->courses, 'render_courses_page' ]
         );
 
+         // progreso y calendario (OCULTAS)
+         /*
         add_submenu_page(
             'fplms-dashboard',
             'Avances',
@@ -133,7 +135,7 @@ class FairPlay_LMS_Admin_Menu {
             'fplms-calendar',
             [ $this->pages, 'render_calendar_page' ]
         );
-
+        */
         add_submenu_page(
             'fplms-dashboard',
             'Informes',

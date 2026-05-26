@@ -171,3 +171,25 @@ function fairplay_lms_extensions_bootstrap() {
     $fairplay_lms_plugin = new FairPlay_LMS_Plugin();
 }
 add_action( 'plugins_loaded', 'fairplay_lms_extensions_bootstrap' );
+
+add_filter('gettext', 'fplms_custom_login_translations', 20, 3);
+
+function fplms_custom_login_translations($translated, $text, $domain) {
+
+    $translations = [
+        'Send reset link' => 'Enviar enlace de recuperación',
+        'Send Reset Link' => 'Enviar enlace de recuperación',
+        'Password reset link sent' => 'Enlace de recuperación enviado',
+        'Forgot Password' => 'Olvidé mi contraseña',
+        'Reset Password' => 'Restablecer contraseña',
+        'Remember me' => 'Recordarme',
+        'Login' => 'Iniciar sesión',
+        'Register' => 'Registrarse',
+    ];
+
+    if (isset($translations[$text])) {
+        return $translations[$text];
+    }
+
+    return $translated;
+}

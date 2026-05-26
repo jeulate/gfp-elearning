@@ -3049,7 +3049,7 @@ class FairPlay_LMS_Users_Controller {
                     if (checked.length > 0) {
                         return Array.from(checked).map(function(cb) { return cb.closest('tr.fplms-user-row'); }).filter(Boolean);
                     }
-                    return filteredRows;
+                    return Array.from(document.querySelectorAll('.fplms-users-table tbody tr.fplms-user-row'));
                 }
 
                 function extractRowData(row) {
@@ -3069,6 +3069,10 @@ class FairPlay_LMS_Users_Controller {
                 // ── Exportar Excel (.xls) ──
                 window.fplmsExportXLS = function() {
                     const rows = getExportRows();
+                    if (!rows.length) {
+                        alert('No hay usuarios disponibles para exportar.');
+                        return;
+                    }
                     const headers = ['Usuario', 'Email', 'IDUsuario', 'Fecha de Registro', 'Último Login', 'Estado', 'Rol'];
                     let t = '<table border="1" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;">';
                     t += '<thead><tr>' + headers.map(function(h) {
@@ -3088,13 +3092,17 @@ class FairPlay_LMS_Users_Controller {
                     const url  = URL.createObjectURL(blob);
                     const a    = document.createElement('a');
                     a.href = url; a.download = 'usuarios.xls'; a.click();
-                    URL.revokeObjectURL(url);
+                    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
                     document.getElementById('fplms-download-dropdown').classList.remove('open');
                 };
 
                 // ── Exportar PDF (ventana de impresión) ──
                 window.fplmsExportPDF = function() {
                     const rows = getExportRows();
+                    if (!rows.length) {
+                        alert('No hay usuarios disponibles para exportar.');
+                        return;
+                    }
                     const headers = ['Usuario', 'Email', 'IDUsuario', 'Fecha de Registro', 'Último Login', 'Estado', 'Rol'];
                     const selectedCount = document.querySelectorAll('.fplms-user-checkbox:checked').length;
                     const label = selectedCount > 0 ? selectedCount + ' seleccionados' : rows.length + ' usuarios';

@@ -819,8 +819,8 @@ class FairPlay_LMS_Structures_Controller {
         <style>
             .fplms-structures-wrapper {
                 background: #f5f7fa;
-                min-height: 100vh;
-                padding: 20px;
+                min-height: auto;
+                padding: 20px 20px 100px 20px;
                 margin-left: -20px;
             }
             .fplms-structures-container {
@@ -1123,6 +1123,14 @@ class FairPlay_LMS_Structures_Controller {
                 .fplms-pagination {
                     font-size: 12px;
                 }
+            }
+            
+            /* SOBRESCRIBIR FOOTER DE WORDPRESS EN ESTA PÁGINA */
+            #wpfooter {
+                position: relative !important;
+                bottom: auto !important;
+                left: auto !important;
+                right: auto !important;
             }
         </style>
         <div class="fplms-structures-wrapper">
