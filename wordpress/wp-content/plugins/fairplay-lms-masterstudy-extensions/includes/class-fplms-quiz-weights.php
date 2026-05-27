@@ -133,23 +133,36 @@ class FairPlay_LMS_Quiz_Weights {
 
     public function enqueue_frontend_script(): void {
         $uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
-        if ( ! preg_match( '#/edit-quiz/(\d+)#', $uri, $m ) ) {
+
+        $quiz_id = 0;
+        $is_direct_quiz_editor = false;
+
+        if ( preg_match( '#/edit-quiz/(\d+)#', $uri, $m ) ) {
+            $quiz_id = (int) $m[1];
+            $is_direct_quiz_editor = true;
+        } elseif ( preg_match( '#/user-account/edit-course/\d+/curriculum/sections/\d+/quiz/(\d+)#', $uri, $m ) ) {
+            $quiz_id = (int) $m[1];
+        } else {
             return;
         }
-        $quiz_id = (int) $m[1];
+
         if ( $quiz_id <= 0 ) {
             return;
         }
 
-        $config     = wp_json_encode( [
-            'quizId'   => $quiz_id,
-            'restBase' => rest_url( 'fplms/v1/quiz/' . $quiz_id . '/weights' ),
-            'nonce'    => wp_create_nonce( 'wp_rest' ),
-        ] );
-        $script_url = esc_url( FPLMS_PLUGIN_URL . 'assets/js/quiz-weights-editor.js?v=1.0.4' );
+        $translation_script_url = esc_url( FPLMS_PLUGIN_URL . 'assets/js/quiz-type-translation.js?v=1.0.0' );
+        $injection = "<script src=\"{$translation_script_url}\" defer></script>\n";
 
-        $injection = "<script>window.fplmsWeights = {$config};</script>\n"
-                   . "<script src=\"{$script_url}\" defer></script>\n";
+        if ( $is_direct_quiz_editor ) {
+            $config = wp_json_encode( [
+                'quizId'   => $quiz_id,
+                'restBase' => rest_url( 'fplms/v1/quiz/' . $quiz_id . '/weights' ),
+                'nonce'    => wp_create_nonce( 'wp_rest' ),
+            ] );
+            $weights_script_url = esc_url( FPLMS_PLUGIN_URL . 'assets/js/quiz-weights-editor.js?v=1.0.4' );
+            $injection .= "<script>window.fplmsWeights = {$config};</script>\n"
+                       . "<script src=\"{$weights_script_url}\" defer></script>\n";
+        }
 
         // ob_start: intercepta el HTML completo sin importar qué template usa MasterStudy.
         // Funciona aunque wp_head() / wp_footer() no sean invocados.

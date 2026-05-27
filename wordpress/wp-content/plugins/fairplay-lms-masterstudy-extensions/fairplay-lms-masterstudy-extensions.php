@@ -185,6 +185,11 @@ function fplms_custom_login_translations($translated, $text, $domain) {
         'Remember me' => 'Recordarme',
         'Login' => 'Iniciar sesión',
         'Register' => 'Registrarse',
+        'True-False' => 'Verdadero/Falso',
+        'True/False' => 'Verdadero/Falso',
+        'Matching' => 'Coincidencia',
+        'Image matching' => 'Coincidencia de imágenes',
+        'Image Matching' => 'Coincidencia de imágenes',
     ];
 
     if (isset($translations[$text])) {

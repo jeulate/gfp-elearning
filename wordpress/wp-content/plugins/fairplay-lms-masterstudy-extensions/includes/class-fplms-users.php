@@ -1321,7 +1321,7 @@ class FairPlay_LMS_Users_Controller {
                                     echo sprintf( '%d usuario(s) desactivado(s)', $count );
                                     break;
                                 case 'delete':
-                                    echo sprintf( '%d usuario(s) eliminado(s)', $count );
+                                    echo sprintf( '%d usuario(s) dado(s) de baja', $count );
                                     break;
                                 default:
                                     echo sprintf( '%d usuario(s) procesado(s)', $count );
@@ -1464,9 +1464,8 @@ class FairPlay_LMS_Users_Controller {
                     <span class="fplms-bulk-label">Seleccionados: <span class="fplms-bulk-badge" id="fplms-bulk-count">0</span></span>
                     <select class="fplms-bulk-select" id="fplms-bulk-action">
                         <option value="">Seleccionar acción...</option>
-                        <option value="activate">Activar usuarios</option>
                         <option value="deactivate">Desactivar usuarios</option>
-                        <option value="delete">Eliminar usuarios</option>
+                        <option value="delete">Dar de baja usuarios</option>
                     </select>
                     <button type="button" class="fplms-bulk-apply-btn" id="fplms-bulk-apply-btn">Aplicar</button>
                 </div>
@@ -1985,10 +1984,6 @@ class FairPlay_LMS_Users_Controller {
                                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
                                 Crear usuario
                             </a>
-                            <a href="#matriz-privilegios" class="fplms-download-btn" id="btn-matriz-privilegios">
-                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
-                                Matriz de privilegios
-                            </a>
                         </div>
                     </div>
             <div class="fplms-users-table-wrapper">
@@ -2092,12 +2087,9 @@ class FairPlay_LMS_Users_Controller {
                                                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8 0-1.85.63-3.55 1.69-4.9L16.9 18.31C15.55 19.37 13.85 20 12 20zm6.31-3.1L7.1 5.69C8.45 4.63 10.15 4 12 4c4.42 0 8 3.58 8 8 0 1.85-.63 3.55-1.69 4.9z"/></svg>
                                             </button>
                                         <?php else : ?>
-                                            <button type="button" class="fplms-action-icon-btn activate" title="Activar usuario"
-                                                    onclick="fplmsShowActionModal('activate', <?php echo $user->ID; ?>, '<?php echo esc_js( $full_name ); ?>', '<?php echo esc_js( $user->user_email ); ?>')">
-                                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-                                            </button>
+                                            <span class="fplms-status-badge fplms-status-inactive" style="font-size:11px;">Reactivar en bitácora</span>
                                         <?php endif; ?>
-                                        <button type="button" class="fplms-action-icon-btn delete" title="Eliminar usuario"
+                                        <button type="button" class="fplms-action-icon-btn delete" title="Dar de baja usuario"
                                                 onclick="fplmsShowActionModal('delete', <?php echo $user->ID; ?>, '<?php echo esc_js( $full_name ); ?>', '<?php echo esc_js( $user->user_email ); ?>')">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                                         </button>
@@ -2181,7 +2173,7 @@ class FairPlay_LMS_Users_Controller {
                 </div>
             </div>
 
-            <!-- Modal: Eliminar Usuario -->
+            <!-- Modal: Dar de baja usuario -->
             <div id="fplms-delete-modal" class="fplms-action-modal-overlay">
                 <div class="fplms-action-modal">
                     <div class="fplms-action-modal-header">
@@ -2189,21 +2181,21 @@ class FairPlay_LMS_Users_Controller {
                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="fill: #F44336;">
                                 <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
                             </svg>
-                            Eliminar Usuario
+                            Dar de Baja Usuario
                         </h3>
                     </div>
                     <div class="fplms-action-modal-body">
-                        <p><strong>⚠️ ADVERTENCIA:</strong> Esta acción es <strong style="color: #F44336;">permanente</strong> y no se puede deshacer.</p>
+                        <p><strong>⚠️ Atención:</strong> esta acción no eliminará al usuario, solo lo cambiará a estado <strong style="color: #F44336;">inactivo</strong>.</p>
                         <div class="fplms-action-modal-user-info">
                             <strong id="delete-user-name"></strong>
                             <span id="delete-user-email"></span>
                         </div>
-                        <p style="color: #F44336;">Se eliminarán todos los datos del usuario, incluyendo su progreso en cursos y registros asociados.</p>
-                        <p><strong>¿Realmente deseas eliminar este usuario?</strong></p>
+                        <p style="color: #F44336;">El usuario no podrá iniciar sesión hasta que sea reactivado desde bitácora.</p>
+                        <p><strong>¿Deseas dar de baja a este usuario?</strong></p>
                     </div>
                     <div class="fplms-action-modal-footer">
                         <button type="button" class="fplms-modal-btn-cancel" onclick="fplmsCloseActionModal()">Cancelar</button>
-                        <button type="button" class="fplms-modal-btn-confirm danger" onclick="fplmsConfirmAction()">Eliminar Permanentemente</button>
+                        <button type="button" class="fplms-modal-btn-confirm danger" onclick="fplmsConfirmAction()">Dar de Baja</button>
                     </div>
                 </div>
             </div>
@@ -2858,13 +2850,13 @@ class FairPlay_LMS_Users_Controller {
                         const actionLabels = {
                             'activate': '✅ Activar',
                             'deactivate': '⛔ Desactivar',
-                            'delete': '🗑️ Eliminar'
+                            'delete': '⛔ Dar de baja'
                         };
 
                         const actionMessages = {
                             'activate': '¿Estás seguro de que deseas <strong>activar</strong> los usuarios seleccionados?',
                             'deactivate': '¿Estás seguro de que deseas <strong>desactivar</strong> los usuarios seleccionados?',
-                            'delete': '⚠️ <strong>ATENCIÓN:</strong> ¿Estás seguro de que deseas <strong>eliminar permanentemente</strong> los usuarios seleccionados?<br><br>Esta acción no se puede deshacer.'
+                            'delete': '¿Estás seguro de que deseas <strong>dar de baja</strong> los usuarios seleccionados?<br><br>Se marcarán como inactivos y podrán reactivarse desde bitácora.'
                         };
 
                         const modal = document.createElement('div');
@@ -5680,7 +5672,7 @@ class FairPlay_LMS_Users_Controller {
     }
 
     /**
-     * Manejar acciones masivas de usuarios (activar, inactivar, eliminar)
+     * Manejar acciones masivas de usuarios (inactivar, dar de baja)
      */
     public function handle_bulk_user_actions(): void {
         // Verificar si se envió una acción masiva
@@ -5701,7 +5693,7 @@ class FairPlay_LMS_Users_Controller {
         $action = sanitize_text_field( wp_unslash( $_POST['fplms_bulk_action'] ) );
         $user_ids = isset( $_POST['fplms_bulk_users'] ) ? array_map( 'absint', $_POST['fplms_bulk_users'] ) : [];
 
-        if ( empty( $user_ids ) || ! in_array( $action, [ 'activate', 'deactivate', 'delete' ], true ) ) {
+        if ( empty( $user_ids ) || ! in_array( $action, [ 'deactivate', 'delete' ], true ) ) {
             wp_safe_redirect(
                 add_query_arg( [ 'page' => 'fplms-users', 'bulk_error' => 'invalid_request' ], admin_url( 'admin.php' ) )
             );
@@ -5727,33 +5719,13 @@ class FairPlay_LMS_Users_Controller {
                     $success_count++;
                     break;
 
-                case 'activate':
-                    update_user_meta( $user_id, 'fplms_user_status', 'active' );
-                    update_user_meta( $user_id, 'fplms_reactivated_date', current_time( 'mysql' ) );
-                    update_user_meta( $user_id, 'fplms_reactivated_by', get_current_user_id() );
-                    $this->logger->log_user_reactivated( $user_id, $user->display_name, $user->user_email );
-                    $success_count++;
-                    break;
-
                 case 'delete':
-                    // Verificar que no se elimine el usuario actual
-                    if ( $user_id === get_current_user_id() ) {
-                        $error_count++;
-                        continue 2;
-                    }
-                    
-                    // Registrar en bitácora antes de eliminar
-                    $this->logger->log_user_permanently_deleted( $user_id, $user->display_name, $user->user_email );
-                    
-                    // Eliminar permanentemente
-                    require_once( ABSPATH . 'wp-admin/includes/user.php' );
-                    $result = wp_delete_user( $user_id );
-                    
-                    if ( $result ) {
-                        $success_count++;
-                    } else {
-                        $error_count++;
-                    }
+                    // Dar de baja: equivalente a pasar a estado inactivo desde el panel de usuarios.
+                    update_user_meta( $user_id, 'fplms_user_status', 'inactive' );
+                    update_user_meta( $user_id, 'fplms_deactivated_date', current_time( 'mysql' ) );
+                    update_user_meta( $user_id, 'fplms_deactivated_by', get_current_user_id() );
+                    $this->logger->log_user_deactivated( $user_id, $user->display_name, $user->user_email );
+                    $success_count++;
                     break;
             }
         }
@@ -5794,21 +5766,39 @@ class FairPlay_LMS_Users_Controller {
             <p><a href="<?php echo esc_url( admin_url( 'admin.php?page=fplms-users' ) ); ?>" class="button">← Volver a la lista de usuarios</a></p>
 
             <?php if ( isset( $_GET['error'] ) ) : ?>
-                <div id="message" class="error notice notice-error is-dismissible">
-                    <p>
-                        <?php
-                        $error_msg = sanitize_text_field( wp_unslash( $_GET['error'] ) );
-                        $error_messages = [
-                            'incomplete_data'    => 'Datos incompletos. Verifica que llenes todos los campos requeridos.',
-                            'invalid_id_usuario' => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
-                            'id_usuario_exists'  => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
-                            'user_exists'        => 'Error al crear el usuario. Verifica que el nombre de usuario o correo no existan.',
-                            'structure_required' => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
-                        ];
-                        echo isset( $error_messages[ $error_msg ] ) ? esc_html( $error_messages[ $error_msg ] ) : 'Error al crear el usuario';
-                        ?>
-                    </p>
+                <?php
+                $error_msg = sanitize_text_field( wp_unslash( $_GET['error'] ) );
+                $error_messages = [
+                    'incomplete_data'    => 'Datos incompletos. Verifica que llenes todos los campos requeridos.',
+                    'invalid_id_usuario' => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
+                    'id_usuario_exists'  => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
+                    'user_exists'        => 'El nombre de usuario o correo ya existe. Por favor, registra datos nuevos.',
+                    'structure_required' => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
+                ];
+                $error_text = isset( $error_messages[ $error_msg ] ) ? $error_messages[ $error_msg ] : 'Error al crear el usuario.';
+                $create_url = admin_url( 'admin.php?page=fplms-users&action=create' );
+                ?>
+                <div id="fplms-create-error-overlay" style="position:fixed;inset:0;background:rgba(17,24,39,.62);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;">
+                    <div role="dialog" aria-modal="true" style="background:#fff;border-radius:14px;max-width:520px;width:100%;padding:30px 30px 24px;box-shadow:0 18px 45px rgba(0,0,0,.35);text-align:center;">
+                        <div style="width:70px;height:70px;border-radius:50%;background:#FEE2E2;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;">
+                            <svg viewBox="0 0 24 24" style="width:34px;height:34px;fill:#DC2626;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                        </div>
+                        <h3 style="margin:0 0 10px;color:#111827;font-size:22px;line-height:1.2;">Error al crear el usuario</h3>
+                        <p style="margin:0 0 22px;color:#4B5563;font-size:16px;line-height:1.5;"><?php echo esc_html( $error_text ); ?></p>
+                        <button type="button" id="fplms-close-create-error" style="background:#2563EB;color:#fff;border:none;border-radius:10px;padding:12px 28px;font-size:15px;font-weight:600;cursor:pointer;">Cerrar</button>
+                    </div>
                 </div>
+                <script>
+                    (function() {
+                        var btn = document.getElementById('fplms-close-create-error');
+                        if (!btn) { return; }
+                        btn.addEventListener('click', function() {
+                            var form = document.getElementById('form-crear-usuario');
+                            if (form) { form.reset(); }
+                            window.location.href = <?php echo wp_json_encode( esc_url_raw( $create_url ) ); ?>;
+                        });
+                    })();
+                </script>
             <?php endif; ?>
 
             <style>

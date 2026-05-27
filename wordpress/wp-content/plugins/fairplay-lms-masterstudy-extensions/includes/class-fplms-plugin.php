@@ -188,6 +188,9 @@ class FairPlay_LMS_Plugin {
         // Bloquear selector de unidad de tiempo en el course builder (forzar minutos)
         add_action( 'wp_footer', [ $this, 'inject_quiz_duration_unit_lock_script' ] );
 
+        // Traducir tipos de pregunta del quiz en el editor React del course builder
+        add_action( 'wp_footer', [ $this, 'inject_quiz_question_type_translation_script' ] );
+
         // Ocultar pestaña "Ingresos" en /user-account/analytics/
         add_action( 'wp_footer', [ $this, 'inject_analytics_revenue_hide_script' ] );
 
@@ -646,6 +649,108 @@ class FairPlay_LMS_Plugin {
                     }
                 }).observe(document.body, { childList: true, subtree: true });
             }
+        })();
+        </script>
+        <?php
+    }
+
+    /**
+     * Traduce etiquetas de tipos de pregunta en el editor visual de quizzes
+     * (React Select de MasterStudy) en la ruta /user-account/edit-course/.../quiz/...
+     */
+    public function inject_quiz_question_type_translation_script(): void {
+        if ( ! is_user_logged_in() || is_admin() ) {
+            return;
+        }
+        ?>
+        <script id="fplms-quiz-question-type-i18n-js">
+        (function () {
+            'use strict';
+
+            var path = (window.location && window.location.pathname) ? window.location.pathname : '';
+            if (path.indexOf('/user-account/edit-course/') === -1 || path.indexOf('/quiz/') === -1) {
+                return;
+            }
+
+            var translations = {
+                'true-false': 'Verdadero/Falso',
+                'true/false': 'Verdadero/Falso',
+                'matching': 'Coincidencia',
+                'image matching': 'Coincidencia de imágenes'
+            };
+
+            function normalizeLabel(value) {
+                return String(value || '')
+                    .replace(/[‐‑‒–—−]/g, '-')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .toLowerCase();
+            }
+
+            function translateTextNode(node) {
+                if (!node || node.nodeType !== 3) { return; }
+                var raw = node.nodeValue;
+                if (!raw) { return; }
+
+                var leading = raw.match(/^\s*/);
+                var trailing = raw.match(/\s*$/);
+                var core = raw.trim();
+                if (!core) { return; }
+
+                var translated = translations[normalizeLabel(core)];
+                if (!translated) { return; }
+
+                node.nodeValue = (leading ? leading[0] : '') + translated + (trailing ? trailing[0] : '');
+            }
+
+            function applyTranslations(root) {
+                var scope = root && root.nodeType ? root : document.body;
+                if (!scope || typeof document.createTreeWalker !== 'function') { return; }
+
+                if (scope.nodeType === 3) {
+                    translateTextNode(scope);
+                    return;
+                }
+
+                var walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, null, false);
+                var current;
+                while ((current = walker.nextNode())) {
+                    translateTextNode(current);
+                }
+            }
+
+            applyTranslations(document.body);
+
+            if (window.MutationObserver) {
+                new MutationObserver(function (mutations) {
+                    for (var i = 0; i < mutations.length; i++) {
+                        if (mutations[i].addedNodes && mutations[i].addedNodes.length) {
+                            for (var j = 0; j < mutations[i].addedNodes.length; j++) {
+                                var added = mutations[i].addedNodes[j];
+                                if (added && (added.nodeType === 1 || added.nodeType === 3)) {
+                                    applyTranslations(added);
+                                }
+                            }
+                        }
+                        if (mutations[i].type === 'characterData' && mutations[i].target) {
+                            applyTranslations(mutations[i].target);
+                        }
+                    }
+                }).observe(document.body, { childList: true, subtree: true, characterData: true });
+            }
+
+            var tries = 0;
+            var timer = setInterval(function () {
+                applyTranslations(document.body);
+                tries++;
+                if (tries >= 40) {
+                    clearInterval(timer);
+                }
+            }, 250);
+
+            document.addEventListener('click', function () {
+                setTimeout(function () { applyTranslations(document.body); }, 0);
+            }, true);
         })();
         </script>
         <?php
