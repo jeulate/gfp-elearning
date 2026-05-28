@@ -50,22 +50,78 @@ class FairPlay_LMS_Onboarding {
             wp_die( 'Sin permisos' );
         }
 
-        // Guardar contenido HTML (permitido: kses_post)
-        $content_eliora  = isset( $_POST['fplms_terms_eliora'] )
-            ? wp_kses_post( wp_unslash( $_POST['fplms_terms_eliora'] ) )
-            : '';
-        $content_fairplay = isset( $_POST['fplms_terms_fairplay'] )
-            ? wp_kses_post( wp_unslash( $_POST['fplms_terms_fairplay'] ) )
-            : '';
+        $terms_map       = isset( $_POST['fplms_terms_company'] ) && is_array( $_POST['fplms_terms_company'] )
+            ? wp_unslash( $_POST['fplms_terms_company'] )
+            : [];
+        $email_from_map  = isset( $_POST['fplms_email_from_company'] ) && is_array( $_POST['fplms_email_from_company'] )
+            ? wp_unslash( $_POST['fplms_email_from_company'] )
+            : [];
+        $email_name_map  = isset( $_POST['fplms_email_name_company'] ) && is_array( $_POST['fplms_email_name_company'] )
+            ? wp_unslash( $_POST['fplms_email_name_company'] )
+            : [];
+        $email_subject_map = isset( $_POST['fplms_email_subject_company'] ) && is_array( $_POST['fplms_email_subject_company'] )
+            ? wp_unslash( $_POST['fplms_email_subject_company'] )
+            : [];
+        $email_bg_map    = isset( $_POST['fplms_email_bg_company'] ) && is_array( $_POST['fplms_email_bg_company'] )
+            ? wp_unslash( $_POST['fplms_email_bg_company'] )
+            : [];
+        $email_accent_map = isset( $_POST['fplms_email_accent_company'] ) && is_array( $_POST['fplms_email_accent_company'] )
+            ? wp_unslash( $_POST['fplms_email_accent_company'] )
+            : [];
+        $email_logo_map  = isset( $_POST['fplms_email_logo_company'] ) && is_array( $_POST['fplms_email_logo_company'] )
+            ? wp_unslash( $_POST['fplms_email_logo_company'] )
+            : [];
 
-        update_option( FairPlay_LMS_Config::OPTION_TERMS_ELIORA,   $content_eliora );
-        update_option( FairPlay_LMS_Config::OPTION_TERMS_FAIRPLAY,  $content_fairplay );
-        update_option( FairPlay_LMS_Config::OPTION_EMAIL_ELIORA,
-            sanitize_email( wp_unslash( $_POST['fplms_email_eliora'] ?? '' ) ) );
-        update_option( FairPlay_LMS_Config::OPTION_EMAIL_FAIRPLAY,
-            sanitize_email( wp_unslash( $_POST['fplms_email_fairplay'] ?? '' ) ) );
+        $companies = get_terms(
+            [
+                'taxonomy'   => FairPlay_LMS_Config::TAX_COMPANY,
+                'hide_empty' => false,
+            ]
+        );
+
+        if ( ! is_wp_error( $companies ) ) {
+            foreach ( $companies as $company ) {
+                $company_id = (int) $company->term_id;
+                if ( ! $company_id ) {
+                    continue;
+                }
+
+                $terms_content = isset( $terms_map[ $company_id ] )
+                    ? wp_kses_post( $terms_map[ $company_id ] )
+                    : '';
+                $email_from = isset( $email_from_map[ $company_id ] )
+                    ? sanitize_email( $email_from_map[ $company_id ] )
+                    : '';
+                $email_name = isset( $email_name_map[ $company_id ] )
+                    ? sanitize_text_field( $email_name_map[ $company_id ] )
+                    : '';
+                $email_subject = isset( $email_subject_map[ $company_id ] )
+                    ? sanitize_text_field( $email_subject_map[ $company_id ] )
+                    : '';
+                $email_bg = isset( $email_bg_map[ $company_id ] )
+                    ? esc_url_raw( $email_bg_map[ $company_id ] )
+                    : '';
+                $email_accent = isset( $email_accent_map[ $company_id ] )
+                    ? sanitize_hex_color( $email_accent_map[ $company_id ] )
+                    : '';
+                $email_logo = isset( $email_logo_map[ $company_id ] )
+                    ? esc_url_raw( $email_logo_map[ $company_id ] )
+                    : '';
+
+                update_option( $this->get_terms_option_key( $company_id ), $terms_content );
+                update_option( $this->get_company_email_from_option_key( $company_id ), $email_from );
+                update_option( $this->get_company_email_name_option_key( $company_id ), $email_name );
+                update_option( $this->get_company_email_subject_option_key( $company_id ), $email_subject );
+                update_option( $this->get_company_email_bg_option_key( $company_id ), $email_bg );
+                update_option( $this->get_company_email_accent_option_key( $company_id ), $email_accent ?: '' );
+                update_option( $this->get_company_email_logo_option_key( $company_id ), $email_logo );
+            }
+        }
+
         update_option( FairPlay_LMS_Config::OPTION_ONBOARDING_PAGE_ID,
             absint( $_POST['fplms_onboarding_page_id'] ?? 0 ) );
+        update_option( FairPlay_LMS_Config::OPTION_DEFAULT_COMPANY_ID,
+            absint( $_POST['fplms_default_company_id'] ?? 0 ) );
 
         wp_safe_redirect( add_query_arg( [ 'page' => 'fplms-terms', 'saved' => '1' ], admin_url( 'admin.php' ) ) );
         exit;
@@ -79,15 +135,24 @@ class FairPlay_LMS_Onboarding {
             wp_die( 'Sin permisos' );
         }
 
-        $saved           = isset( $_GET['saved'] );
-        $terms_eliora    = get_option( FairPlay_LMS_Config::OPTION_TERMS_ELIORA, '' );
-        $terms_fairplay  = get_option( FairPlay_LMS_Config::OPTION_TERMS_FAIRPLAY, '' );
-        $email_eliora    = get_option( FairPlay_LMS_Config::OPTION_EMAIL_ELIORA, '' );
-        $email_fairplay  = get_option( FairPlay_LMS_Config::OPTION_EMAIL_FAIRPLAY, '' );
-        $page_id         = (int) get_option( FairPlay_LMS_Config::OPTION_ONBOARDING_PAGE_ID, 0 );
+        $saved              = isset( $_GET['saved'] );
+        $page_id            = (int) get_option( FairPlay_LMS_Config::OPTION_ONBOARDING_PAGE_ID, 0 );
+        $default_company_id = (int) get_option( FairPlay_LMS_Config::OPTION_DEFAULT_COMPANY_ID, 0 );
 
         // Obtener todas las páginas publicadas para el selector
         $pages = get_posts( [ 'post_type' => 'page', 'post_status' => 'publish', 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC' ] );
+        $companies = get_terms(
+            [
+                'taxonomy'   => FairPlay_LMS_Config::TAX_COMPANY,
+                'hide_empty' => false,
+            ]
+        );
+
+        if ( is_wp_error( $companies ) ) {
+            $companies = [];
+        }
+
+        wp_enqueue_media();
 
         ?>
         <div class="wrap">
@@ -98,11 +163,50 @@ class FairPlay_LMS_Onboarding {
                 Términos y Condiciones – Configuración
             </h1>
 
+            <style>
+                .fplms-terms-shell { background: #fff; border: 1px solid #dcdcde; border-radius: 10px; padding: 18px 22px; margin-top: 12px; }
+                .fplms-terms-shell .form-table th { width: 220px; }
+                .fplms-terms-title { margin: 26px 0 8px; font-size: 18px; }
+                .fplms-rpt-tabs-nav { display:flex; flex-wrap:wrap; gap:3px; border-bottom:2px solid #ffa800; margin: 12px 0 0; }
+                .fplms-rpt-tab-btn { padding:10px 16px; border:1.5px solid #e0e0e0; border-bottom:none; background:#f5f5f5; cursor:pointer; font-size:13px; font-weight:500; color:#555; border-radius:6px 6px 0 0; transition:all .15s; }
+                .fplms-rpt-tab-btn:hover { background:#fff8ee; color:#e08800; }
+                .fplms-rpt-tab-btn.active { background:#ffa800; color:#fff; border-color:#ffa800; font-weight:700; }
+                .fplms-company-panel { display:none; border:1px solid #dcdcde; border-top:none; border-radius:0 0 8px 8px; padding:22px; margin-bottom:18px; background:#fff; }
+                .fplms-company-panel.is-visible { display:block; }
+                .fplms-media-help { margin-top: 6px; font-size: 12px; color: #646970; }
+                .fplms-image-preview { margin-top:8px; }
+                .fplms-image-preview img { max-width:320px; height:auto; border:1px solid #ddd; border-radius:6px; }
+                .fplms-contract-note { margin-top: 0; color: #646970; }
+                .fplms-email-layout-row { display:grid; grid-template-columns:minmax(560px, 1.55fr) minmax(360px, 1fr); gap:18px; align-items:start; }
+                .fplms-email-fields .form-table { margin-top:18px; }
+                .fplms-email-fields .regular-text { width:100%; max-width:100%; }
+                .fplms-email-preview-wrap { margin-top: 18px; border: 1px solid #dcdcde; border-radius: 8px; overflow: hidden; background: #f8f9fa; }
+                .fplms-email-preview-head { padding: 10px 14px; background: #fff; border-bottom: 1px solid #dcdcde; }
+                .fplms-email-preview-head strong { display: block; font-size: 13px; }
+                .fplms-email-preview-head span { color: #646970; font-size: 12px; }
+                .fplms-email-preview-canvas { padding: 14px; }
+                .fplms-email-preview-card { max-width: 600px; margin: 0 auto; background: #fff; border-radius: 8px; overflow: hidden; border: 1px solid #ececec; }
+                .fplms-email-preview-header { padding: 26px 22px; text-align: center; background: #f6b23a; background-size: cover; background-position: center; }
+                .fplms-email-preview-logo { max-width: 170px; max-height: 64px; display: none; margin: 0 auto 8px; }
+                .fplms-email-preview-title { color: #fff; font-size: 20px; font-weight: 700; margin: 0; }
+                .fplms-email-preview-body { padding: 22px; color: #555; font-size: 13px; line-height: 1.55; }
+                .fplms-email-preview-subject { margin: 0 0 10px; font-size: 14px; color: #111; font-weight: 600; }
+                .fplms-email-preview-btn { display: inline-block; margin-top: 12px; padding: 10px 18px; border-radius: 5px; color: #fff; font-weight: 700; font-size: 12px; text-decoration: none; background: #f6b23a; }
+                .fplms-email-preview-footer { padding: 12px 22px; background: #f9f9f9; text-align: center; color: #999; font-size: 11px; }
+                .fplms-email-preview-footer a { color: inherit; text-decoration: none; }
+                @media (max-width: 1280px) {
+                    .fplms-email-layout-row { grid-template-columns: 1.25fr 1fr; }
+                }
+                @media (max-width: 1080px) {
+                    .fplms-email-layout-row { grid-template-columns: 1fr; }
+                }
+            </style>
+
             <?php if ( $saved ) : ?>
                 <div class="notice notice-success is-dismissible"><p>✓ Configuración guardada correctamente.</p></div>
             <?php endif; ?>
 
-            <form method="post" action="">
+            <form method="post" action="" class="fplms-terms-shell">
                 <?php wp_nonce_field( 'fplms_terms_save', 'fplms_terms_save_nonce' ); ?>
 
                 <table class="form-table" role="presentation">
@@ -124,51 +228,324 @@ class FairPlay_LMS_Onboarding {
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="fplms_email_eliora">Email remitente – Eliora</label></th>
+                        <th scope="row"><label for="fplms_default_company_id">Empresa por defecto</label></th>
                         <td>
-                            <input type="email" name="fplms_email_eliora" id="fplms_email_eliora"
-                                   value="<?php echo esc_attr( $email_eliora ); ?>"
-                                   class="regular-text" placeholder="noreply@eliora.com">
-                            <p class="description">El correo de bienvenida a usuarios de Eliora se enviará desde esta dirección.</p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row"><label for="fplms_email_fairplay">Email remitente – FairPlay</label></th>
-                        <td>
-                            <input type="email" name="fplms_email_fairplay" id="fplms_email_fairplay"
-                                   value="<?php echo esc_attr( $email_fairplay ); ?>"
-                                   class="regular-text" placeholder="noreply@fairplay.com">
-                            <p class="description">El correo de bienvenida a usuarios de FairPlay se enviará desde esta dirección.</p>
+                            <select name="fplms_default_company_id" id="fplms_default_company_id" style="min-width:300px;">
+                                <option value="0">— Sin empresa por defecto —</option>
+                                <?php foreach ( $companies as $company ) : ?>
+                                    <option value="<?php echo esc_attr( $company->term_id ); ?>" <?php selected( $default_company_id, (int) $company->term_id ); ?>>
+                                        <?php echo esc_html( $company->name ); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="description">Se usa cuando un usuario no tiene empresa asignada o si el sitio recién fue instalado.</p>
                         </td>
                     </tr>
                 </table>
 
-                <h2 style="margin-top:30px;">Contrato de Servicio – Eliora</h2>
-                <p class="description">Pega aquí el contenido HTML (o texto) del contrato para usuarios de la empresa Eliora.</p>
-                <?php
-                wp_editor( $terms_eliora, 'fplms_terms_eliora', [
-                    'textarea_name' => 'fplms_terms_eliora',
-                    'textarea_rows' => 20,
-                    'media_buttons' => false,
-                    'teeny'         => false,
-                ] );
-                ?>
+                <?php if ( empty( $companies ) ) : ?>
+                    <div class="notice notice-warning" style="margin-top:20px;">
+                        <p>No hay empresas en estructuras. Crea empresas primero en <strong>Estructuras</strong> para configurar Términos y Correos por empresa.</p>
+                    </div>
+                <?php else : ?>
+                    <h2 class="fplms-terms-title">Configuración por empresa</h2>
+                    <p class="fplms-contract-note">Selecciona una empresa para editar su contrato y la personalización del correo de bienvenida.</p>
+                    <div class="fplms-rpt-tabs-nav">
+                        <?php foreach ( $companies as $index => $company ) : ?>
+                            <button type="button"
+                                    class="fplms-rpt-tab-btn fplms-company-tab <?php echo 0 === $index ? 'active' : ''; ?>"
+                                    data-target="fplms-company-panel-<?php echo esc_attr( $company->term_id ); ?>">
+                                <?php echo esc_html( $company->name ); ?>
+                            </button>
+                        <?php endforeach; ?>
+                    </div>
 
-                <h2 style="margin-top:30px;">Contrato de Servicio – FairPlay</h2>
-                <p class="description">Pega aquí el contenido HTML (o texto) del contrato para usuarios de la empresa FairPlay.</p>
-                <?php
-                wp_editor( $terms_fairplay, 'fplms_terms_fairplay', [
-                    'textarea_name' => 'fplms_terms_fairplay',
-                    'textarea_rows' => 20,
-                    'media_buttons' => false,
-                    'teeny'         => false,
-                ] );
-                ?>
+                    <?php foreach ( $companies as $index => $company ) : ?>
+                        <?php
+                        $company_id = (int) $company->term_id;
+                        $company_terms = $this->get_company_terms_content( $company_id, $company->slug );
+                        $company_email_from = $this->get_company_email_from( $company_id, $company->slug );
+                        $company_email_name = $this->get_company_email_name( $company_id, $company->name );
+                        $company_email_subject = $this->get_company_email_subject( $company_id );
+                        $company_email_bg = $this->get_company_email_bg( $company_id );
+                        $company_email_accent = $this->get_company_email_accent( $company_id, $company->slug );
+                        $company_email_logo = $this->get_company_email_logo( $company_id );
+                        ?>
+                        <div id="fplms-company-panel-<?php echo esc_attr( $company_id ); ?>"
+                                class="fplms-company-panel <?php echo 0 === $index ? 'is-visible' : ''; ?>"
+                                data-company-id="<?php echo esc_attr( $company_id ); ?>">
+                            <h3 style="margin-top:0;">Contrato de Servicio – <?php echo esc_html( $company->name ); ?></h3>
+                            <p class="description">Contrato que verá el usuario al activar su cuenta para esta empresa.</p>
+                            <?php
+                            wp_editor( $company_terms, 'fplms_terms_company_' . $company_id, [
+                                'textarea_name' => 'fplms_terms_company[' . $company_id . ']',
+                                'textarea_rows' => 24,
+                                'editor_height' => 520,
+                                'media_buttons' => false,
+                                'teeny'         => false,
+                            ] );
+                            ?>
+
+                            <div class="fplms-email-layout-row">
+                                <div class="fplms-email-fields">
+                                    <table class="form-table" role="presentation">
+                                        <tr>
+                                            <th scope="row"><label for="fplms_email_from_company_<?php echo esc_attr( $company_id ); ?>">Email remitente</label></th>
+                                            <td>
+                                                <input type="email"
+                                                       id="fplms_email_from_company_<?php echo esc_attr( $company_id ); ?>"
+                                                       name="fplms_email_from_company[<?php echo esc_attr( $company_id ); ?>]"
+                                                       value="<?php echo esc_attr( $company_email_from ); ?>"
+                                                       class="regular-text"
+                                                       placeholder="noreply@empresa.com">
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th scope="row"><label for="fplms_email_name_company_<?php echo esc_attr( $company_id ); ?>">Nombre remitente</label></th>
+                                            <td>
+                                                <input type="text"
+                                                       id="fplms_email_name_company_<?php echo esc_attr( $company_id ); ?>"
+                                                       name="fplms_email_name_company[<?php echo esc_attr( $company_id ); ?>]"
+                                                       value="<?php echo esc_attr( $company_email_name ); ?>"
+                                                       class="regular-text"
+                                                       placeholder="Empresa e-Learning">
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th scope="row"><label for="fplms_email_subject_company_<?php echo esc_attr( $company_id ); ?>">Asunto del email</label></th>
+                                            <td>
+                                                <input type="text"
+                                                       id="fplms_email_subject_company_<?php echo esc_attr( $company_id ); ?>"
+                                                       name="fplms_email_subject_company[<?php echo esc_attr( $company_id ); ?>]"
+                                                       value="<?php echo esc_attr( $company_email_subject ); ?>"
+                                                       class="regular-text"
+                                                       placeholder="Bienvenido/a - Activa tu cuenta">
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th scope="row"><label for="fplms_email_accent_company_<?php echo esc_attr( $company_id ); ?>">Color principal</label></th>
+                                            <td>
+                                                <input type="color"
+                                                       id="fplms_email_accent_company_<?php echo esc_attr( $company_id ); ?>"
+                                                       name="fplms_email_accent_company[<?php echo esc_attr( $company_id ); ?>]"
+                                                       value="<?php echo esc_attr( $company_email_accent ?: '#f6b23a' ); ?>">
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th scope="row"><label for="fplms_email_logo_company_<?php echo esc_attr( $company_id ); ?>">Logo (URL)</label></th>
+                                            <td>
+                                                <input type="url"
+                                                       id="fplms_email_logo_company_<?php echo esc_attr( $company_id ); ?>"
+                                                       name="fplms_email_logo_company[<?php echo esc_attr( $company_id ); ?>]"
+                                                       value="<?php echo esc_attr( $company_email_logo ); ?>"
+                                                       class="regular-text"
+                                                       placeholder="https://.../logo.png">
+                                                <button type="button"
+                                                        class="button fplms-media-pick"
+                                                        data-target="fplms_email_logo_company_<?php echo esc_attr( $company_id ); ?>"
+                                                        style="margin-left:8px;">Seleccionar imagen</button>
+                                                <p class="fplms-media-help">Dimensiones recomendadas logo: 320 x 90 px (formato PNG/SVG, fondo transparente).</p>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <th scope="row"><label for="fplms_email_bg_company_<?php echo esc_attr( $company_id ); ?>">Imagen de fondo del encabezado</label></th>
+                                            <td>
+                                                <input type="url"
+                                                       id="fplms_email_bg_company_<?php echo esc_attr( $company_id ); ?>"
+                                                       name="fplms_email_bg_company[<?php echo esc_attr( $company_id ); ?>]"
+                                                       value="<?php echo esc_attr( $company_email_bg ); ?>"
+                                                       class="regular-text"
+                                                       placeholder="https://.../header.jpg">
+                                                <button type="button"
+                                                        class="button fplms-media-pick"
+                                                        data-target="fplms_email_bg_company_<?php echo esc_attr( $company_id ); ?>"
+                                                        style="margin-left:8px;">Seleccionar imagen</button>
+                                                <p class="fplms-media-help">Dimensiones recomendadas encabezado: 1200 x 320 px (JPG/PNG, peso menor a 500 KB).</p>
+                                                <?php if ( ! empty( $company_email_bg ) ) : ?>
+                                                    <div class="fplms-image-preview"><img src="<?php echo esc_url( $company_email_bg ); ?>" alt="preview"></div>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </div>
+
+                                <div class="fplms-email-preview-wrap" data-preview-wrap="<?php echo esc_attr( $company_id ); ?>">
+                                    <div class="fplms-email-preview-head">
+                                        <strong>Vista previa rápida (sin guardar)</strong>
+                                        <span>Solo refleja remitente, asunto, color principal, logo y fondo de encabezado.</span>
+                                    </div>
+                                    <div class="fplms-email-preview-canvas">
+                                        <div class="fplms-email-preview-card">
+                                            <div class="fplms-email-preview-header" data-preview-header>
+                                                <img src="" alt="logo" class="fplms-email-preview-logo" data-preview-logo>
+                                                <h4 class="fplms-email-preview-title" data-preview-title><?php echo esc_html( $company_email_name ?: $company->name ); ?></h4>
+                                            </div>
+                                            <div class="fplms-email-preview-body">
+                                                <p class="fplms-email-preview-subject" data-preview-subject><?php echo esc_html( $company_email_subject ?: 'Bienvenido/a - Activa tu cuenta' ); ?></p>
+                                                <p>Hola, Nombre Usuario:</p>
+                                                <p>Tu cuenta fue creada exitosamente. Para activarla debes aceptar el contrato y crear contraseña.</p>
+                                                <a href="#" onclick="return false;" class="fplms-email-preview-btn" data-preview-button>Activar mi cuenta</a>
+                                            </div>
+                                            <div class="fplms-email-preview-footer">
+                                                © <?php echo esc_html( get_bloginfo( 'name' ) ); ?> - <a href="<?php echo esc_url( home_url() ); ?>"><?php echo esc_html( home_url() ); ?></a>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
 
                 <p style="margin-top:24px;">
                     <?php submit_button( 'Guardar configuración', 'primary', 'submit', false ); ?>
                 </p>
             </form>
+
+            <script>
+            (function() {
+                var tabs = document.querySelectorAll('.fplms-company-tab');
+                var panels = document.querySelectorAll('.fplms-company-panel');
+
+                function byId(id) {
+                    return document.getElementById(id);
+                }
+
+                function safeValue(id, fallback) {
+                    var el = byId(id);
+                    if (!el) {
+                        return fallback || '';
+                    }
+                    return (el.value || '').trim() || (fallback || '');
+                }
+
+                function updateCompanyPreview(companyId) {
+                    try {
+                        var panel = byId('fplms-company-panel-' + companyId);
+                        if (!panel) {
+                            return;
+                        }
+
+                        var name = safeValue('fplms_email_name_company_' + companyId, 'Empresa e-Learning');
+                        var subject = safeValue('fplms_email_subject_company_' + companyId, 'Bienvenido/a - Activa tu cuenta');
+                        var accent = safeValue('fplms_email_accent_company_' + companyId, '#f6b23a');
+                        var bg = safeValue('fplms_email_bg_company_' + companyId, '');
+                        var logo = safeValue('fplms_email_logo_company_' + companyId, '');
+
+                        var header = panel.querySelector('[data-preview-header]');
+                        var title = panel.querySelector('[data-preview-title]');
+                        var subjectEl = panel.querySelector('[data-preview-subject]');
+                        var btn = panel.querySelector('[data-preview-button]');
+                        var logoEl = panel.querySelector('[data-preview-logo]');
+
+                        if (title) {
+                            title.textContent = name;
+                        }
+                        if (subjectEl) {
+                            subjectEl.textContent = subject;
+                        }
+                        if (btn) {
+                            btn.style.background = accent;
+                        }
+                        if (header) {
+                            if (bg) {
+                                header.style.backgroundImage = "url('" + bg.replace(/'/g, "%27") + "')";
+                                header.style.backgroundSize = 'cover';
+                                header.style.backgroundPosition = 'center';
+                                header.style.backgroundColor = '';
+                            } else {
+                                header.style.backgroundImage = 'none';
+                                header.style.backgroundColor = accent;
+                            }
+                        }
+                        if (logoEl) {
+                            if (logo) {
+                                logoEl.src = logo;
+                                logoEl.style.display = 'block';
+                            } else {
+                                logoEl.removeAttribute('src');
+                                logoEl.style.display = 'none';
+                            }
+                        }
+                    } catch (e) {
+                        // Mantener el panel funcional incluso si falla la vista previa.
+                    }
+                }
+
+                function bindPreview(companyId) {
+                    var ids = [
+                        'fplms_email_name_company_' + companyId,
+                        'fplms_email_subject_company_' + companyId,
+                        'fplms_email_accent_company_' + companyId,
+                        'fplms_email_bg_company_' + companyId,
+                        'fplms_email_logo_company_' + companyId
+                    ];
+
+                    ids.forEach(function(id) {
+                        var el = byId(id);
+                        if (!el) {
+                            return;
+                        }
+                        el.addEventListener('input', function() {
+                            updateCompanyPreview(companyId);
+                        });
+                        el.addEventListener('change', function() {
+                            updateCompanyPreview(companyId);
+                        });
+                    });
+
+                    updateCompanyPreview(companyId);
+                }
+
+                tabs.forEach(function(tab) {
+                    tab.addEventListener('click', function() {
+                        var target = this.getAttribute('data-target');
+                        tabs.forEach(function(btn) { btn.classList.remove('active'); });
+                        this.classList.add('active');
+                        panels.forEach(function(panel) {
+                            panel.classList.toggle('is-visible', panel.id === target);
+                        });
+                    });
+                });
+
+                panels.forEach(function(panel) {
+                    var companyId = panel.getAttribute('data-company-id');
+                    if (companyId) {
+                        bindPreview(companyId);
+                    }
+                });
+
+                var mediaButtons = document.querySelectorAll('.fplms-media-pick');
+                mediaButtons.forEach(function(button) {
+                    button.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        var inputId = this.getAttribute('data-target');
+                        var input = document.getElementById(inputId);
+                        if (!input || !window.wp || !wp.media) {
+                            return;
+                        }
+                        var frame = wp.media({
+                            title: 'Seleccionar imagen',
+                            multiple: false,
+                            library: { type: 'image' },
+                            button: { text: 'Usar imagen' }
+                        });
+                        frame.on('select', function() {
+                            var attachment = frame.state().get('selection').first().toJSON();
+                            input.value = attachment.url || '';
+                            var panel = input.closest('.fplms-company-panel');
+                            if (panel) {
+                                var companyId = panel.getAttribute('data-company-id');
+                                if (companyId) {
+                                    updateCompanyPreview(companyId);
+                                }
+                            }
+                        });
+                        frame.open();
+                    });
+                });
+            })();
+            </script>
 
             <hr style="margin-top:40px;">
             <h3>Shortcode para Elementor</h3>
@@ -203,7 +580,7 @@ class FairPlay_LMS_Onboarding {
         update_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ONBOARDING_STATUS, 'pending' );
 
         // Detectar empresa del usuario (para elegir T&C y remitente)
-        $company_slug = $this->detect_user_company( $user_id );
+        $company_id = $this->detect_user_company( $user_id );
 
         // Generar reset key (expira ~24h según WordPress)
         $reset_key = get_password_reset_key( $user );
@@ -211,36 +588,36 @@ class FairPlay_LMS_Onboarding {
             return;
         }
 
-        $this->dispatch_welcome_email( $user, $reset_key, $company_slug );
+        $this->dispatch_welcome_email( $user, $reset_key, $company_id );
     }
 
     /**
-     * Detecta si el usuario pertenece a Eliora o FairPlay según su empresa
-     * asignada en el meta de estructuras.
+     * Detecta la empresa del usuario y devuelve el term_id de fplms_company.
      *
-     * @param int $user_id
-     * @return string 'eliora' | 'fairplay'
+     * Compatibilidad:
+     * - Si USER_META_TERMS_COMPANY contiene un slug legacy (eliora/fairplay),
+     *   intentamos resolverlo a term_id.
+     * - Si no hay empresa en el usuario, usamos la empresa por defecto configurada.
      */
-    private function detect_user_company( int $user_id ): string {
+    private function detect_user_company( int $user_id ): int {
         $company_term_id = (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_COMPANY, true );
-        if ( $company_term_id ) {
+        if ( $company_term_id > 0 ) {
             $term = get_term( $company_term_id, FairPlay_LMS_Config::TAX_COMPANY );
             if ( $term && ! is_wp_error( $term ) ) {
-                $slug = strtolower( $term->slug );
-                if ( strpos( $slug, 'eliora' ) !== false ) {
-                    return 'eliora';
-                }
-                if ( strpos( $slug, 'fairplay' ) !== false ) {
-                    return 'fairplay';
-                }
-                // Fallback por nombre
-                $name = strtolower( $term->name );
-                if ( strpos( $name, 'eliora' ) !== false ) {
-                    return 'eliora';
-                }
+                return (int) $term->term_id;
             }
         }
-        return 'fairplay'; // Default
+
+        $legacy_company = get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_TERMS_COMPANY, true );
+        if ( is_string( $legacy_company ) && '' !== $legacy_company ) {
+            $legacy_company = sanitize_title( $legacy_company );
+            $legacy_term = get_term_by( 'slug', $legacy_company, FairPlay_LMS_Config::TAX_COMPANY );
+            if ( $legacy_term && ! is_wp_error( $legacy_term ) ) {
+                return (int) $legacy_term->term_id;
+            }
+        }
+
+        return $this->get_default_company_id();
     }
 
     /**
@@ -248,9 +625,9 @@ class FairPlay_LMS_Onboarding {
      *
      * @param WP_User $user
      * @param string  $reset_key
-     * @param string  $company_slug 'eliora' | 'fairplay'
+     * @param int     $company_id term_id de fplms_company
      */
-    private function dispatch_welcome_email( WP_User $user, string $reset_key, string $company_slug ): void {
+    private function dispatch_welcome_email( WP_User $user, string $reset_key, int $company_id ): void {
         $page_id = (int) get_option( FairPlay_LMS_Config::OPTION_ONBOARDING_PAGE_ID, 0 );
         if ( ! $page_id ) {
             // Fallback: usar wp-login reset URL
@@ -268,20 +645,35 @@ class FairPlay_LMS_Onboarding {
         $site_name = get_bloginfo( 'name' );
         $blog_url  = home_url();
 
-        // Determinar remitente según empresa
-        if ( 'eliora' === $company_slug ) {
-            $from_email = get_option( FairPlay_LMS_Config::OPTION_EMAIL_ELIORA, get_option( 'admin_email' ) );
-            $from_name  = 'Eliora e-Learning';
-        } else {
-            $from_email = get_option( FairPlay_LMS_Config::OPTION_EMAIL_FAIRPLAY, get_option( 'admin_email' ) );
-            $from_name  = 'FairPlay e-Learning';
+        $company_term = $company_id > 0 ? get_term( $company_id, FairPlay_LMS_Config::TAX_COMPANY ) : null;
+        $company_slug = ( $company_term && ! is_wp_error( $company_term ) ) ? (string) $company_term->slug : '';
+        $company_name = ( $company_term && ! is_wp_error( $company_term ) ) ? (string) $company_term->name : 'FairPlay';
+
+        $from_email = $this->get_company_email_from( $company_id, $company_slug );
+        if ( empty( $from_email ) ) {
+            $from_email = (string) get_option( 'admin_email' );
         }
 
+        $from_name = $this->get_company_email_name( $company_id, $company_name . ' e-Learning' );
+
         $first_name = $user->first_name ?: $user->user_login;
+        $subject = $this->get_company_email_subject( $company_id );
+        if ( empty( $subject ) ) {
+            $subject = "Bienvenido/a a {$site_name} - Activa tu cuenta";
+        }
 
-        $subject = "Bienvenido/a a {$site_name} – Activa tu cuenta";
-
-        $body = $this->build_email_html( $first_name, $user->user_login, $site_name, $blog_url, $onboarding_url, $company_slug, $from_name );
+        $body = $this->build_email_html(
+            $first_name,
+            $site_name,
+            $blog_url,
+            $onboarding_url,
+            [
+                'from_name' => $from_name,
+                'accent'    => $this->get_company_email_accent( $company_id, $company_slug ),
+                'bg_image'  => $this->get_company_email_bg( $company_id ),
+                'logo'      => $this->get_company_email_logo( $company_id ),
+            ]
+        );
 
         $headers = [
             'Content-Type: text/html; charset=UTF-8',
@@ -296,14 +688,26 @@ class FairPlay_LMS_Onboarding {
      */
     private function build_email_html(
         string $first_name,
-        string $user_login,
         string $site_name,
         string $blog_url,
         string $onboarding_url,
-        string $company_slug,
-        string $from_name
+        array $company_email_config
     ): string {
-        $accent = 'eliora' === $company_slug ? '#f6b23a' : '#e3342f';
+        $accent = isset( $company_email_config['accent'] ) ? (string) $company_email_config['accent'] : '#f6b23a';
+        $from_name = isset( $company_email_config['from_name'] ) ? (string) $company_email_config['from_name'] : $site_name;
+        $bg_image = isset( $company_email_config['bg_image'] ) ? esc_url( (string) $company_email_config['bg_image'] ) : '';
+        $logo = isset( $company_email_config['logo'] ) ? esc_url( (string) $company_email_config['logo'] ) : '';
+        $header_style = "padding:32px 40px;text-align:center;";
+        if ( ! empty( $bg_image ) ) {
+            $header_style .= "background-image:url('{$bg_image}');background-size:cover;background-position:center;";
+        } else {
+            $header_style .= "background:{$accent};";
+        }
+
+        $logo_html = '';
+        if ( ! empty( $logo ) ) {
+            $logo_html = "<div style=\"margin-bottom:10px;\"><img src=\"{$logo}\" alt=\"Logo\" style=\"max-width:180px;height:auto;border:0;\"></div>";
+        }
 
         return <<<HTML
 <!DOCTYPE html>
@@ -320,8 +724,9 @@ class FairPlay_LMS_Onboarding {
       <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);">
         <!-- Header -->
         <tr>
-          <td style="background:{$accent};padding:32px 40px;text-align:center;">
-            <h1 style="color:#ffffff;margin:0;font-size:24px;font-weight:700;">{$from_name}</h1>
+                    <td style="{$header_style}">
+                        {$logo_html}
+                        <h1 style="color:#ffffff;margin:0;font-size:24px;font-weight:700;">{$from_name}</h1>
           </td>
         </tr>
         <!-- Body -->
@@ -358,8 +763,8 @@ class FairPlay_LMS_Onboarding {
         </tr>
         <!-- Footer -->
         <tr>
-          <td style="background:#f9f9f9;padding:16px 40px;text-align:center;">
-            <p style="font-size:12px;color:#aaa;margin:0;">© {$site_name} – <a href="{$blog_url}" style="color:{$accent};text-decoration:none;">{$blog_url}</a></p>
+                    <td style="background:#f9f9f9;padding:16px 40px;text-align:center;">
+                        <p style="font-size:12px;color:#aaa;margin:0;">© {$site_name} – <a href="{$blog_url}" style="color:{$accent};text-decoration:none;">{$blog_url}</a></p>
           </td>
         </tr>
       </table>
@@ -407,8 +812,8 @@ HTML;
             wp_send_json_error( [ 'message' => 'No se pudo generar el enlace de activación.' ] );
         }
 
-        $company_slug = $this->detect_user_company( $user_id );
-        $this->dispatch_welcome_email( $user, $reset_key, $company_slug );
+        $company_id = $this->detect_user_company( $user_id );
+        $this->dispatch_welcome_email( $user, $reset_key, $company_id );
 
         wp_send_json_success( [ 'message' => "Email de bienvenida reenviado a {$user->user_email}." ] );
     }
@@ -560,12 +965,11 @@ HTML;
     // ── Renderizado de pasos ─────────────────────────────────────────────────
 
     private function render_step1_terms( string $key, string $login, WP_User $user, string $error = '' ): string {
-        $company_slug  = $this->detect_user_company( $user->ID );
-        $option_key    = 'eliora' === $company_slug
-            ? FairPlay_LMS_Config::OPTION_TERMS_ELIORA
-            : FairPlay_LMS_Config::OPTION_TERMS_FAIRPLAY;
-        $terms_content = get_option( $option_key, '' );
-        $company_label = 'eliora' === $company_slug ? 'Eliora' : 'FairPlay';
+        $company_id = $this->detect_user_company( $user->ID );
+        $company_term = $company_id > 0 ? get_term( $company_id, FairPlay_LMS_Config::TAX_COMPANY ) : null;
+        $company_slug = ( $company_term && ! is_wp_error( $company_term ) ) ? (string) $company_term->slug : '';
+        $company_label = ( $company_term && ! is_wp_error( $company_term ) ) ? (string) $company_term->name : 'Empresa';
+        $terms_content = $this->get_company_terms_content( $company_id, $company_slug );
         $nonce         = wp_create_nonce( 'fplms_onboarding_' . $login );
         $first_name    = $user->first_name ?: $user->user_login;
         $error_html    = $error ? '<div class="fplms-ob-error">' . esc_html( $error ) . '</div>' : '';
@@ -904,6 +1308,161 @@ CSS;
     }
 
     // ── Utilidades ────────────────────────────────────────────────────────────
+
+    private function get_terms_option_key( int $company_id ): string {
+        return FairPlay_LMS_Config::OPTION_TERMS_BY_COMPANY_PREFIX . $company_id;
+    }
+
+    private function get_company_email_from_option_key( int $company_id ): string {
+        return FairPlay_LMS_Config::OPTION_EMAIL_FROM_BY_COMPANY_PREFIX . $company_id;
+    }
+
+    private function get_company_email_name_option_key( int $company_id ): string {
+        return FairPlay_LMS_Config::OPTION_EMAIL_NAME_BY_COMPANY_PREFIX . $company_id;
+    }
+
+    private function get_company_email_subject_option_key( int $company_id ): string {
+        return FairPlay_LMS_Config::OPTION_EMAIL_SUBJECT_BY_COMPANY_PREFIX . $company_id;
+    }
+
+    private function get_company_email_bg_option_key( int $company_id ): string {
+        return FairPlay_LMS_Config::OPTION_EMAIL_BG_IMAGE_BY_COMPANY_PREFIX . $company_id;
+    }
+
+    private function get_company_email_accent_option_key( int $company_id ): string {
+        return FairPlay_LMS_Config::OPTION_EMAIL_ACCENT_BY_COMPANY_PREFIX . $company_id;
+    }
+
+    private function get_company_email_logo_option_key( int $company_id ): string {
+        return FairPlay_LMS_Config::OPTION_EMAIL_LOGO_BY_COMPANY_PREFIX . $company_id;
+    }
+
+    private function get_company_terms_content( int $company_id, string $company_slug = '' ): string {
+        if ( $company_id > 0 ) {
+            $dynamic = (string) get_option( $this->get_terms_option_key( $company_id ), '' );
+            if ( '' !== $dynamic ) {
+                return $dynamic;
+            }
+        }
+
+        $legacy_key = $this->get_legacy_terms_option_key_by_slug( $company_slug );
+        if ( $legacy_key ) {
+            return (string) get_option( $legacy_key, '' );
+        }
+
+        return '';
+    }
+
+    private function get_company_email_from( int $company_id, string $company_slug = '' ): string {
+        if ( $company_id > 0 ) {
+            $dynamic = (string) get_option( $this->get_company_email_from_option_key( $company_id ), '' );
+            if ( '' !== $dynamic ) {
+                return $dynamic;
+            }
+        }
+
+        $legacy_key = $this->get_legacy_email_option_key_by_slug( $company_slug );
+        if ( $legacy_key ) {
+            return (string) get_option( $legacy_key, '' );
+        }
+
+        return '';
+    }
+
+    private function get_company_email_name( int $company_id, string $fallback ): string {
+        if ( $company_id > 0 ) {
+            $dynamic = (string) get_option( $this->get_company_email_name_option_key( $company_id ), '' );
+            if ( '' !== $dynamic ) {
+                return $dynamic;
+            }
+        }
+        return $fallback;
+    }
+
+    private function get_company_email_subject( int $company_id ): string {
+        if ( $company_id > 0 ) {
+            return (string) get_option( $this->get_company_email_subject_option_key( $company_id ), '' );
+        }
+        return '';
+    }
+
+    private function get_company_email_bg( int $company_id ): string {
+        if ( $company_id > 0 ) {
+            return (string) get_option( $this->get_company_email_bg_option_key( $company_id ), '' );
+        }
+        return '';
+    }
+
+    private function get_company_email_accent( int $company_id, string $company_slug = '' ): string {
+        if ( $company_id > 0 ) {
+            $dynamic = (string) get_option( $this->get_company_email_accent_option_key( $company_id ), '' );
+            if ( '' !== $dynamic ) {
+                return $dynamic;
+            }
+        }
+
+        $normalized = strtolower( $company_slug );
+        if ( false !== strpos( $normalized, 'fairplay' ) ) {
+            return '#e3342f';
+        }
+
+        return '#f6b23a';
+    }
+
+    private function get_company_email_logo( int $company_id ): string {
+        if ( $company_id > 0 ) {
+            return (string) get_option( $this->get_company_email_logo_option_key( $company_id ), '' );
+        }
+        return '';
+    }
+
+    private function get_legacy_terms_option_key_by_slug( string $company_slug ): string {
+        $normalized = strtolower( $company_slug );
+        if ( false !== strpos( $normalized, 'eliora' ) ) {
+            return FairPlay_LMS_Config::OPTION_TERMS_ELIORA;
+        }
+        if ( false !== strpos( $normalized, 'fairplay' ) ) {
+            return FairPlay_LMS_Config::OPTION_TERMS_FAIRPLAY;
+        }
+        return '';
+    }
+
+    private function get_legacy_email_option_key_by_slug( string $company_slug ): string {
+        $normalized = strtolower( $company_slug );
+        if ( false !== strpos( $normalized, 'eliora' ) ) {
+            return FairPlay_LMS_Config::OPTION_EMAIL_ELIORA;
+        }
+        if ( false !== strpos( $normalized, 'fairplay' ) ) {
+            return FairPlay_LMS_Config::OPTION_EMAIL_FAIRPLAY;
+        }
+        return '';
+    }
+
+    private function get_default_company_id(): int {
+        $configured_default = (int) get_option( FairPlay_LMS_Config::OPTION_DEFAULT_COMPANY_ID, 0 );
+        if ( $configured_default > 0 ) {
+            $term = get_term( $configured_default, FairPlay_LMS_Config::TAX_COMPANY );
+            if ( $term && ! is_wp_error( $term ) ) {
+                return (int) $term->term_id;
+            }
+        }
+
+        $first_company = get_terms(
+            [
+                'taxonomy'   => FairPlay_LMS_Config::TAX_COMPANY,
+                'hide_empty' => false,
+                'number'     => 1,
+                'orderby'    => 'term_id',
+                'order'      => 'ASC',
+            ]
+        );
+
+        if ( ! is_wp_error( $first_company ) && ! empty( $first_company ) ) {
+            return (int) $first_company[0]->term_id;
+        }
+
+        return 0;
+    }
 
     private function get_client_ip(): string {
         foreach ( [ 'HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'REMOTE_ADDR' ] as $key ) {

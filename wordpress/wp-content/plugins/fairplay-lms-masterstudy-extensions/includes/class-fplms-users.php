@@ -1659,6 +1659,7 @@ class FairPlay_LMS_Users_Controller {
                 .fplms-action-icon-btn.activate:hover svg  { fill: #059669; }
                 .fplms-action-icon-btn.deactivate:hover svg { fill: #d97706; }
                 .fplms-action-icon-btn.view:hover svg        { fill: #7c3aed; }
+                .fplms-action-icon-btn.audit:hover svg       { fill: #0284c7; }
 
                 /* ── Checkbox ── */
                 .checkbox-input { width: 16px; height: 16px; cursor: pointer; accent-color: #667eea; }
@@ -2073,6 +2074,17 @@ class FairPlay_LMS_Users_Controller {
                                 </td>
                                 <td class="actions-cell">
                                     <div class="fplms-direct-actions">
+                                        <?php if ( 'rejected' === $ob_status ) : ?>
+                                            <button type="button"
+                                                    class="fplms-action-icon-btn fplms-resend-welcome"
+                                                    title="Resolicitar aceptación de T&amp;C"
+                                                    data-user-id="<?php echo esc_attr( $user->ID ); ?>"
+                                                    data-nonce="<?php echo esc_attr( wp_create_nonce( 'fplms_resend_welcome' ) ); ?>"
+                                                    style="color:#1a56db;">
+                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg>
+                                            </button>
+                                        <?php endif; ?>
+
                                         <a href="<?php echo esc_url( add_query_arg( [ 'action' => 'view', 'user_id' => $user->ID ], admin_url( 'admin.php?page=fplms-users' ) ) ); ?>"
                                            class="fplms-action-icon-btn view" title="Ver información del usuario">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
@@ -2087,16 +2099,20 @@ class FairPlay_LMS_Users_Controller {
                                                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8 0-1.85.63-3.55 1.69-4.9L16.9 18.31C15.55 19.37 13.85 20 12 20zm6.31-3.1L7.1 5.69C8.45 4.63 10.15 4 12 4c4.42 0 8 3.58 8 8 0 1.85-.63 3.55-1.69 4.9z"/></svg>
                                             </button>
                                         <?php else : ?>
-                                            <span class="fplms-status-badge fplms-status-inactive" style="font-size:11px;">Reactivar en bitácora</span>
+                                            <a href="<?php echo esc_url( add_query_arg( [ 'page' => 'fairplay-lms-audit', 'filter_entity' => 'user', 'filter_user' => $user->ID ], admin_url( 'admin.php' ) ) ); ?>"
+                                               class="fplms-action-icon-btn audit"
+                                               title="Ir a bitácora para reactivar usuario">
+                                                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 5v4.59l3 3L14.59 16 10 11.41V7h3z"/></svg>
+                                            </a>
                                         <?php endif; ?>
                                         <button type="button" class="fplms-action-icon-btn delete" title="Dar de baja usuario"
                                                 onclick="fplmsShowActionModal('delete', <?php echo $user->ID; ?>, '<?php echo esc_js( $full_name ); ?>', '<?php echo esc_js( $user->user_email ); ?>')">
                                             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                                         </button>
-                                        <?php if ( 'completed' !== $ob_status ) : ?>
+                                        <?php if ( 'completed' !== $ob_status && 'rejected' !== $ob_status ) : ?>
                                             <button type="button"
                                                     class="fplms-action-icon-btn fplms-resend-welcome"
-                                                    title="<?php echo 'rejected' === $ob_status ? 'Resolicitar aceptación de T&amp;C' : 'Reenviar email de activación'; ?>"
+                                                    title="Reenviar email de activación"
                                                     data-user-id="<?php echo esc_attr( $user->ID ); ?>"
                                                     data-nonce="<?php echo esc_attr( wp_create_nonce( 'fplms_resend_welcome' ) ); ?>"
                                                     style="color:#1a56db;">

@@ -66,12 +66,24 @@ class FairPlay_LMS_Config {
     public const USER_META_ONBOARDING_STATUS = 'fplms_onboarding_status'; // 'pending' | 'completed' | 'rejected'
     public const USER_META_TERMS_ACCEPTED     = 'fplms_terms_accepted';   // Unix timestamp de aceptación
     public const USER_META_TERMS_IP           = 'fplms_terms_ip';         // IP al momento de aceptar
-    public const USER_META_TERMS_COMPANY      = 'fplms_terms_company';    // 'eliora' | 'fairplay' (empresa del contrato aceptado)
+    public const USER_META_TERMS_COMPANY      = 'fplms_terms_company';    // term_id (compat: slug legacy 'eliora' | 'fairplay')
     public const OPTION_TERMS_ELIORA          = 'fplms_terms_content_eliora';   // HTML del contrato Eliora
     public const OPTION_TERMS_FAIRPLAY        = 'fplms_terms_content_fairplay'; // HTML del contrato FairPlay
     public const OPTION_EMAIL_ELIORA          = 'fplms_email_from_eliora';      // From email Eliora
     public const OPTION_EMAIL_FAIRPLAY        = 'fplms_email_from_fairplay';    // From email FairPlay
     public const OPTION_ONBOARDING_PAGE_ID    = 'fplms_onboarding_page_id';     // ID de la página WP con shortcode
+    // Opciones dinámicas por empresa (taxonomy term_id) para no hardcodear marcas.
+    public const OPTION_TERMS_BY_COMPANY_PREFIX        = 'fplms_terms_content_';
+    public const OPTION_EMAIL_FROM_BY_COMPANY_PREFIX   = 'fplms_email_from_';
+    public const OPTION_EMAIL_NAME_BY_COMPANY_PREFIX   = 'fplms_email_from_name_';
+    public const OPTION_EMAIL_SUBJECT_BY_COMPANY_PREFIX = 'fplms_email_subject_';
+    public const OPTION_EMAIL_BG_IMAGE_BY_COMPANY_PREFIX = 'fplms_email_bg_image_';
+    public const OPTION_EMAIL_ACCENT_BY_COMPANY_PREFIX = 'fplms_email_accent_';
+    public const OPTION_EMAIL_LOGO_BY_COMPANY_PREFIX   = 'fplms_email_logo_';
+    public const OPTION_EMAIL_FOOTER_BG_IMAGE_BY_COMPANY_PREFIX = 'fplms_email_footer_bg_image_';
+    public const OPTION_EMAIL_FOOTER_TEXT_COLOR_BY_COMPANY_PREFIX = 'fplms_email_footer_text_color_';
+    public const OPTION_EMAIL_HEADER_TEXT_COLOR_BY_COMPANY_PREFIX = 'fplms_email_header_text_color_';
+    public const OPTION_DEFAULT_COMPANY_ID             = 'fplms_default_company_id';
 
     // Config MasterStudy – centralizamos aquí para facilitar cambios futuros
     public const MS_ROLE_INSTRUCTOR     = 'stm_lms_instructor';
