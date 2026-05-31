@@ -232,6 +232,23 @@ class FairPlay_LMS_Progress_Service {
             );
         }
 
+        // Aplicar también visibilidad por estructuras para mantener consistencia
+        // con el listado de cursos del panel (/user-account/).
+        if ( ! empty( $enrolled_ids ) && class_exists( 'FairPlay_LMS_Course_Visibility_Service' ) ) {
+            $visibility_service = new FairPlay_LMS_Course_Visibility_Service();
+            $enrolled_ids = array_filter(
+                $enrolled_ids,
+                static function ( $course_data, $course_id ) use ( $visibility_service, $user_id ): bool {
+                    $cid = (int) $course_id;
+                    if ( $cid <= 0 ) {
+                        return false;
+                    }
+                    return $visibility_service->can_user_see_course( (int) $user_id, $cid );
+                },
+                ARRAY_FILTER_USE_BOTH
+            );
+        }
+
         $stats['enrolled'] = count( $enrolled_ids );
 
         if ( $stats['enrolled'] > 0 ) {

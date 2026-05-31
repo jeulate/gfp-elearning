@@ -12,6 +12,29 @@ if ( ! defined( 'ABSPATH' ) ) {
 class FairPlay_LMS_Course_Visibility_Service {
 
     /**
+     * Regla de estado para visibilidad de cursos.
+     * - publish: visible para todos según restricciones de estructura.
+     * - inactivo (draft/private/pending): solo creador o administrador.
+     */
+    private function can_user_view_course_status( int $user_id, int $course_id ): bool {
+        if ( current_user_can( 'manage_options' ) ) {
+            return true;
+        }
+
+        $status = get_post_status( $course_id );
+        if ( false === $status ) {
+            return false;
+        }
+
+        if ( 'publish' === $status ) {
+            return true;
+        }
+
+        $author_id = (int) get_post_field( 'post_author', $course_id );
+        return $author_id > 0 && $author_id === $user_id;
+    }
+
+    /**
      * Obtiene los cursos visibles para un usuario específico.
      *
      * @param int $user_id ID del usuario.
@@ -51,6 +74,10 @@ class FairPlay_LMS_Course_Visibility_Service {
      * @return bool True si el usuario puede ver el curso, false en caso contrario.
      */
     public function can_user_see_course( int $user_id, int $course_id, array $user_structures = [] ): bool {
+
+        if ( ! $this->can_user_view_course_status( $user_id, $course_id ) ) {
+            return false;
+        }
 
         // Si no se pasan estructuras, obtenerlas
         if ( empty( $user_structures ) ) {
@@ -266,16 +293,16 @@ class FairPlay_LMS_Course_Visibility_Service {
      * @return array Respuesta con cursos filtrados según visibilidad de estructura.
      */
     public function filter_user_courses_response( array $response ): array {
-        $user_id = get_current_user_id();
-        if ( 0 === $user_id ) {
-            return $response;
-        }
+        // Administrador: ve todo sin restricción.
         if ( current_user_can( 'manage_options' ) ) {
             return $response;
         }
+
         if ( empty( $response['courses'] ) || ! is_array( $response['courses'] ) ) {
             return $response;
         }
+
+        $user_id = get_current_user_id(); // 0 = no logueado / perfil público visitado por anónimo.
 
         $response['courses'] = array_values(
             array_filter(
@@ -285,11 +312,108 @@ class FairPlay_LMS_Course_Visibility_Service {
                     if ( $course_id <= 0 ) {
                         return false;
                     }
+
+                    // Caso 1: visitante no autenticado — solo cursos publicados.
+                    if ( 0 === $user_id ) {
+                        return 'publish' === get_post_status( $course_id );
+                    }
+
+                    // Caso 2: usuario autenticado — filtro completo (estado + estructuras).
                     return $this->can_user_see_course( $user_id, $course_id );
                 }
             )
         );
 
+        // Corregir metadata de paginación para que MasterStudy calcule las páginas
+        // en base al total de cursos VISIBLES, no al total bruto de matrículas.
+        // Sin esto MasterStudy muestra N páginas con cursos ocultos vacíos y
+        // los filtros de tab (Completado / En Progreso) no encuentran tarjetas
+        // que están en páginas todavía no renderizadas en el DOM.
+        if ( $user_id > 0 ) {
+            $filtered_total = $this->get_filtered_enrolled_count( $user_id );
+            $per_page       = $this->get_per_page_from_response( $response );
+
+            $response['total_posts'] = $filtered_total;
+            $response['total_pages'] = max( 1, (int) ceil( $filtered_total / $per_page ) );
+
+            // Algunos temas/versiones de MasterStudy usan sub-array 'pagination'.
+            if ( isset( $response['pagination'] ) && is_array( $response['pagination'] ) ) {
+                $response['pagination']['total_pages'] = $response['total_pages'];
+                $response['pagination']['total_posts'] = $response['total_posts'];
+            }
+        }
+
         return $response;
+    }
+
+    /**
+     * Cuenta cuántos cursos matriculados del usuario pasan el filtro de visibilidad.
+     * Se cachea por request (static) para no repetir la query cuando MasterStudy
+     * llama al hook en varias páginas dentro de la misma petición HTTP.
+     *
+     * @param int $user_id ID del usuario autenticado.
+     * @return int Total de cursos visibles entre todos los matriculados.
+     */
+    private function get_filtered_enrolled_count( int $user_id ): int {
+        static $cache = [];
+        if ( isset( $cache[ $user_id ] ) ) {
+            return $cache[ $user_id ];
+        }
+
+        global $wpdb;
+
+        $ms_table = null;
+        foreach ( [ $wpdb->prefix . 'stm_lms_user_courses', $wpdb->prefix . 'stm_lms_users' ] as $t ) {
+            if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t ) {
+                $ms_table = $t;
+                break;
+            }
+        }
+
+        $enrolled_ids = [];
+        if ( $ms_table ) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $rows = $wpdb->get_col(
+                $wpdb->prepare( "SELECT course_id FROM `{$ms_table}` WHERE user_id = %d", $user_id )
+            );
+            $enrolled_ids = array_map( 'intval', (array) $rows );
+        }
+
+        $count = 0;
+        foreach ( $enrolled_ids as $cid ) {
+            if ( $cid > 0 && $this->can_user_see_course( $user_id, $cid ) ) {
+                $count++;
+            }
+        }
+
+        $cache[ $user_id ] = $count;
+        return $count;
+    }
+
+    /**
+     * Detecta el número de cursos por página de la respuesta MasterStudy.
+     * Prueba varias claves conocidas; si no encuentra ninguna, infiere de
+     * total_posts/total_pages; fallback = 5 (valor por defecto de MasterStudy).
+     *
+     * @param array $response Respuesta del hook stm_lms_get_user_courses_filter.
+     * @return int Cursos por página.
+     */
+    private function get_per_page_from_response( array $response ): int {
+        foreach ( [ 'per_page', 'courses_per_page' ] as $key ) {
+            if ( ! empty( $response[ $key ] ) && (int) $response[ $key ] > 0 ) {
+                return (int) $response[ $key ];
+            }
+        }
+        if ( ! empty( $response['pagination']['per_page'] ) && (int) $response['pagination']['per_page'] > 0 ) {
+            return (int) $response['pagination']['per_page'];
+        }
+        // Inferir: total_posts / total_pages (antes del filtro → valor bruto de MasterStudy)
+        if ( ! empty( $response['total_posts'] ) && ! empty( $response['total_pages'] ) ) {
+            $inferred = (int) ceil( (int) $response['total_posts'] / (int) $response['total_pages'] );
+            if ( $inferred > 0 ) {
+                return $inferred;
+            }
+        }
+        return 5; // Default MasterStudy LMS
     }
 }
