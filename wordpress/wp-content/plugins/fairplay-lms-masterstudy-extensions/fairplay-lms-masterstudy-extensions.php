@@ -198,3 +198,143 @@ function fplms_custom_login_translations($translated, $text, $domain) {
 
     return $translated;
 }
+
+add_action( 'wp_enqueue_scripts', 'fplms_enqueue_masterstudy_builder_custom_styles', 999 );
+add_action( 'wp_head', 'fplms_masterstudy_builder_inline_style_fallback', 999 );
+add_action( 'wp_footer', 'fplms_masterstudy_builder_js_width_fallback', 999 );
+
+function fplms_is_masterstudy_builder_request() {
+    return is_user_logged_in();
+}
+
+function fplms_enqueue_masterstudy_builder_custom_styles() {
+    if ( ! fplms_is_masterstudy_builder_request() ) {
+        return;
+    }
+
+    $css_rel_path = 'assets/css/masterstudy-builder-custom.css';
+    $css_abs_path = FPLMS_PLUGIN_DIR . $css_rel_path;
+    $css_version  = file_exists( $css_abs_path ) ? (string) filemtime( $css_abs_path ) : '1.0.1';
+
+    $translation_js_rel_path = 'assets/js/quiz-type-translations.js';
+    $translation_js_abs_path = FPLMS_PLUGIN_DIR . $translation_js_rel_path;
+    if ( ! file_exists( $translation_js_abs_path ) ) {
+        $translation_js_rel_path = 'assets/js/quiz-type-translation.js';
+        $translation_js_abs_path = FPLMS_PLUGIN_DIR . $translation_js_rel_path;
+    }
+    $translation_js_version = file_exists( $translation_js_abs_path ) ? (string) filemtime( $translation_js_abs_path ) : '1.0.0';
+
+    $button_fix_js_rel_path = 'assets/js/masterstudy-builder-button-fix.js';
+    $button_fix_js_abs_path = FPLMS_PLUGIN_DIR . $button_fix_js_rel_path;
+    $button_fix_js_version  = file_exists( $button_fix_js_abs_path ) ? (string) filemtime( $button_fix_js_abs_path ) : '1.0.0';
+
+    wp_enqueue_style(
+        'fplms-masterstudy-builder-custom',
+        FPLMS_PLUGIN_URL . $css_rel_path,
+        [],
+        $css_version
+    );
+
+    if ( file_exists( $translation_js_abs_path ) ) {
+        wp_enqueue_script(
+            'fplms-quiz-type-translations',
+            FPLMS_PLUGIN_URL . $translation_js_rel_path,
+            [],
+            $translation_js_version,
+            true
+        );
+    }
+
+    if ( file_exists( $button_fix_js_abs_path ) ) {
+        wp_enqueue_script(
+            'fplms-masterstudy-builder-button-fix',
+            FPLMS_PLUGIN_URL . $button_fix_js_rel_path,
+            [],
+            $button_fix_js_version,
+            true
+        );
+    }
+}
+
+function fplms_masterstudy_builder_inline_style_fallback() {
+    if ( ! fplms_is_masterstudy_builder_request() ) {
+        return;
+    }
+
+    echo '<style id="fplms-masterstudy-builder-inline-fallback">'
+        . '.chakra-j6rous,button.chakra-button.chakra-j6rous,button.chakra-button.chakra-j6rous[disabled],button.chakra-button.chakra-j6rous[aria-disabled="true"]{width:52px!important;min-width:52px!important;max-width:52px!important;flex:0 0 52px!important;}'
+        . 'button.chakra-button.chakra-j6rous>div{width:100%!important;justify-content:center!important;}'
+        . 'button.chakra-button.chakra-j6rous p{display:inline-block!important;}'
+        . 'div[role="group"] input[placeholder*="nueva respuesta"]+button.chakra-button,div[role="group"] input[placeholder*="new answer"]+button.chakra-button,div[role="group"] input[placeholder*="respuesta"]+button.chakra-button{width:52px!important;min-width:52px!important;max-width:52px!important;flex:0 0 52px!important;}'
+        . 'div[role="group"] input[placeholder*="nueva respuesta"]+button.chakra-button>div,div[role="group"] input[placeholder*="new answer"]+button.chakra-button>div,div[role="group"] input[placeholder*="respuesta"]+button.chakra-button>div{width:100%!important;justify-content:center!important;}'
+        . '</style>';
+}
+
+function fplms_masterstudy_builder_js_width_fallback() {
+    if ( ! fplms_is_masterstudy_builder_request() ) {
+        return;
+    }
+
+    ?>
+    <script id="fplms-masterstudy-builder-js-fallback">
+    (function () {
+        function applyButtonFix(button) {
+            if (!button) {
+                return;
+            }
+
+            button.style.setProperty('width', '52px', 'important');
+            button.style.setProperty('min-width', '52px', 'important');
+            button.style.setProperty('max-width', '52px', 'important');
+            button.style.setProperty('flex', '0 0 52px', 'important');
+
+            var inner = button.querySelector(':scope > div');
+            if (inner) {
+                inner.style.setProperty('width', '100%', 'important');
+                inner.style.setProperty('justify-content', 'center', 'important');
+            }
+        }
+
+        function findTargetButtons() {
+            var selectors = [
+                'button.chakra-button.chakra-j6rous',
+                'div[role="group"] input[placeholder*="nueva respuesta"] + button.chakra-button',
+                'div[role="group"] input[placeholder*="new answer"] + button.chakra-button',
+                'div[role="group"] input[placeholder*="respuesta"] + button.chakra-button'
+            ];
+
+            var seen = new Set();
+            var results = [];
+
+            selectors.forEach(function (selector) {
+                document.querySelectorAll(selector).forEach(function (node) {
+                    if (!seen.has(node)) {
+                        seen.add(node);
+                        results.push(node);
+                    }
+                });
+            });
+
+            return results;
+        }
+
+        function runFix() {
+            findTargetButtons().forEach(applyButtonFix);
+        }
+
+        runFix();
+
+        var observer = new MutationObserver(function () {
+            runFix();
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class', 'style', 'disabled', 'aria-disabled']
+        });
+    })();
+    </script>
+    <?php
+}

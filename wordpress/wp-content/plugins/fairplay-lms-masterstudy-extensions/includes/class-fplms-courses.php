@@ -51,12 +51,12 @@ class FairPlay_LMS_Courses_Controller {
     }
 
     /**
-     * Oculta cursos con post_status = 'draft' a todos los roles excepto el administrador.
-     * Se aplica tanto en frontend como en backend (REST, shortcodes, etc.).
+     * Oculta cursos inactivos a usuarios no administradores.
+     * Regla: solo el creador del curso o un administrador puede ver borradores.
      */
     public function filter_inactive_courses( \WP_Query $query ): void {
         // Los administradores ven todo.
-        if ( current_user_can( 'administrator' ) ) {
+        if ( current_user_can( 'manage_options' ) ) {
             return;
         }
 
@@ -67,6 +67,15 @@ class FairPlay_LMS_Courses_Controller {
             || 'any' === $post_type
             || ( is_singular() && get_query_var( 'post_type' ) === FairPlay_LMS_Config::MS_PT_COURSE )
         ) {
+            $current_user_id = get_current_user_id();
+            $query_author    = (int) $query->get( 'author' );
+
+            // Si la consulta ya está limitada al autor actual, permitir sus borradores.
+            if ( $current_user_id > 0 && $query_author === $current_user_id ) {
+                $query->set( 'post_status', [ 'publish', 'draft' ] );
+                return;
+            }
+
             $query->set( 'post_status', [ 'publish' ] );
         }
     }

@@ -1,9 +1,6 @@
 /**
- * FairPlay LMS — Traduccion de tipos de pregunta (MasterStudy Quiz Builder)
- *
- * Funciona en el editor visual React de quizzes, incluyendo rutas:
- * - /user-account/edit-course/{course}/curriculum/sections/{section}/quiz/{quiz}
- * - /edit-quiz/{quiz}
+ * Alias file for compatibility.
+ * Keeps legacy plural filename while reusing singular implementation behavior.
  */
 (function () {
     'use strict';
@@ -96,7 +93,6 @@
         }).observe(document.body, { childList: true, subtree: true, characterData: true });
     }
 
-    // React-select suele re-renderizar menu al abrir/cerrar; reforzar traduccion.
     var tries = 0;
     var timer = setInterval(function () {
         runTranslations(document.body);

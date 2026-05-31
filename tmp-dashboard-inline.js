@@ -1,1218 +1,9 @@
-<?php
-if ( ! defined( 'ABSPATH' ) ) {
-    exit;
-}
-
-class FairPlay_LMS_Plugin {
-
-    /**
-     * Buffer de tiempos de quiz pendientes de insertar en _times.
-     * Se llena durante masterstudy_lms_user_quiz_added y se vuelca
-     * en el shutdown del request, después de que MasterStudy haya
-     * ejecutado stm_lms_get_delete_user_quiz_time().
-     *
-     * @var array<int, array<int, array{start: int, end: int}>>
-     */
-    private static $pending_quiz_times = [];
-
-    /**
-     * @var FairPlay_LMS_Structures_Controller
-     */
-    private $structures;
-
-    /**
-     * @var FairPlay_LMS_Progress_Service
-     */
-    private $progress;
-
-    /**
-     * @var FairPlay_LMS_Users_Controller
-     */
-    private $users;
-
-    /**
-     * @var FairPlay_LMS_Courses_Controller
-     */
-    private $courses;
-
-    /**
-     * @var FairPlay_LMS_Course_Visibility_Service
-     */
-    private $visibility;
-
-    /**
-     * @var FairPlay_LMS_Reports_Controller
-     */
-    private $reports;
-
-    /**
-     * @var FairPlay_LMS_Admin_Pages
-     */
-    private $pages;
-
-    /**
-     * @var FairPlay_LMS_Admin_Menu
-     */
-    private $menu;
-
-    /**
-     * @var FairPlay_LMS_Course_Display
-     */
-    private $course_display;
-
-    /**
-     * @var FairPlay_LMS_Audit_Logger
-     */
-    private $audit_logger;
-
-    /**
-     * @var FairPlay_LMS_Audit_Admin
-     */
-    private $audit_admin;
-
-    /**
-     * @var FairPlay_LMS_Onboarding
-     */
-    private $onboarding;
-
-    /**
-     * @var FairPlay_LMS_Quiz_Settings
-     */
-    private $quiz_settings;
-
-    /**
-     * @var FairPlay_LMS_Quiz_Availability
-     */
-    private $quiz_availability;
-
-    /**
-     * @var FairPlay_LMS_Quiz_Weights
-     */
-    private $quiz_weights;
-
-    /**
-     * @var FairPlay_LMS_Survey
-     */
-    private $survey;
-
-    /**
-     * @var FairPlay_LMS_Nav_Menu
-     */
-    private $nav_menu;
-
-    public function __construct() {
-
-        $this->structures     = new FairPlay_LMS_Structures_Controller();
-        $this->progress       = new FairPlay_LMS_Progress_Service();
-        $this->users          = new FairPlay_LMS_Users_Controller( $this->structures, $this->progress );
-        $this->courses        = new FairPlay_LMS_Courses_Controller( $this->structures );
-        $this->visibility     = new FairPlay_LMS_Course_Visibility_Service();
-        $this->reports        = new FairPlay_LMS_Reports_Controller( $this->users, $this->structures, $this->progress );
-        $this->pages          = new FairPlay_LMS_Admin_Pages();
-        $this->course_display = new FairPlay_LMS_Course_Display();
-        $this->audit_logger   = new FairPlay_LMS_Audit_Logger();
-        $this->audit_admin    = new FairPlay_LMS_Audit_Admin();
-        $this->onboarding     = new FairPlay_LMS_Onboarding();
-        $this->quiz_settings     = new FairPlay_LMS_Quiz_Settings();
-        $this->quiz_availability  = new FairPlay_LMS_Quiz_Availability();
-        $this->quiz_weights       = new FairPlay_LMS_Quiz_Weights();
-        $this->survey             = new FairPlay_LMS_Survey();
-        $this->nav_menu           = new FairPlay_LMS_Nav_Menu();
-        $this->menu           = new FairPlay_LMS_Admin_Menu(
-            $this->pages,
-            $this->structures,
-            $this->users,
-            $this->courses,
-            $this->reports
-        );
-
-        $this->register_hooks();
-    }
-
-    /**
-     * Registra todos los hooks del plugin.
-     */
-    private function register_hooks(): void {
-
-        // Menú admin
-        add_action( 'admin_menu', [ $this->menu, 'register' ] );
-
-        // Menú por rol (frontend: visitantes / estudiantes / instructores)
-        $this->nav_menu->register_hooks();
-
-        // Estructuras
-        add_action( 'init',       [ $this->structures, 'register_taxonomies' ] );
-        add_action( 'admin_init', [ $this->structures, 'handle_form' ] );
-        add_action( 'admin_init', [ $this->structures, 'handle_export_request' ] );
-
-        // Post types internos (módulos y temas)
-        add_action( 'init',       [ $this->courses, 'register_post_types' ] );
-
-        // Formularios de cursos / módulos / temas / profesor
-        add_action( 'admin_init', [ $this->courses, 'handle_form' ] );
-
-        // Ocultar cursos inactivos (draft) a roles no-administrador (frontend + REST + AJAX)
-        add_action( 'pre_get_posts', [ $this->courses, 'filter_inactive_courses' ] );
-
-        // Usuarios: vincular estructuras
-        add_action( 'show_user_profile',        [ $this->users, 'render_user_structures_fields' ] );
-        add_action( 'edit_user_profile',        [ $this->users, 'render_user_structures_fields' ] );
-        add_action( 'personal_options_update',  [ $this->users, 'save_user_structures_fields' ] );
-        add_action( 'edit_user_profile_update', [ $this->users, 'save_user_structures_fields' ] );
-
-        // Crear nuevo usuario desde panel FairPlay
-        add_action( 'admin_init', [ $this->users, 'handle_new_user_form' ] );
-
-        // Editar usuario desde panel FairPlay
-        add_action( 'admin_init', [ $this->users, 'handle_edit_user_form' ] );
-
-        // Acciones masivas de usuarios
-        add_action( 'admin_init', [ $this->users, 'handle_bulk_user_actions' ] );
-
-        // Matriz de privilegios
-        add_action( 'admin_init', [ $this->users, 'handle_caps_matrix_form' ] );
-
-        // Interceptar el AJAX de MasterStudy ANTES de que lo procese (prioridad 0)
-        // para bloquear usuarios inactivos con mensaje personalizado en el formato nativo de Vue.
-        add_action( 'wp_ajax_nopriv_stm_lms_login', [ $this->users, 'intercept_masterstudy_login' ], 0 );
-
-        // Bloquear inicio de sesión de usuarios inactivos (prioridad 30, después de validar credenciales)
-        add_filter( 'authenticate', [ $this->users, 'block_inactive_user_login' ], 30, 1 );
-
-        // AJAX (sin sesión): verificar si el último login falló por cuenta inactiva
-        add_action( 'wp_ajax_nopriv_fplms_check_blocked', [ $this->users, 'ajax_check_blocked' ] );
-
-        // Inyectar script de reemplazo de mensaje en formularios de login del frontend
-        add_action( 'wp_footer', [ $this, 'inject_inactive_login_message_script' ] );
-
-        // Bloquear selector de unidad de tiempo en el course builder (forzar minutos)
-        add_action( 'wp_footer', [ $this, 'inject_quiz_duration_unit_lock_script' ] );
-
-        // Traducir tipos de pregunta del quiz en el editor React del course builder
-        add_action( 'wp_footer', [ $this, 'inject_quiz_question_type_translation_script' ] );
-
-        // Ocultar pestaña "Ingresos" en /user-account/analytics/
-        add_action( 'wp_footer', [ $this, 'inject_analytics_revenue_hide_script' ] );
-
-        // Forzar duration_measure = minutes en cada guardado de quiz (server-side)
-        add_action( 'save_post_stm-quizzes', [ $this, 'enforce_quiz_duration_minutes' ], 20, 1 );
-
-        // Registrar último login de usuario
-        add_action( 'wp_login', [ $this->users, 'record_user_login' ], 10, 2 );
-
-        // Registrar actividad del usuario en cada carga de página
-        add_action( 'init', [ $this->users, 'record_user_activity' ] );
-
-        // Heartbeat para detectar usuarios activos
-        add_filter( 'heartbeat_received', [ $this->users, 'heartbeat_received' ], 10, 2 );
-
-        // Enqueue scripts para heartbeat
-        add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_heartbeat_script' ] );
-
-        // Exportaciones / informes
-        add_action( 'admin_init', [ $this->reports, 'handle_export' ] );
-        $this->reports->register_ajax_hooks();
-
-        // Auto-enrolar usuario en cursos al crear o actualizar su estructura
-        add_action( 'fplms_user_created',          [ $this->courses, 'auto_enroll_user_in_matching_courses' ] );
-        add_action( 'fplms_user_structures_saved', [ $this->courses, 'auto_enroll_user_in_matching_courses' ] );
-
-        // Filtrado de cursos matriculados por visibilidad de estructura (respuesta AJAX)
-        add_filter( 'stm_lms_get_user_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
-        add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
-
-        // Filtrado de cursos por estructura en pre_get_posts (frontend + admin instructores)
-        add_action( 'pre_get_posts', [ $this, 'filter_courses_pre_get_posts' ] );
-
-        // Auto-asignar estructura del instructor al crear un curso nuevo
-        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this, 'auto_assign_instructor_structure_to_course' ], 1, 3 );
-
-        // Restricción de categorías para instructores: solo pueden ver/usar las de su canal
-        add_action( 'pre_get_terms',                                    [ $this, 'restrict_course_categories_for_instructor' ] );
-        add_filter( 'rest_' . FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY . '_query', [ $this, 'restrict_categories_rest_query' ], 10, 2 );
-        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE,   [ $this, 'enforce_instructor_category_on_save' ], 8, 3 );
-
-        // Invalidar caché del dashboard de estudiante al completar o actualizar progreso de un curso
-        add_action( 'stm_lms_course_passed',                  [ $this, 'bust_student_dashboard_cache' ], 10, 2 );
-        add_action( 'stm_lms_lesson_passed',                  [ $this, 'bust_student_dashboard_cache' ], 10, 2 );
-        add_action( 'stm_lms_quiz_passed',                    [ $this, 'bust_student_dashboard_cache' ], 10, 2 );
-        add_action( 'stm_lms_user_course_progress_updated',   [ $this, 'bust_student_dashboard_cache' ], 10, 2 );
-        // Fallback: detectar actualizaciones a la tabla stm_lms_user_courses vía updated_user_meta
-        add_action( 'updated_user_meta',                      [ $this, 'bust_student_cache_on_meta' ], 10, 3 );
-
-        // Visualización de cursos en frontend (estructuras, ocultar ratings/estudiantes)
-        $this->course_display->register_hooks();
-
-        // AJAX: Cargar dinámicamente términos filtrados por ciudad
-        add_action( 'wp_ajax_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
-        add_action( 'wp_ajax_nopriv_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
-        
-        // AJAX: Cargar términos filtrados por padre (sistema jerárquico completo)
-        add_action( 'wp_ajax_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
-        
-        // Bitácora: Menú
-        add_action( 'admin_menu', [ $this->audit_admin, 'register_admin_menu' ] );
-        
-        // Bitácora: Acciones de usuario desde bitácora
-        add_action( 'admin_post_fplms_reactivate_user', [ $this->audit_admin, 'handle_user_reactivation' ] );
-        add_action( 'admin_post_fplms_delete_user_permanently', [ $this->audit_admin, 'handle_user_permanent_deletion' ] );
-        add_action( 'wp_ajax_nopriv_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
-        
-        // AJAX: Cargar estructuras en cascada para asignación a cursos
-        add_action( 'wp_ajax_fplms_get_cascade_structures', [ $this->structures, 'ajax_get_cascade_structures' ] );
-
-        // FEATURE 1: Meta Box de Estructuras en Creación de Cursos
-        add_action( 'add_meta_boxes', [ $this->courses, 'register_structures_meta_box' ] );
-        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'save_course_structures_on_publish' ], 10, 3 );
-        
-        // Forzar editor clásico para cursos (evitar Course Builder automático)
-        add_filter( 'use_block_editor_for_post_type', [ $this, 'force_classic_editor_for_courses' ], 10, 2 );
-        
-        // FEATURE 2: Sincronización Canales ↔ Categorías
-        add_action( 'created_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'sync_channel_to_category' ], 10, 3 );
-        add_action( 'edited_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'sync_channel_to_category' ], 10, 3 );
-        add_action( 'delete_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'unsync_channel_on_delete' ], 10, 4 );
-
-        // FEATURE 2b: Sincronización Sucursales/Cargos → Subcategorías (jerarquía nativa en Course Builder)
-        add_action( 'created_' . FairPlay_LMS_Config::TAX_BRANCH,       [ $this->structures, 'sync_branch_to_subcategory' ], 10, 3 );
-        add_action( 'edited_' . FairPlay_LMS_Config::TAX_BRANCH,        [ $this->structures, 'sync_branch_to_subcategory' ], 10, 3 );
-        add_action( 'delete_' . FairPlay_LMS_Config::TAX_BRANCH,        [ $this->structures, 'unsync_branch_on_delete' ], 10, 4 );
-        add_action( 'created_' . FairPlay_LMS_Config::TAX_ROLE,         [ $this->structures, 'sync_role_to_subcategory' ], 10, 3 );
-        add_action( 'edited_' . FairPlay_LMS_Config::TAX_ROLE,          [ $this->structures, 'sync_role_to_subcategory' ], 10, 3 );
-        add_action( 'delete_' . FairPlay_LMS_Config::TAX_ROLE,          [ $this->structures, 'unsync_role_on_delete' ], 10, 4 );
-        
-        // FEATURE 3: Detectar categorías asignadas en Course Builder y aplicar cascada
-        add_action( 'set_object_terms', [ $this->courses, 'sync_categories_to_structures' ], 10, 6 );
-        
-        // También sincronizar cuando se guarda un curso (para editor clásico y actualizaciones)
-        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'sync_course_categories_on_save' ], 20, 3 );
-        
-        // Auditoría: Registrar acciones en cursos
-        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'log_course_save' ], 30, 3 );
-        add_action( 'before_delete_post', [ $this->courses, 'log_course_deletion' ], 10, 1 );
-        
-        // Auditoría: Registrar acciones en lecciones
-        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_LESSON, [ $this->courses, 'log_lesson_save' ], 10, 3 );
-        add_action( 'before_delete_post', [ $this->courses, 'log_lesson_deletion' ], 10, 1 );
-        
-        // Auditoría: Registrar acciones en quizzes
-        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_QUIZ, [ $this->courses, 'log_quiz_save' ], 10, 3 );
-        add_action( 'before_delete_post', [ $this->courses, 'log_quiz_deletion' ], 10, 1 );
-        
-        // Auditoría: Registrar eliminación/reactivación de usuarios
-        add_action( 'delete_user', [ $this->users, 'handle_user_soft_delete' ], 5, 3 );
-        add_action( 'admin_post_fplms_reactivate_user', [ $this->audit_admin, 'handle_user_reactivation' ] );
-        add_action( 'admin_post_fplms_permanently_delete_user', [ $this->audit_admin, 'handle_user_permanent_deletion' ] );
-
-        // Onboarding: Términos y Condiciones + email de bienvenida
-        add_action( 'admin_menu',  [ $this->onboarding, 'register_admin_menu' ] );
-        add_action( 'admin_init',  [ $this->onboarding, 'handle_terms_form' ] );
-        add_action( 'init',        [ $this->onboarding, 'register_shortcode' ] );
-        add_action( 'wp_ajax_fplms_resend_welcome', [ $this->onboarding, 'ajax_resend_welcome_email' ] );
-        // Enviar email al crear usuario desde el panel FairPlay LMS
-        add_action( 'fplms_user_created', [ $this->onboarding, 'send_welcome_email' ], 10, 1 );
-
-        // Ajustes de Tests: menú + guardar configuración
-        add_action( 'admin_menu', [ $this->quiz_settings, 'register_admin_menu' ] );
-        add_action( 'admin_init', [ $this->quiz_settings, 'handle_save' ] );
-
-        // Vigencia de quizzes: metabox + enforcement REST
-        $this->quiz_availability->register_hooks();
-
-        // Ponderación de preguntas: metabox + score filter REST
-        $this->quiz_weights->register_hooks();
-
-        // Encuestas de Satisfacción
-        add_action( 'admin_init',                                              [ $this->survey, 'maybe_create_table' ], 1 );
-        add_action( 'admin_menu',                                              [ $this->survey, 'register_admin_menu' ] );
-        add_action( 'add_meta_boxes',                                          [ $this->survey, 'register_metabox' ] );
-        add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE,          [ $this->survey, 'save_metabox' ], 20, 3 );
-        add_action( 'wp_footer',                                               [ $this->survey, 'inject_survey_script' ] );
-        add_action( 'wp_ajax_fplms_check_survey',                              [ $this->survey, 'ajax_check_survey' ] );
-        add_action( 'wp_ajax_fplms_submit_survey',                             [ $this->survey, 'ajax_submit_survey' ] );
-        add_action( 'wp_ajax_fplms_toggle_survey',                             [ $this->survey, 'ajax_toggle_survey' ] );
-        add_action( 'wp_ajax_fplms_get_survey_settings',                       [ $this->survey, 'ajax_get_survey_settings' ] );
-        add_action( 'wp_ajax_fplms_save_survey_settings',                      [ $this->survey, 'ajax_save_survey_settings' ] );
-
-        // FEATURE: AJAX helpers para gestión de estructuras (usados desde panel admin de cursos)
-        add_action( 'wp_ajax_fplms_get_frontend_structures',       [ $this->courses, 'ajax_get_frontend_structures' ] );
-        add_action( 'wp_ajax_fplms_get_branch_roles',              [ $this->courses, 'ajax_get_branch_roles' ] );
-        add_action( 'wp_ajax_fplms_save_frontend_structures',      [ $this->courses, 'ajax_save_frontend_structures' ] );
-        add_action( 'wp_ajax_fplms_notify_enrolled_students',      [ $this->courses, 'ajax_notify_enrolled_students' ] );
-        add_action( 'wp_ajax_fplms_get_course_quizzes',            [ $this->courses, 'ajax_get_course_quizzes' ] );
-        add_action( 'wp_ajax_fplms_save_quiz_weights_frontend',    [ $this->courses, 'ajax_save_quiz_weights_frontend' ] );
-        add_action( 'wp_ajax_fplms_bulk_course_action',            [ $this->courses, 'ajax_bulk_course_action' ] );
-        // Cascade multiselect en meta box de estructuras del editor clásico
-        add_action( 'wp_ajax_fplms_cascade_structures',            [ $this->courses, 'ajax_cascade_structures' ] );
-        // Nota: render_frontend_structure_panel NO se usa (reemplazado por jerarquía de subcategorías nativa)
-
-        // Administradores tienen control total sobre todos los cursos MasterStudy,
-        // independientemente de quién sea el autor del curso.
-        add_filter( 'map_meta_cap', [ $this, 'grant_admin_full_course_control' ], 10, 4 );
-
-        // Panel /user-account/: estadísticas personalizadas por rol
-        add_action( 'wp_ajax_fplms_dashboard_stats',  [ $this, 'ajax_dashboard_stats' ] );
-        add_action( 'wp_footer',                       [ $this, 'inject_student_dashboard_script' ] );
-
-        // Captura de tiempos reales de quiz: MasterStudy borra el registro _times al enviar
-        // el intento, por lo que interceptamos el inicio (prioridad 1) y el guardado del
-        // resultado para escribir start_time/end_time reales antes de que se borren.
-        add_action( 'wp_ajax_stm_lms_start_quiz',       [ $this, 'capture_quiz_start_time' ], 1 );
-        add_action( 'masterstudy_lms_user_quiz_added',  [ $this, 'capture_quiz_end_time'   ], 5 );
-    }
-
-    /**
-     * Captura el momento de inicio de un quiz (prioridad 1, antes de que MasterStudy
-     * procese el request) y lo guarda en user_meta.
-     * MasterStudy escribe en _times solo el countdown (end_time = now + duration) y
-     * borra el registro al enviar el intento, por lo que necesitamos capturar el
-     * start_time real nosotros mismos.
-     */
-    public function capture_quiz_start_time(): void {
-        // MasterStudy puede enviar quiz_id por GET o POST según la versión/contexto
-        $quiz_id = isset( $_REQUEST['quiz_id'] ) ? (int) $_REQUEST['quiz_id'] : 0;
-        $user_id = get_current_user_id();
-        if ( ! $quiz_id || ! $user_id ) return;
-        // Almacenar timestamp de inicio; se sobreescribe en cada intento nuevo
-        update_user_meta( $user_id, 'fplms_quiz_start_' . $quiz_id, time() );
-    }
-
-    /**
-     * Al guardarse un intento de quiz, encola el par start/end para insertarlo en
-     * wp_stm_lms_user_quizzes_times durante el shutdown del request.
-     *
-     * NO se inserta aquí directamente porque MasterStudy llama a
-     * stm_lms_get_delete_user_quiz_time() JUSTO DESPUÉS de disparar esta acción,
-     * lo que borraría nuestra fila. El shutdown garantiza que el insert ocurre
-     * después de que MasterStudy ya terminó toda su limpieza.
-     *
-     * @param array $user_quiz Array del intento guardado: user_id, quiz_id, status, progress…
-     */
-    public function capture_quiz_end_time( array $user_quiz ): void {
-        $user_id = (int) ( $user_quiz['user_id'] ?? 0 );
-        $quiz_id = (int) ( $user_quiz['quiz_id'] ?? 0 );
-        if ( ! $user_id || ! $quiz_id ) return;
-
-        $start = (int) get_user_meta( $user_id, 'fplms_quiz_start_' . $quiz_id, true );
-        if ( ! $start ) return;
-
-        $end = time();
-        // Solo registrar si la duración es razonable (> 0s y < 24h)
-        if ( $end <= $start || ( $end - $start ) > 86400 ) {
-            delete_user_meta( $user_id, 'fplms_quiz_start_' . $quiz_id );
-            return;
-        }
-
-        // Encolar para insertar en shutdown (después del delete de MasterStudy)
-        self::$pending_quiz_times[ $user_id ][ $quiz_id ] = [
-            'start' => $start,
-            'end'   => $end,
-        ];
-
-        // Limpiar el meta de inicio ahora que ya tenemos los datos
-        delete_user_meta( $user_id, 'fplms_quiz_start_' . $quiz_id );
-
-        // Registrar el shutdown una sola vez (el add_action es idempotente si usamos el mismo callback)
-        add_action( 'shutdown', [ $this, 'flush_pending_quiz_times' ] );
-    }
-
-    /**
-     * Vuelca los tiempos de quiz pendientes en wp_stm_lms_user_quizzes_times.
-     * Se ejecuta en el shutdown del request, después de que MasterStudy haya
-     * eliminado sus propios registros temporales.
-     */
-    public function flush_pending_quiz_times(): void {
-        if ( empty( self::$pending_quiz_times ) ) return;
-
-        global $wpdb;
-        $times_table = $wpdb->prefix . 'stm_lms_user_quizzes_times';
-        // Verificar que la tabla existe (una sola vez)
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $times_table ) ) !== $times_table ) {
-            return;
-        }
-
-        foreach ( self::$pending_quiz_times as $user_id => $quizzes ) {
-            foreach ( $quizzes as $quiz_id => $timing ) {
-                // Eliminar cualquier fila residual para este par (MasterStudy puede haber
-                // dejado alguna si el quiz tenía duración configurada y falló a medias)
-                $wpdb->delete(
-                    $times_table,
-                    [ 'user_id' => $user_id, 'quiz_id' => $quiz_id ],
-                    [ '%d', '%d' ]
-                );
-                $wpdb->insert(
-                    $times_table,
-                    [
-                        'user_id'    => $user_id,
-                        'quiz_id'    => $quiz_id,
-                        'start_time' => $timing['start'],
-                        'end_time'   => $timing['end'],
-                    ],
-                    [ '%d', '%d', '%d', '%d' ]
-                );
-            }
-        }
-
-        // Limpiar el buffer
-        self::$pending_quiz_times = [];
-    }
-
-    /**
-     * Permite a usuarios con rol administrator editar/eliminar/publicar cualquier
-     * curso de MasterStudy aunque no sean el autor del post.
-     *
-     * @param array  $caps    Capacidades mapeadas.
-     * @param string $cap     Capacidad solicitada.
-     * @param int    $user_id ID del usuario.
-     * @param array  $args    Argumentos adicionales (normalmente [post_id]).
-     * @return array
-     */
-    public function grant_admin_full_course_control( array $caps, string $cap, int $user_id, $args ): array {
-        $args = is_array( $args ) ? $args : [];
-        // Solo actuar sobre operaciones de curso
-        $course_caps = [ 'edit_post', 'delete_post', 'publish_post', 'read_post' ];
-        if ( ! in_array( $cap, $course_caps, true ) ) {
-            return $caps;
-        }
-
-        // Solo si hay un post_id y el usuario es administrador
-        $post_id = ! empty( $args[0] ) ? (int) $args[0] : 0;
-        if ( ! $post_id || ! user_can( $user_id, 'administrator' ) ) {
-            return $caps;
-        }
-
-        // Solo para el tipo de post de cursos MasterStudy
-        if ( get_post_type( $post_id ) !== FairPlay_LMS_Config::MS_PT_COURSE ) {
-            return $caps;
-        }
-
-        // Eliminar cualquier restricción basada en autoría — el admin puede todo
-        return array_diff( $caps, [ 'do_not_allow' ] );
-    }
-
-    /**
-     * Inyecta un MutationObserver que, cuando Vue muestra cualquier mensaje de error
-     * de login, consulta via AJAX si el fallo fue por cuenta inactiva y reemplaza el
-     * texto. Usa transients (BD) en lugar de cookies para evitar el stripping de
-     * headers por proxies/CDN/caching plugins.
-     */
-    public function inject_inactive_login_message_script(): void {
-        if ( is_user_logged_in() ) {
-            return;
-        }
-        $ajax_url = esc_js( admin_url( 'admin-ajax.php' ) );
-        ?>
-        <script>
-        (function() {
-            var MSG      = 'Usuario no habilitado, cont\u00e1ctate con el administrador del sitio.';
-            var AJAX_URL = '<?php echo $ajax_url; ?>';
-
-            // Selector exacto confirmado por inspecci\u00f3n DOM (MasterStudy 3.x):
-            // <span data-error-id="wrong_password"
-            //       class="masterstudy-authorization__form-field-error">Wrong password</span>
-            var ERROR_SELS = [
-                '.masterstudy-authorization__form-field-error',
-                '[data-error-id]',
-                '.stm-lms-login__error',
-                '.stm-lms-form__error'
-            ];
-
-            // Busca el campo de email/usuario dentro del formulario de login
-            function getLoginEmail() {
-                var form = document.querySelector(
-                    '.masterstudy-authorization__form, form[class*="authorization"], form[class*="login"]'
-                );
-                var root = form || document;
-                var el = root.querySelector(
-                    'input[type="email"], input[name="user_login"], input[name="log"], ' +
-                    'input[name="email"], input[type="text"]'
-                );
-                return el ? el.value.trim() : '';
-            }
-
-            // ¿Algún selector de error tiene texto visible ahora?
-            function hasVisibleError() {
-                return ERROR_SELS.some(function(s) {
-                    var els = document.querySelectorAll(s);
-                    for (var i = 0; i < els.length; i++) {
-                        if (els[i].textContent.trim()) return true;
-                    }
-                    return false;
-                });
-            }
-
-            // Reemplaza el texto en todos los elementos de error visibles
-            function replaceErrorText() {
-                ERROR_SELS.forEach(function(s) {
-                    document.querySelectorAll(s).forEach(function(el) {
-                        if (el.textContent.trim()) el.textContent = MSG;
-                    });
-                });
-                clearInterval(pollTimer);
-                observer.disconnect();
-            }
-
-            var checking = false;
-
-            function checkAndReplace() {
-                if (checking) return;
-                if (!hasVisibleError()) return;
-                checking = true;
-                var fd = new FormData();
-                fd.append('action', 'fplms_check_blocked');
-                fetch(AJAX_URL, { method: 'POST', body: fd })
-                    .then(function(r) { return r.json(); })
-                    .then(function(data) {
-                        if (data && data.success && data.data && data.data.blocked) {
-                            replaceErrorText();
-                        }
-                    })
-                    .catch(function() {})
-                setTimeout(function() { checking = false; }, 2000);
-            }
-
-            // Polling: dispara checkAndReplace cada 600 ms hasta que reemplace o pase 30 s
-            var pollTimer = setInterval(checkAndReplace, 600);
-            setTimeout(function() { clearInterval(pollTimer); }, 30000);
-
-            // MutationObserver simplificado: cualquier mutación DOM puede ser relevante
-            var observer = new MutationObserver(function() {
-                checkAndReplace();
-            });
-
-            function startObserver() {
-                observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-            }
-
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', startObserver);
-            } else {
-                startObserver();
-            }
-        })();
-        </script>
-        <?php
-    }
-
-    /**
-     * Fuerza que la unidad de tiempo del quiz sea siempre "minutes" en el servidor.
-     * Se ejecuta DESPUÉS de que MasterStudy guarda los meta (prioridad 20).
-     */
-    public function enforce_quiz_duration_minutes( int $post_id ): void {
-        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) return;
-        if ( ! current_user_can( 'edit_post', $post_id ) ) return;
-        update_post_meta( $post_id, 'duration_measure', 'minutes' );
-    }
-
-    /**
-     * Oculta el selector "Unidad de tiempo" en el course builder de MasterStudy
-     * usando una regla CSS con :has() en el <head> — React no puede sobreescribir
-     * un <style> del documento, a diferencia de los inline styles en nodos del SPA.
-     */
-    public function inject_quiz_duration_unit_lock_script(): void {
-        if ( ! is_user_logged_in() || is_admin() ) {
-            return;
-        }
-        ?>
-        <style id="fplms-quiz-unit-lock">
-        /* Ocultar campo "Unidad de tiempo" en ajustes de quiz.
-           El selector :has() vive en el cascade CSS — React no puede borrarlo. */
-        [role="group"]:has(input[name="duration_measure"]) {
-            display: none !important;
-        }
-        </style>
-        <script id="fplms-quiz-unit-lock-js">
-        (function () {
-            'use strict';
-            /* Oculta el grupo [role="group"] que contiene el input oculto
-               duration_measure. Se usa setProperty con !important para que
-               sobreviva cualquier inline-style que React pueda inyectar.
-               NO se despacha ningún evento, así no se provoca re-render. */
-            function hideDurationField() {
-                var inputs = document.querySelectorAll('input[name="duration_measure"]');
-                for (var i = 0; i < inputs.length; i++) {
-                    var group = inputs[i].closest('[role="group"]');
-                    if (group) {
-                        group.style.setProperty('display', 'none', 'important');
-                    }
-                }
-            }
-            hideDurationField();
-            if (window.MutationObserver) {
-                new MutationObserver(function (mutations) {
-                    for (var i = 0; i < mutations.length; i++) {
-                        if (mutations[i].addedNodes.length > 0) {
-                            hideDurationField();
-                            break;
-                        }
-                    }
-                }).observe(document.body, { childList: true, subtree: true });
-            }
-        })();
-        </script>
-        <?php
-    }
-
-    /**
-     * Traduce etiquetas de tipos de pregunta en el editor visual de quizzes
-     * (React Select de MasterStudy) en la ruta /user-account/edit-course/.../quiz/...
-     */
-    public function inject_quiz_question_type_translation_script(): void {
-        if ( ! is_user_logged_in() || is_admin() ) {
-            return;
-        }
-        ?>
-        <script id="fplms-quiz-question-type-i18n-js">
-        (function () {
+﻿        (function () {
             'use strict';
 
-            var path = (window.location && window.location.pathname) ? window.location.pathname : '';
-            if (path.indexOf('/user-account/edit-course/') === -1 || path.indexOf('/quiz/') === -1) {
-                return;
-            }
-
-            var translations = {
-                'true-false': 'Verdadero/Falso',
-                'true/false': 'Verdadero/Falso',
-                'matching': 'Coincidencia',
-                'image matching': 'Coincidencia de imágenes'
-            };
-
-            function normalizeLabel(value) {
-                return String(value || '')
-                    .replace(/[‐‑‒–—−]/g, '-')
-                    .replace(/\s+/g, ' ')
-                    .trim()
-                    .toLowerCase();
-            }
-
-            function translateTextNode(node) {
-                if (!node || node.nodeType !== 3) { return; }
-                var raw = node.nodeValue;
-                if (!raw) { return; }
-
-                var leading = raw.match(/^\s*/);
-                var trailing = raw.match(/\s*$/);
-                var core = raw.trim();
-                if (!core) { return; }
-
-                var translated = translations[normalizeLabel(core)];
-                if (!translated) { return; }
-
-                node.nodeValue = (leading ? leading[0] : '') + translated + (trailing ? trailing[0] : '');
-            }
-
-            function applyTranslations(root) {
-                var scope = root && root.nodeType ? root : document.body;
-                if (!scope || typeof document.createTreeWalker !== 'function') { return; }
-
-                if (scope.nodeType === 3) {
-                    translateTextNode(scope);
-                    return;
-                }
-
-                var walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, null, false);
-                var current;
-                while ((current = walker.nextNode())) {
-                    translateTextNode(current);
-                }
-            }
-
-            applyTranslations(document.body);
-
-            if (window.MutationObserver) {
-                new MutationObserver(function (mutations) {
-                    for (var i = 0; i < mutations.length; i++) {
-                        if (mutations[i].addedNodes && mutations[i].addedNodes.length) {
-                            for (var j = 0; j < mutations[i].addedNodes.length; j++) {
-                                var added = mutations[i].addedNodes[j];
-                                if (added && (added.nodeType === 1 || added.nodeType === 3)) {
-                                    applyTranslations(added);
-                                }
-                            }
-                        }
-                        if (mutations[i].type === 'characterData' && mutations[i].target) {
-                            applyTranslations(mutations[i].target);
-                        }
-                    }
-                }).observe(document.body, { childList: true, subtree: true, characterData: true });
-            }
-
-            var tries = 0;
-            var timer = setInterval(function () {
-                applyTranslations(document.body);
-                tries++;
-                if (tries >= 40) {
-                    clearInterval(timer);
-                }
-            }, 250);
-
-            document.addEventListener('click', function () {
-                setTimeout(function () { applyTranslations(document.body); }, 0);
-            }, true);
-        })();
-        </script>
-        <?php
-    }
-
-    /**
-     * Encola el script del heartbeat para rastrear actividad de usuarios.
-     */
-    public function enqueue_heartbeat_script(): void {
-        if ( ! is_user_logged_in() ) {
-            return;
-        }
-
-        // Asegurar que el heartbeat está habilitado
-        wp_enqueue_script( 'heartbeat' );
-
-        // Script inline para enviar señal de actividad
-        $inline_script = "
-        jQuery(document).ready(function($) {
-            // Enviar señal de actividad cada minuto mediante heartbeat
-            $(document).on('heartbeat-send', function(e, data) {
-                data.fplms_user_active = true;
-            });
-
-            // Manejar respuesta del servidor
-            $(document).on('heartbeat-tick', function(e, data) {
-                if (data.fplms_activity_recorded) {
-                    console.log('Actividad registrada');
-                }
-            });
-        });
-        ";
-        wp_add_inline_script( 'heartbeat', $inline_script );
-    }
-
-    /**
-     * Filtra la query de cursos para mostrar solo los visibles según estructura.
-     * Hook de compatibilidad con MasterStudy.
-     */
-    public function filter_course_query( $query_args ): array {
-
-        if ( ! is_array( $query_args ) ) {
-            return $query_args;
-        }
-
-        $user_id = get_current_user_id();
-
-        if ( 0 === $user_id || current_user_can( 'manage_options' ) ) {
-            return $query_args;
-        }
-
-        // Obtener cursos visibles para el usuario
-        $visible_course_ids = $this->visibility->get_visible_courses_for_user( $user_id );
-
-        if ( ! empty( $visible_course_ids ) ) {
-            $query_args['post__in'] = $visible_course_ids;
-        } else {
-            // Si no hay cursos visibles, retornar query que no devuelva resultados
-            $query_args['post__in'] = [ 0 ];
-        }
-
-        return $query_args;
-    }
-
-    /**
-     * Filtra cursos por estructura del usuario vía pre_get_posts.
-     * - Frontend: aplica a todos los usuarios no administradores.
-     * - Admin: aplica solo a instructores.
-     */
-    public function filter_courses_pre_get_posts( WP_Query $query ): void {
-
-        if ( ! $query->is_main_query() ) {
-            return;
-        }
-
-        if ( $query->get( 'post_type' ) !== FairPlay_LMS_Config::MS_PT_COURSE ) {
-            return;
-        }
-
-        $user_id = get_current_user_id();
-
-        if ( 0 === $user_id || current_user_can( 'manage_options' ) ) {
-            return;
-        }
-
-        // En admin, solo aplicar a instructores
-        if ( is_admin() ) {
-            $user = wp_get_current_user();
-            if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $user->roles, true ) ) {
-                return;
-            }
-        }
-
-        $visible = $this->visibility->get_visible_courses_for_user( $user_id );
-
-        // Si MasterStudy ya puso un post__in (cursos matriculados del usuario),
-        // hacemos la intersección para no sobreescribir su filtro de matrícula.
-        $existing = array_filter( (array) $query->get( 'post__in' ) );
-        if ( ! empty( $existing ) ) {
-            $visible = array_values( array_intersect( $existing, $visible ) );
-        }
-
-        $query->set( 'post__in', ! empty( $visible ) ? $visible : [ 0 ] );
-    }
-
-    /**
-     * Auto-asigna la estructura del instructor al crear un nuevo curso.
-     * Solo actúa en la creación (no en actualizaciones) y solo para instructores.
-     *
-     * @param int     $post_id ID del post.
-     * @param WP_Post $post    Objeto post.
-     * @param bool    $update  True si es una actualización, false si es creación.
-     */
-    public function auto_assign_instructor_structure_to_course( int $post_id, WP_Post $post, bool $update ): void {
-
-        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
-            return;
-        }
-
-        if ( $update ) {
-            return; // Solo en creación
-        }
-
-        if ( current_user_can( 'manage_options' ) ) {
-            return; // Los administradores asignan estructuras manualmente
-        }
-
-        $current_user = wp_get_current_user();
-
-        if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $current_user->roles, true ) ) {
-            return;
-        }
-
-        $meta_map = [
-            FairPlay_LMS_Config::META_COURSE_CITIES    => FairPlay_LMS_Config::USER_META_CITY,
-            FairPlay_LMS_Config::META_COURSE_COMPANIES => FairPlay_LMS_Config::USER_META_COMPANY,
-            FairPlay_LMS_Config::META_COURSE_CHANNELS  => FairPlay_LMS_Config::USER_META_CHANNEL,
-            FairPlay_LMS_Config::META_COURSE_BRANCHES  => FairPlay_LMS_Config::USER_META_BRANCH,
-        ];
-
-        foreach ( $meta_map as $course_meta => $user_meta ) {
-            $val = (int) get_user_meta( $current_user->ID, $user_meta, true );
-            if ( $val > 0 ) {
-                update_post_meta( $post_id, $course_meta, [ $val ] );
-            }
-        }
-    }
-
-    /**
-     * Filtra la REST query de la taxonomía de categorías de cursos para instructores.
-     * Aplica la misma restricción que restrict_course_categories_for_instructor pero
-     * sobre el endpoint REST `/wp-json/wp/v2/stm_lms_course_taxonomy` que usa el
-     * Vue Course Builder del frontend.
-     *
-     * @param array           $args    Argumentos preparados para WP_Term_Query.
-     * @param WP_REST_Request $request La petición REST.
-     * @return array
-     */
-    public function restrict_categories_rest_query( array $args, WP_REST_Request $request ): array {
-        if ( current_user_can( 'manage_options' ) ) {
-            return $args;
-        }
-
-        $user = wp_get_current_user();
-        if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $user->roles, true ) ) {
-            return $args;
-        }
-
-        $channel_id = (int) get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_CHANNEL, true );
-        if ( ! $channel_id ) {
-            $args['include'] = [ 0 ];
-            return $args;
-        }
-
-        $root_cat_id = (int) get_term_meta( $channel_id, 'fplms_linked_category_id', true );
-        if ( ! $root_cat_id ) {
-            $args['include'] = [ 0 ];
-            return $args;
-        }
-
-        $allowed  = [ $root_cat_id ];
-        $children = get_term_children( $root_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
-        if ( ! is_wp_error( $children ) ) {
-            $allowed = array_merge( $allowed, $children );
-        }
-
-        $args['include'] = $allowed;
-        return $args;
-    }
-
-    /**
-     * Restringe la lista de categorías de cursos (stm_lms_course_taxonomy) para que
-     * los instructores solo vean las categorías vinculadas a su canal y sus subcategorías.
-     *
-     * Se activa via el hook 'pre_get_terms'.
-     *
-     * @param WP_Term_Query $query Objeto de consulta de términos.
-     */
-    public function restrict_course_categories_for_instructor( WP_Term_Query $query ): void {
-        if ( current_user_can( 'manage_options' ) ) {
-            return;
-        }
-
-        $taxonomies = (array) ( $query->query_vars['taxonomy'] ?? [] );
-        if ( ! in_array( FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY, $taxonomies, true ) ) {
-            return;
-        }
-
-        $user = wp_get_current_user();
-        if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $user->roles, true ) ) {
-            return;
-        }
-
-        $channel_id = (int) get_user_meta( $user->ID, FairPlay_LMS_Config::USER_META_CHANNEL, true );
-        if ( ! $channel_id ) {
-            // Sin canal asignado: no mostrar ninguna categoría
-            $query->query_vars['include'] = [ 0 ];
-            return;
-        }
-
-        $root_cat_id = (int) get_term_meta( $channel_id, 'fplms_linked_category_id', true );
-        if ( ! $root_cat_id ) {
-            $query->query_vars['include'] = [ 0 ];
-            return;
-        }
-
-        $allowed  = [ $root_cat_id ];
-        $children = get_term_children( $root_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
-        if ( ! is_wp_error( $children ) ) {
-            $allowed = array_merge( $allowed, $children );
-        }
-
-        $query->query_vars['include'] = $allowed;
-    }
-
-    /**
-     * Al guardar un curso, si el usuario es instructor y ha asignado una categoría
-     * que no pertenece a su canal, la reemplaza por la categoría raíz de su canal.
-     *
-     * Es la contraparte backend de restrict_course_categories_for_instructor.
-     *
-     * @param int     $post_id ID del post.
-     * @param WP_Post $post    Objeto post.
-     * @param bool    $update  True si es actualización.
-     */
-    public function enforce_instructor_category_on_save( int $post_id, WP_Post $post, bool $update ): void {
-        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
-            return;
-        }
-        if ( current_user_can( 'manage_options' ) ) {
-            return;
-        }
-
-        $current_user = wp_get_current_user();
-        if ( ! in_array( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR, (array) $current_user->roles, true ) ) {
-            return;
-        }
-
-        $channel_id = (int) get_user_meta( $current_user->ID, FairPlay_LMS_Config::USER_META_CHANNEL, true );
-        if ( ! $channel_id ) {
-            return;
-        }
-
-        $root_cat_id = (int) get_term_meta( $channel_id, 'fplms_linked_category_id', true );
-        if ( ! $root_cat_id ) {
-            return;
-        }
-
-        // Categorías permitidas: la raíz del canal + todas sus subcategorías
-        $allowed  = [ $root_cat_id ];
-        $children = get_term_children( $root_cat_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
-        if ( ! is_wp_error( $children ) ) {
-            $allowed = array_merge( $allowed, $children );
-        }
-
-        $assigned = wp_get_post_terms( $post_id, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY, [ 'fields' => 'ids' ] );
-        if ( is_wp_error( $assigned ) || empty( $assigned ) ) {
-            return;
-        }
-
-        $valid = array_values(
-            array_filter( $assigned, fn( $t ) => in_array( (int) $t, $allowed, true ) )
-        );
-
-        if ( count( $valid ) === count( $assigned ) ) {
-            return; // Todo correcto, no hay nada que corregir
-        }
-
-        // Hay términos no permitidos: mantener solo los válidos, o forzar la raíz
-        if ( empty( $valid ) ) {
-            $valid = [ $root_cat_id ];
-        }
-
-        // Evitar recursar en sync_categories_to_structures mientras corregimos
-        remove_action( 'set_object_terms', [ $this->courses, 'sync_categories_to_structures' ], 10 );
-        wp_set_post_terms( $post_id, $valid, FairPlay_LMS_Config::MS_TAX_COURSE_CATEGORY );
-        add_action( 'set_object_terms', [ $this->courses, 'sync_categories_to_structures' ], 10, 6 );
-    }
-
-    /**
-     * Obtener instancia del controlador de usuarios.
-     * 
-     * @return FairPlay_LMS_Users_Controller
-     */
-    public function get_users_controller(): FairPlay_LMS_Users_Controller {
-        return $this->users;
-    }
-    
-    /**
-     * Fuerza el editor clásico para cursos de MasterStudy.
-     * Esto evita que el Course Builder se abra automáticamente
-     * y permite usar la meta box de estructuras.
-     * 
-     * @param bool   $use_block_editor Si se debe usar el editor de bloques
-     * @param string $post_type        Tipo de post
-     * @return bool
-     */
-    public function force_classic_editor_for_courses( $use_block_editor, $post_type ): bool {
-        
-        // Forzar editor clásico para cursos de MasterStudy
-        if ( FairPlay_LMS_Config::MS_PT_COURSE === $post_type ) {
-            return false;
-        }
-        
-        return $use_block_editor;
-    }
-
-    /**
-     * Invalida la caché del dashboard de estudiante cuando MasterStudy dispara un hook
-     * de progreso/completado. Firma: ( $user_id, $course_id ) o solo ( $user_id ).
-     */
-    public function bust_student_dashboard_cache( $user_id = 0, $course_id = 0 ): void {
-        $uid = (int) $user_id;
-        if ( $uid > 0 ) {
-            delete_transient( 'fplms_sdash_v9_' . $uid );
-        }
-    }
-
-    /**
-     * Fallback: detecta actualizaciones a usermeta de progreso de MasterStudy
-     * (stm_lms_course_NNN o stm_lms_course_progress_NNN) y borra el transient del usuario.
-     */
-    public function bust_student_cache_on_meta( $meta_id, $user_id, $meta_key ): void {
-        if ( preg_match( '/^stm_lms_course(?:_progress)?_\d+$/', (string) $meta_key ) ) {
-            delete_transient( 'fplms_sdash_v9_' . (int) $user_id );
-        }
-    }
-
-    /**
-     * Endpoint AJAX: devuelve estadísticas del panel /user-account/ según el tipo solicitado.
-     * type=student  → FairPlay_LMS_Progress_Service::get_student_dashboard_stats()
-     * type=instructor → FairPlay_LMS_Progress_Service::get_instructor_dashboard_stats()
-     */
-    public function ajax_dashboard_stats(): void {
-        if ( ! is_user_logged_in() ) {
-            wp_send_json_error( 'not_logged_in', 403 );
-        }
-
-        check_ajax_referer( 'fplms_dashboard_stats', 'nonce' );
-
-        $type    = isset( $_POST['type'] ) ? sanitize_key( $_POST['type'] ) : 'student';
-        $user_id = get_current_user_id();
-
-        // Modo debug: devuelve los meta de los cursos completados (solo admin)
-        if ( 'debug_hours' === $type && current_user_can( 'manage_options' ) ) {
-            global $wpdb;
-            $stats   = $this->progress->get_student_dashboard_stats( $user_id );
-            // Forzar recálculo limpio sin transient
-            delete_transient( 'fplms_sdash_v9_' . $user_id );
-            $stats2  = $this->progress->get_student_dashboard_stats( $user_id );
-            // Obtener IDs de cursos completados directamente
-            $ms_table = null;
-            foreach ( [ $wpdb->prefix . 'stm_lms_user_courses', $wpdb->prefix . 'stm_lms_users' ] as $t ) {
-                if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t ) {
-                    $ms_table = $t;
-                    break;
-                }
-            }
-            $completed_ids = [];
-            if ( $ms_table ) {
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $rows = $wpdb->get_results( $wpdb->prepare(
-                    "SELECT course_id, progress_percent, status FROM `{$ms_table}` WHERE user_id = %d",
-                    $user_id
-                ) );
-                foreach ( $rows as $r ) {
-                    if ( (float) $r->progress_percent >= 99.9 || strtolower( $r->status ) === 'completed' ) {
-                        $completed_ids[] = (int) $r->course_id;
-                    }
-                }
-            }
-            $meta_dump = [];
-            // Solo dump completo del primer curso para no saturar la respuesta
-            $first_cid = ! empty( $completed_ids ) ? $completed_ids[0] : 0;
-            if ( $first_cid ) {
-                $all_meta = $wpdb->get_results( $wpdb->prepare(
-                    "SELECT meta_key, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d ORDER BY meta_key",
-                    $first_cid
-                ) );
-                $meta_dump[ $first_cid ] = [
-                    'title' => get_the_title( $first_cid ),
-                    'all_metas' => $all_meta,
-                ];
-            }
-            // Además: buscar en tablas custom de MasterStudy
-            $custom_tables = $wpdb->get_results(
-                "SHOW TABLES LIKE '%stm_lms%'"
-            );
-            $stm_tables = array_map( function($r) { return array_values( (array) $r )[0]; }, $custom_tables );
-            wp_send_json_success( [
-                'cached_stats'   => $stats,
-                'fresh_stats'    => $stats2,
-                'completed_ids'  => $completed_ids,
-                'meta_dump'      => $meta_dump,
-                'ms_table'       => $ms_table,
-                'stm_tables'     => $stm_tables,
-            ] );
-        }
-
-        if ( 'instructor' === $type ) {
-            $user_roles = (array) wp_get_current_user()->roles;
-            $is_instructor = in_array( 'stm_lms_instructor', $user_roles, true )
-                          || in_array( 'administrator', $user_roles, true )
-                          || current_user_can( 'manage_options' );
-            if ( ! $is_instructor ) {
-                wp_send_json_error( 'forbidden', 403 );
-            }
-            wp_send_json_success( $this->progress->get_instructor_dashboard_stats( $user_id ) );
-        } else {
-            wp_send_json_success( $this->progress->get_student_dashboard_stats( $user_id ) );
-        }
-    }
-
-    /**
-     * Inyecta en wp_footer el script que reemplaza los bloques de estadísticas del panel
-     * /user-account/ de MasterStudy con métricas relevantes para cada rol:
-     * - Elemento .masterstudy-enrolled-courses-sorting  → vista estudiante (5 métricas)
-     * - Elemento .masterstudy-analytics-short-report-page-stats__wrapper → vista instructor
-     */
-    public function inject_student_dashboard_script(): void {
-        // Solo ejecutar en páginas del frontend con el usuario logueado
-        if ( is_admin() || ! is_user_logged_in() ) {
-            return;
-        }
-
-        // Limitar a la URL del panel de cuenta
-        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
-        if ( false === strpos( $request_uri, '/user-account' ) ) {
-            return;
-        }
-
-        $ajax_url      = admin_url( 'admin-ajax.php' );
-        $nonce         = wp_create_nonce( 'fplms_dashboard_stats' );
-        $struct_nonce  = wp_create_nonce( 'fplms_frontend_structures' );
-        ?>
-        <script id="fplms-dashboard-stats-script">
-        (function () {
-            'use strict';
-
-            var AJAX_URL      = <?php echo wp_json_encode( $ajax_url ); ?>;
-            var NONCE         = <?php echo wp_json_encode( $nonce ); ?>;
-            var STRUCT_NONCE  = <?php echo wp_json_encode( $struct_nonce ); ?>;
+            var AJAX_URL      = '';
+            var NONCE         = '';
+            var STRUCT_NONCE  = '';
             var renderedStudent       = false;
             var renderedInstructor    = false;
             var searchInjected        = false;
@@ -1221,12 +12,12 @@ class FairPlay_LMS_Plugin {
             var instrCustomFilter          = null;
             var studentCardObsSetup        = false;
             var instrCardObsSetup          = false;
-            var programmaticStudentClick   = false; // bandera para click programático en tab "all"
+            var programmaticStudentClick   = false; // bandera para click programÃ¡tico en tab "all"
             var programmaticInstrClick     = false;
             var instrCoursesData           = null;  // datos del instructor (courses_list, etc.)
             var studentCalData             = null;  // datos del estudiante para calendario
 
-            /* ── Helpers de filtrado por ID de curso ────────────────────────── */
+            /* â”€â”€ Helpers de filtrado por ID de curso â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
             function extractCourseIdFromCard( card ) {
                 if ( card.dataset && card.dataset.fplmsCid ) return parseInt( card.dataset.fplmsCid );
@@ -1234,17 +25,17 @@ class FairPlay_LMS_Plugin {
                 if ( card.dataset && card.dataset.courseId ) return parseInt( card.dataset.courseId );
                 var attr = card.querySelector( '[data-id]' );
                 if ( attr ) return parseInt( attr.dataset.id );
-                // Tarjeta "coming soon": el ID está en id="countdown_XXXX"
+                // Tarjeta "coming soon": el ID estÃ¡ en id="countdown_XXXX"
                 var countdown = card.querySelector( '[id^="countdown_"]' );
                 if ( countdown ) {
                     var cm = countdown.id.match( /countdown_(\d+)/ );
                     if ( cm ) return parseInt( cm[1] );
                 }
-                // Botón / enlace con ID como último segmento de ruta: /slug/12345  o  /slug/12345/
+                // BotÃ³n / enlace con ID como Ãºltimo segmento de ruta: /slug/12345  o  /slug/12345/
                 var links = card.querySelectorAll( 'a[href]' );
                 for ( var i = 0; i < links.length; i++ ) {
                     var href = links[i].href;
-                    // último segmento numérico (mínimo 3 dígitos para no confundir páginas)
+                    // Ãºltimo segmento numÃ©rico (mÃ­nimo 3 dÃ­gitos para no confundir pÃ¡ginas)
                     var pm = href.match( /\/(\d{3,})\/?(?:[?#]|$)/ );
                     if ( pm ) return parseInt( pm[1] );
                     var qm = href.match( /[?&](?:course_id|course-id|id)=(\d+)/ );
@@ -1265,7 +56,7 @@ class FairPlay_LMS_Plugin {
                     var m = txt.textContent.match( /(\d+(?:\.\d+)?)\s*%/ );
                     if ( m ) return parseFloat( m[1] );
                 }
-                // Botón de acción: "Completado" → 100
+                // BotÃ³n de acciÃ³n: "Completado" â†’ 100
                 var btn = card.querySelector( '.masterstudy-button__title' );
                 if ( btn ) {
                     var t = btn.textContent.trim().toLowerCase();
@@ -1296,7 +87,7 @@ class FairPlay_LMS_Plugin {
                     }
                     card.style.display = visible ? '' : 'none';
                 } );
-                // Re-marcar tab como activo (Vue lo resetó al clickar "all")
+                // Re-marcar tab como activo (Vue lo resetÃ³ al clickar "all")
                 var tabEl  = studentCustomFilter.tabEl;
                 var blocks = tabEl && tabEl.closest( '.masterstudy-enrolled-courses-tabs__blocks' );
                 if ( blocks ) {
@@ -1328,7 +119,7 @@ class FairPlay_LMS_Plugin {
                 }
             }
 
-            /* ── Barra buscadora (sin filtros propios) ─────────────────────── */
+            /* â”€â”€ Barra buscadora (sin filtros propios) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
             function injectSearchBar( statsEl, cfg ) {
                 if ( document.getElementById( cfg.wrapperId ) ) return;
@@ -1350,7 +141,7 @@ class FairPlay_LMS_Plugin {
                 noResults.style.cssText = 'display:none;text-align:center;color:#888;padding:24px 0;font-size:14px;margin:0;';
                 noResults.textContent   = 'No se encontraron cursos.';
 
-                // Insertar en el DOM: antes de un selector dado o después del anchor
+                // Insertar en el DOM: antes de un selector dado o despuÃ©s del anchor
                 function doInsert() {
                     if ( cfg.insertBeforeSel ) {
                         var target = document.querySelector( cfg.insertBeforeSel );
@@ -1367,7 +158,7 @@ class FairPlay_LMS_Plugin {
                 }
 
                 if ( ! doInsert() ) {
-                    // Target aún no está en el DOM: esperar con observer
+                    // Target aÃºn no estÃ¡ en el DOM: esperar con observer
                     var insertObs = new MutationObserver( function () {
                         if ( doInsert() ) insertObs.disconnect();
                     } );
@@ -1405,10 +196,10 @@ class FairPlay_LMS_Plugin {
                 } ).observe( listContainer, { childList: true, subtree: true } );
             }
 
-            /* ── Inyectar tabs nativos ────────────────────────────────────── */
+            /* â”€â”€ Inyectar tabs nativos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
             /**
-             * Estudiante: agrega tabs "Próximo" y "Por Vencer" al bloque nativo
+             * Estudiante: agrega tabs "PrÃ³ximo" y "Por Vencer" al bloque nativo
              * .masterstudy-enrolled-courses-tabs__blocks replicando la estructura existente.
              */
             function injectStudentTabs( data ) {
@@ -1429,15 +220,15 @@ class FairPlay_LMS_Plugin {
                     filtersInjected = true;
 
                     // Ocultar todos los tabs nativos excepto "Todos"
-                    // Vue sólo verá el tab "all" → siempre carga todos los cursos → estado consistente
+                    // Vue sÃ³lo verÃ¡ el tab "all" â†’ siempre carga todos los cursos â†’ estado consistente
                     blocks.querySelectorAll( '[data-status]' ).forEach( function ( t ) {
                         if ( t.dataset.status && t.dataset.status !== 'all' ) {
                             t.style.display = 'none';
                         }
                     } );
 
-                    // ── Botones de filtro (reemplazan a los tabs) ─────────────────────────
-                    // Cada botón filtra client-side las cards ya cargadas por Vue.
+                    // â”€â”€ Botones de filtro (reemplazan a los tabs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    // Cada botÃ³n filtra client-side las cards ya cargadas por Vue.
                     // No hay AJAX, no hay stopPropagation, no hay conflictos con Vue.
                     var wrap = document.createElement( 'div' );
                     wrap.id = 'fplms-filter-buttons';
@@ -1447,7 +238,7 @@ class FairPlay_LMS_Plugin {
                         { label: 'Todos',       type: 'all',         ids: [],                      count: data.enrolled       || 0 },
                         { label: 'Completado',  type: 'completed',   ids: [],                      count: data.completed      || 0 },
                         { label: 'En Progreso', type: 'in_progress', ids: [],                      count: data.in_progress_count || 0 },
-                        { label: 'Próximo',     type: 'ids',         ids: data.upcoming_ids || [],  count: data.upcoming_count || 0 },
+                        { label: 'PrÃ³ximo',     type: 'ids',         ids: data.upcoming_ids || [],  count: data.upcoming_count || 0 },
                         { label: 'Por Vencer',  type: 'ids',         ids: data.expiring_ids || [],  count: data.expiring_count || 0 },
                     ];
 
@@ -1483,7 +274,7 @@ class FairPlay_LMS_Plugin {
                         wrap.appendChild( btn );
                     } );
 
-                    // Insertar después del mensaje "sin resultados" del buscador
+                    // Insertar despuÃ©s del mensaje "sin resultados" del buscador
                     var noResultsEl  = document.getElementById( 'fplms-no-results' );
                     var searchWrapEl = document.getElementById( 'fplms-course-search-wrapper' );
                     var anchor       = noResultsEl || searchWrapEl;
@@ -1493,7 +284,7 @@ class FairPlay_LMS_Plugin {
                         blocks.parentNode.insertBefore( wrap, blocks );
                     }
 
-                    // Mapa URL → course_id para anotar tarjetas que no tienen ID en la URL
+                    // Mapa URL â†’ course_id para anotar tarjetas que no tienen ID en la URL
                     var _urlToId = {};
                     if ( data.courses_list ) {
                         data.courses_list.forEach( function ( c ) {
@@ -1522,7 +313,7 @@ class FairPlay_LMS_Plugin {
                     annotateCardsWithId();
 
                     // MutationObserver: re-aplicar filtro cuando Vue re-renderiza la lista
-                    // (p.ej. carga de página siguiente o recarga al volver al tab "Todos")
+                    // (p.ej. carga de pÃ¡gina siguiente o recarga al volver al tab "Todos")
                     if ( ! studentCardObsSetup ) {
                         studentCardObsSetup = true;
                         var courseList = document.querySelector( '.masterstudy-enrolled-courses' );
@@ -1551,11 +342,11 @@ class FairPlay_LMS_Plugin {
             }
 
             /**
-             * Construye la tabla de gestión de cursos dentro del contenedor dado.
+             * Construye la tabla de gestiÃ³n de cursos dentro del contenedor dado.
              * Reutilizable desde showMisCursosPage().
              */
             function buildInstructorCoursePanel( container, courses ) {
-                // ── Estilos (una sola vez) ────────────────────────────────────────────
+                // â”€â”€ Estilos (una sola vez) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 if ( ! document.getElementById( 'fplms-icp-styles' ) ) {
                     var style = document.createElement( 'style' );
                     style.id  = 'fplms-icp-styles';
@@ -1640,7 +431,7 @@ class FairPlay_LMS_Plugin {
                         '.fplms-sm-save:disabled{opacity:.5;cursor:not-allowed;}' +
                         '.fplms-sm-msg{margin-top:10px;font-size:13px;text-align:center;font-weight:500;}' +
                         '.fplms-sm-msg.ok{color:#27ae60;}.fplms-sm-msg.err{color:#e74c3c;}' +
-                        /* Modal ponderación */
+                        /* Modal ponderaciÃ³n */
                         '#fplms-pond-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99999;' +
                         'align-items:center;justify-content:center;}' +
                         '#fplms-pond-overlay.open{display:flex;}' +
@@ -1678,7 +469,7 @@ class FairPlay_LMS_Plugin {
                         'transition:all .15s;white-space:nowrap;}' +
                         '#fplms-icp-bulk-apply:hover{border-color:#e74c3c;color:#e74c3c;}' +
                         '#fplms-icp-sel-bar{flex-wrap:wrap;gap:6px;}' +
-                        /* Tabla responsive: scroll horizontal en móvil */
+                        /* Tabla responsive: scroll horizontal en mÃ³vil */
                         '@media(max-width:700px){' +
                         '.fplms-icp-tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}' +
                         '#fplms-icp-table{min-width:580px;}' +
@@ -1695,10 +486,10 @@ class FairPlay_LMS_Plugin {
 
                 var expCount = courses.filter( function ( c ) { return c.is_expiring; } ).length;
 
-                // ── Estructura HTML del panel ─────────────────────────────────────────
+                // â”€â”€ Estructura HTML del panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 container.innerHTML =
                     '<h2>Mis Cursos</h2>' +
-                    // barra de selección (visible solo cuando hay ítems marcados)
+                    // barra de selecciÃ³n (visible solo cuando hay Ã­tems marcados)
                     '<div id="fplms-icp-sel-bar">' +
                     '<span id="fplms-icp-sel-count">0 seleccionados</span>' +
                     '<button class="fplms-icp-export-btn" id="fplms-icp-exp-xls">' +
@@ -1712,13 +503,13 @@ class FairPlay_LMS_Plugin {
                     '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>' +
                     '<polyline points="14 2 14 8 20 8"/></svg>' +
                     'Exportar PDF</button>' +
-                    '<select id="fplms-icp-bulk-action"><option value="">Acción masiva...</option>' +
+                    '<select id="fplms-icp-bulk-action"><option value="">AcciÃ³n masiva...</option>' +
                     '<option value="activate">Activar</option>' +
                     '<option value="deactivate">Desactivar</option>' +
                     '<option value="delete">Eliminar</option></select>' +
                     '<button class="fplms-icp-export-btn" id="fplms-icp-bulk-apply">Aplicar</button>' +
                     '<button class="fplms-icp-export-btn" id="fplms-icp-desel" style="margin-left:auto;font-size:12px;color:#000000;">' +
-                    '✕ Deseleccionar todo</button>' +
+                    'âœ• Deseleccionar todo</button>' +
                     '</div>' +
                     // toolbar
                     '<div id="fplms-icp-toolbar">' +
@@ -1729,11 +520,11 @@ class FairPlay_LMS_Plugin {
                     '<button class="fplms-icp-filter active" data-filter="all">Todos (' + courses.length + ')</button>' +
                     '<button class="fplms-icp-filter" data-filter="expiring">Por Vencer (' + expCount + ')</button>' +
                     '<select id="fplms-icp-sort" title="Ordenar por" style="height:34px;border:1px solid #ddd;border-radius:6px;padding:0 8px;font-size:13px;background:#fff;cursor:pointer;">' +
-                    '<option value="date_desc">Más recientes</option>' +
-                    '<option value="date_asc">Más antiguos</option>' +
-                    '<option value="title_asc">Nombre A→Z</option>' +
-                    '<option value="title_desc">Nombre Z→A</option>' +
-                    '<option value="students_desc">Más estudiantes</option>' +
+                    '<option value="date_desc">MÃ¡s recientes</option>' +
+                    '<option value="date_asc">MÃ¡s antiguos</option>' +
+                    '<option value="title_asc">Nombre Aâ†’Z</option>' +
+                    '<option value="title_desc">Nombre Zâ†’A</option>' +
+                    '<option value="students_desc">MÃ¡s estudiantes</option>' +
                     '</select>' +
                     '</div>' +
                     // tabla
@@ -1741,7 +532,7 @@ class FairPlay_LMS_Plugin {
                     '<table id="fplms-icp-table">' +
                     '<thead><tr>' +
                     '<th class="fplms-icp-th-chk"><input type="checkbox" class="fplms-icp-chk" id="fplms-icp-chk-all"></th>' +
-                    '<th>Curso</th><th>Creación</th><th>Modificación</th>' +
+                    '<th>Curso</th><th>CreaciÃ³n</th><th>ModificaciÃ³n</th>' +
                     '<th>Estructuras</th><th>Estudiantes</th><th>Acciones</th>' +
                     '</tr></thead>' +
                     '<tbody id="fplms-icp-tbody"></tbody>' +
@@ -1772,10 +563,10 @@ class FairPlay_LMS_Plugin {
                     '<button class="fplms-sm-save"  id="fplms-sm-save">Guardar y Notificar</button>' +
                     '</div>' +
                     '</div></div>' +
-                    // modal ponderación
+                    // modal ponderaciÃ³n
                     '<div id="fplms-pond-overlay">' +
                     '<div id="fplms-pond-modal">' +
-                    '<h3>Ponderación de Tests</h3>' +
+                    '<h3>PonderaciÃ³n de Tests</h3>' +
                     '<p class="fplms-pm-sub" id="fplms-pm-sub"></p>' +
                     '<div id="fplms-pm-body"><div class="fplms-sm-loading">Cargando tests...</div></div>' +
                     '<p class="fplms-pm-msg" id="fplms-pm-msg"></p>' +
@@ -1803,7 +594,7 @@ class FairPlay_LMS_Plugin {
                 var searchQuery   = '';
                 var selectedIds  = [];   // IDs de cursos marcados
 
-                // ── helpers de selección ──────────────────────────────────────────────
+                // â”€â”€ helpers de selecciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 function updateSelBar() {
                     selectedIds = [];
                     tbody.querySelectorAll( '.fplms-icp-chk:checked' ).forEach( function ( ch ) {
@@ -1839,17 +630,17 @@ class FairPlay_LMS_Plugin {
                     updateSelBar();
                 } );
 
-                // ── Acciones masivas ──────────────────────────────────────────────────
+                // â”€â”€ Acciones masivas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 btnBulkApply.addEventListener( 'click', function () {
                     var action = bulkActionSel.value;
-                    if ( ! action ) { alert( 'Selecciona una acción.' ); return; }
+                    if ( ! action ) { alert( 'Selecciona una acciÃ³n.' ); return; }
                     if ( ! selectedIds.length ) { alert( 'Selecciona al menos un curso.' ); return; }
 
                     var labels = { activate: 'activar', deactivate: 'desactivar', delete: 'eliminar' };
                     if ( action === 'delete' ) {
-                        if ( ! confirm( '¿Eliminar ' + selectedIds.length + ' curso(s)? Esta acción no se puede deshacer.' ) ) return;
+                        if ( ! confirm( 'Â¿Eliminar ' + selectedIds.length + ' curso(s)? Esta acciÃ³n no se puede deshacer.' ) ) return;
                     } else {
-                        if ( ! confirm( '¿' + labels[ action ] + ' ' + selectedIds.length + ' curso(s)?' ) ) return;
+                        if ( ! confirm( 'Â¿' + labels[ action ] + ' ' + selectedIds.length + ' curso(s)?' ) ) return;
                     }
 
                     btnBulkApply.disabled = true;
@@ -1867,7 +658,7 @@ class FairPlay_LMS_Plugin {
                             btnBulkApply.disabled   = false;
                             btnBulkApply.textContent = 'Aplicar';
                             if ( res && res.success ) {
-                                alert( '✓ ' + ( res.data && res.data.message ? res.data.message : 'Acción realizada.' ) );
+                                alert( 'âœ“ ' + ( res.data && res.data.message ? res.data.message : 'AcciÃ³n realizada.' ) );
                                 // Actualizar vista: eliminar filas o cambiar estado
                                 if ( action === 'delete' ) {
                                     selectedIds.forEach( function ( sid ) {
@@ -1885,22 +676,22 @@ class FairPlay_LMS_Plugin {
                                 currentPage = 1;
                                 applyFilters();
                             } else {
-                                alert( '✗ ' + ( res && res.data ? res.data : 'Error al aplicar acción.' ) );
+                                alert( 'âœ— ' + ( res && res.data ? res.data : 'Error al aplicar acciÃ³n.' ) );
                             }
                         } )
                         .catch( function () {
                             btnBulkApply.disabled   = false;
                             btnBulkApply.textContent = 'Aplicar';
-                            alert( '✗ Error de red.' );
+                            alert( 'âœ— Error de red.' );
                         } );
                 } );
 
-                // ── Exportar XLS (tabla visible en selección) ─────────────────────────
+                // â”€â”€ Exportar XLS (tabla visible en selecciÃ³n) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 btnExpXls.addEventListener( 'click', function () {
                     var rows = getExportRows();
                     if ( ! rows.length ) return;
                     var csv = '\uFEFF' + // BOM UTF-8 para Excel
-                        'Curso\tID\tCreación\tModificación\tCanales\tSucursales\tCargos\tEstudiantes\n' +
+                        'Curso\tID\tCreaciÃ³n\tModificaciÃ³n\tCanales\tSucursales\tCargos\tEstudiantes\n' +
                         rows.map( function ( c ) {
                             return [
                                 c.title, c.id, c.created, c.modified,
@@ -1913,7 +704,7 @@ class FairPlay_LMS_Plugin {
                     downloadFile( csv, 'mis-cursos.xls', 'application/vnd.ms-excel' );
                 } );
 
-                // ── Exportar PDF (impresión vía ventana) ──────────────────────────────
+                // â”€â”€ Exportar PDF (impresiÃ³n vÃ­a ventana) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 btnExpPdf.addEventListener( 'click', function () {
                     var rows = getExportRows();
                     if ( ! rows.length ) return;
@@ -1927,7 +718,7 @@ class FairPlay_LMS_Plugin {
                         'th{background:#f5f5f5;font-weight:700;}</style></head><body>' +
                         '<h1>Mis Cursos</h1>' +
                         '<table><thead><tr>' +
-                        '<th>Curso</th><th>ID</th><th>Creación</th><th>Modificación</th>' +
+                        '<th>Curso</th><th>ID</th><th>CreaciÃ³n</th><th>ModificaciÃ³n</th>' +
                         '<th>Estructuras</th><th>Estudiantes</th>' +
                         '</tr></thead><tbody>' +
                         rows.map( function ( c ) {
@@ -1943,7 +734,7 @@ class FairPlay_LMS_Plugin {
                 } );
 
                 function getExportRows() {
-                    // Si hay selección → solo esos; si no, todos los visibles en la tabla
+                    // Si hay selecciÃ³n â†’ solo esos; si no, todos los visibles en la tabla
                     if ( selectedIds.length > 0 ) {
                         return courses.filter( function ( c ) { return selectedIds.indexOf( c.id ) !== -1; } );
                     }
@@ -1972,7 +763,7 @@ class FairPlay_LMS_Plugin {
                         .replace( /'/g, '&#39;' );
                 }
 
-                // ── Modal de estructuras ──────────────────────────────────────────────
+                // â”€â”€ Modal de estructuras â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 var overlay     = container.querySelector( '#fplms-struct-overlay' );
                 var smTitle     = container.querySelector( '#fplms-sm-title' );
                 var smSub       = container.querySelector( '#fplms-sm-sub' );
@@ -1997,7 +788,7 @@ class FairPlay_LMS_Plugin {
                     smSave.disabled     = true;
                     overlay.classList.add( 'open' );
 
-                    // Cargar estructuras del curso vía AJAX
+                    // Cargar estructuras del curso vÃ­a AJAX
                     var fd = new FormData();
                     fd.append( 'action',    'fplms_get_frontend_structures' );
                     fd.append( 'nonce',     STRUCT_NONCE );
@@ -2034,14 +825,14 @@ class FairPlay_LMS_Plugin {
                         channelHtml =
                             '<div class="fplms-sm-section">' +
                             '<label class="fplms-sm-title">Canal</label>' +
-                            '<p style="font-size:12px;color:#e74c3c;">Sin canal asignado. Asigna una Categoría/Canal en el editor del curso.</p>' +
+                            '<p style="font-size:12px;color:#e74c3c;">Sin canal asignado. Asigna una CategorÃ­a/Canal en el editor del curso.</p>' +
                             '</div>';
                     }
 
                     // Sucursales: toggleable
                     var branchHtml =
                         '<div class="fplms-sm-section" id="fplms-sm-branches">' +
-                        '<label class="fplms-sm-title">Sucursal <span style="font-weight:400;text-transform:none;font-size:11px;color:#999;">(dejar vacío = todas)</span></label>' +
+                        '<label class="fplms-sm-title">Sucursal <span style="font-weight:400;text-transform:none;font-size:11px;color:#999;">(dejar vacÃ­o = todas)</span></label>' +
                         '<div class="fplms-sm-tags">';
                     var branches = d.branches || {};
                     var manualBranches = d.manual_branches || [];
@@ -2055,19 +846,19 @@ class FairPlay_LMS_Plugin {
                     }
                     branchHtml += '</div></div>';
 
-                    // Cargos: se cargan dinámicamente según sucursales seleccionadas
+                    // Cargos: se cargan dinÃ¡micamente segÃºn sucursales seleccionadas
                     var roleHtml =
                         '<div class="fplms-sm-section" id="fplms-sm-roles">' +
-                        '<label class="fplms-sm-title">Cargo <span style="font-weight:400;text-transform:none;font-size:11px;color:#999;">(dejar vacío = todos)</span></label>' +
+                        '<label class="fplms-sm-title">Cargo <span style="font-weight:400;text-transform:none;font-size:11px;color:#999;">(dejar vacÃ­o = todos)</span></label>' +
                         '<div class="fplms-sm-tags" id="fplms-sm-roles-tags"><div class="fplms-sm-loading">Selecciona sucursales para ver cargos...</div></div>' +
                         '</div>';
 
                     smBody.innerHTML = channelHtml + branchHtml + roleHtml;
 
-                    // Guardar data de roles actuales para re-pintar después de cargar
+                    // Guardar data de roles actuales para re-pintar despuÃ©s de cargar
                     smBody._modalData = { roles: d.roles || {}, manualRoles: d.manual_roles || [] };
 
-                    // Pintar roles iniciales basados en selección inicial de sucursales
+                    // Pintar roles iniciales basados en selecciÃ³n inicial de sucursales
                     refreshRoleOptions( manualBranches, d.roles || {}, d.manual_roles || [] );
 
                     // Eventos en botones de sucursal
@@ -2075,7 +866,7 @@ class FairPlay_LMS_Plugin {
                         btn.addEventListener( 'click', function () {
                             btn.classList.toggle( 'selected' );
                             var selBranches = getSelectedBranches();
-                            // Recargar cargos dinámicamente
+                            // Recargar cargos dinÃ¡micamente
                             loadRolesForBranches( selBranches );
                         } );
                     } );
@@ -2158,7 +949,7 @@ class FairPlay_LMS_Plugin {
                         .then( function ( res ) {
                             if ( res && res.success ) {
                                 updateCourseStructTags( modalCourseId, branchIds, roleIds );
-                                // Notificar estudiantes automáticamente
+                                // Notificar estudiantes automÃ¡ticamente
                                 var fd2 = new FormData();
                                 fd2.append( 'action',    'fplms_notify_enrolled_students' );
                                 fd2.append( 'nonce',     STRUCT_NONCE );
@@ -2170,19 +961,19 @@ class FairPlay_LMS_Plugin {
                                         var baseMsg = res.data && res.data.message ? res.data.message : 'Guardado.';
                                         var notifMsg = ( res2 && res2.success && res2.data )
                                             ? res2.data.message : '';
-                                        smMsg.textContent = '✓ ' + baseMsg + ( notifMsg ? ' ' + notifMsg : '' );
+                                        smMsg.textContent = 'âœ“ ' + baseMsg + ( notifMsg ? ' ' + notifMsg : '' );
                                         smMsg.className   = 'fplms-sm-msg ok';
                                         setTimeout( function () { overlay.classList.remove( 'open' ); }, 2200 );
                                     } );
                             } else {
                                 smSave.disabled   = false;
-                                smMsg.textContent = '✗ ' + ( res && res.data ? res.data : 'Error al guardar.' );
+                                smMsg.textContent = 'âœ— ' + ( res && res.data ? res.data : 'Error al guardar.' );
                                 smMsg.className   = 'fplms-sm-msg err';
                             }
                         } )
                         .catch( function () {
                             smSave.disabled   = false;
-                            smMsg.textContent = '✗ Error de red.';
+                            smMsg.textContent = 'âœ— Error de red.';
                             smMsg.className   = 'fplms-sm-msg err';
                         } );
                 } );
@@ -2195,10 +986,10 @@ class FairPlay_LMS_Plugin {
                     if ( ! td ) return;
                     var c = courses.filter( function ( x ) { return x.id === courseId; } )[0];
                     if ( c ) { c._struct_updated = true; }
-                    td.innerHTML = '<span class="fplms-icp-tag" style="background:#e8f5e9;color:#27ae60;">Actualizado ✓</span>';
+                    td.innerHTML = '<span class="fplms-icp-tag" style="background:#e8f5e9;color:#27ae60;">Actualizado âœ“</span>';
                 }
 
-                // ── Modal ponderación ─────────────────────────────────────────────────
+                // â”€â”€ Modal ponderaciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 var pondOverlay  = container.querySelector( '#fplms-pond-overlay' );
                 var pmSub        = container.querySelector( '#fplms-pm-sub' );
                 var pmBody       = container.querySelector( '#fplms-pm-body' );
@@ -2259,7 +1050,7 @@ class FairPlay_LMS_Plugin {
                             '<div class="fplms-pm-quiz-head">' +
                             '<span>' + escH( quiz.title ) + '</span>' +
                             '<select class="fplms-pm-mode-sel" data-quiz-id="' + quiz.id + '">' +
-                            '<option value="auto"' + ( quiz.mode === 'auto' ? ' selected' : '' ) + '>Automático (equitativo)</option>' +
+                            '<option value="auto"' + ( quiz.mode === 'auto' ? ' selected' : '' ) + '>AutomÃ¡tico (equitativo)</option>' +
                             '<option value="manual"' + ( quiz.mode === 'manual' ? ' selected' : '' ) + '>Manual</option>' +
                             '</select></div>';
 
@@ -2338,7 +1129,7 @@ class FairPlay_LMS_Plugin {
                             var sum = Object.values( weights ).reduce( function ( a, b ) { return a + b; }, 0 );
                             if ( Math.abs( sum - 100 ) > 0.01 ) {
                                 pmSave.disabled   = false;
-                                pmMsg.textContent = '✗ La suma de pesos debe ser 100. Revisa: ' +
+                                pmMsg.textContent = 'âœ— La suma de pesos debe ser 100. Revisa: ' +
                                     escH( qDiv.querySelector( '.fplms-pm-quiz-head span' ).textContent );
                                 pmMsg.className = 'fplms-pm-msg err';
                                 return;
@@ -2360,18 +1151,18 @@ class FairPlay_LMS_Plugin {
                         .then( function ( results ) {
                             pmSave.disabled = false;
                             var allOk = results.every( function ( r ) { return r && r.success; } );
-                            pmMsg.textContent = allOk ? '✓ Ponderación guardada correctamente.' : '✗ Algún test no se pudo guardar.';
+                            pmMsg.textContent = allOk ? 'âœ“ PonderaciÃ³n guardada correctamente.' : 'âœ— AlgÃºn test no se pudo guardar.';
                             pmMsg.className   = 'fplms-pm-msg ' + ( allOk ? 'ok' : 'err' );
                             if ( allOk ) { setTimeout( function () { pondOverlay.classList.remove( 'open' ); }, 1800 ); }
                         } )
                         .catch( function () {
                             pmSave.disabled   = false;
-                            pmMsg.textContent = '✗ Error de red.';
+                            pmMsg.textContent = 'âœ— Error de red.';
                             pmMsg.className   = 'fplms-pm-msg err';
                         } );
                 } );
 
-                // ── Render de filas ───────────────────────────────────────────────────
+                // â”€â”€ Render de filas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 function renderRow( c ) {
                     var channels = c.channels || [];
                     var branches = c.branches || [];
@@ -2391,13 +1182,13 @@ class FairPlay_LMS_Plugin {
                     }
                     var remaining = all.length - shown;
                     if ( remaining > 0 ) {
-                        structs_html += '<span class="fplms-icp-tag">+' + remaining + ' más</span>';
+                        structs_html += '<span class="fplms-icp-tag">+' + remaining + ' mÃ¡s</span>';
                     }
                     if ( ! structs_html ) {
-                        structs_html = '<span style="color:#bbb;font-size:12px;">—</span>';
+                        structs_html = '<span style="color:#bbb;font-size:12px;">â€”</span>';
                     }
 
-                    // Botón Editar (lápiz)
+                    // BotÃ³n Editar (lÃ¡piz)
                     var edit_btn = c.edit_url
                         ? '<a href="' + c.edit_url + '" class="fplms-icp-btn" title="Editar curso">' +
                           '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
@@ -2407,7 +1198,7 @@ class FairPlay_LMS_Plugin {
                           '<path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></a>'
                         : '';
 
-                    // Botón Estructuras + Notificar (ola)
+                    // BotÃ³n Estructuras + Notificar (ola)
                     var struct_btn =
                         '<button type="button" class="fplms-icp-btn fplms-icp-struct-btn" ' +
                         'title="Asignar estructuras y notificar" data-id="' + c.id + '" data-title="' + escH( c.title ) + '">' +
@@ -2416,10 +1207,10 @@ class FairPlay_LMS_Plugin {
                         ' style="display:block;flex-shrink:0;">' +
                         '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></button>';
 
-                    // Botón Ponderación (balanza)
+                    // BotÃ³n PonderaciÃ³n (balanza)
                     var pond_btn =
                         '<button type="button" class="fplms-icp-btn fplms-icp-pond-btn" ' +
-                        'title="Asignar ponderación a tests" data-id="' + c.id + '" data-title="' + escH( c.title ) + '">' +
+                        'title="Asignar ponderaciÃ³n a tests" data-id="' + c.id + '" data-title="' + escH( c.title ) + '">' +
                         '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
                         ' fill="none" stroke="#555" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"' +
                         ' style="display:block;flex-shrink:0;">' +
@@ -2436,8 +1227,8 @@ class FairPlay_LMS_Plugin {
                         '<td data-label="Curso"><span class="fplms-icp-title">' +
                         '<a href="' + ( c.view_url || '#' ) + '" target="_blank">' + escH( c.title ) + '</a></span>' +
                         '<span class="fplms-icp-id">ID: ' + c.id + '</span></td>' +
-                        '<td data-label="Creación">'      + c.created  + '</td>' +
-                        '<td data-label="Modificación">'  + c.modified + '</td>' +
+                        '<td data-label="CreaciÃ³n">'      + c.created  + '</td>' +
+                        '<td data-label="ModificaciÃ³n">'  + c.modified + '</td>' +
                         '<td data-label="Estructuras">'   + structs_html + '</td>' +
                         '<td data-label="Estudiantes" style="text-align:center;">' + ( c.students || 0 ) + '</td>' +
                         '<td data-label="Acciones"><div class="fplms-icp-actions">' +
@@ -2460,7 +1251,7 @@ class FairPlay_LMS_Plugin {
                         return true;
                     } );
 
-                    // Ordenar según la selección del usuario
+                    // Ordenar segÃºn la selecciÃ³n del usuario
                     filtered = filtered.slice(); // copia para no mutar el array original
                     if ( activeSortBy === 'date_asc' ) {
                         filtered.sort( function ( a, b ) { return ( a.date_start || '' ) > ( b.date_start || '' ) ? 1 : -1; } );
@@ -2518,11 +1309,11 @@ class FairPlay_LMS_Plugin {
                     info.style.cssText = 'font-size:12px;color:#888;';
                     var start = ( currentPage - 1 ) * perPage + 1;
                     var end   = Math.min( currentPage * perPage, total );
-                    info.textContent = start + '–' + end + ' de ' + total;
+                    info.textContent = start + 'â€“' + end + ' de ' + total;
                     pg.appendChild( info );
 
                     var btnPrev = document.createElement( 'button' );
-                    btnPrev.textContent = '←';
+                    btnPrev.textContent = 'â†';
                     btnPrev.className = 'fplms-icp-pg-btn';
                     btnPrev.disabled = currentPage === 1;
                     btnPrev.addEventListener( 'click', function () { currentPage--; applyFilters(); } );
@@ -2539,7 +1330,7 @@ class FairPlay_LMS_Plugin {
                     }
 
                     var btnNext = document.createElement( 'button' );
-                    btnNext.textContent = '→';
+                    btnNext.textContent = 'â†’';
                     btnNext.className = 'fplms-icp-pg-btn';
                     btnNext.disabled = currentPage === totalPages;
                     btnNext.addEventListener( 'click', function () { currentPage++; applyFilters(); } );
@@ -2582,7 +1373,7 @@ class FairPlay_LMS_Plugin {
             }
 
             /**
-             * Muestra la página "Mis Cursos" (oculta el contenido Vue del instructor).
+             * Muestra la pÃ¡gina "Mis Cursos" (oculta el contenido Vue del instructor).
              */
             function showMisCursosPage() {
                 var acctContainer = document.querySelector( '.masterstudy-account-container' );
@@ -2596,7 +1387,7 @@ class FairPlay_LMS_Plugin {
                     buildInstructorCoursePanel( container, instrCoursesData.courses_list || [] );
                 }
 
-                // Ocultar todos los hijos del contenedor excepto el menú y nuestra página
+                // Ocultar todos los hijos del contenedor excepto el menÃº y nuestra pÃ¡gina
                 Array.prototype.forEach.call( acctContainer.children, function ( child ) {
                     if ( child.id !== 'fplms-mis-cursos-page' &&
                          ! child.classList.contains( 'masterstudy-account-menu' ) &&
@@ -2617,7 +1408,7 @@ class FairPlay_LMS_Plugin {
             }
 
             /**
-             * Oculta la página "Mis Cursos" y restaura el contenido del contenedor.
+             * Oculta la pÃ¡gina "Mis Cursos" y restaura el contenido del contenedor.
              */
             function hideMisCursosPage() {
                 var miCursosP = document.getElementById( 'fplms-mis-cursos-page' );
@@ -2795,7 +1586,7 @@ class FairPlay_LMS_Plugin {
                     var _today = new Date(); _today.setHours( 0, 0, 0, 0 );
                     var _e = parseISO( c.date_end ); if ( ! _e ) return false;
                     var _ed = new Date( _e.getFullYear(), _e.getMonth(), _e.getDate() );
-                    // Resaltar cualquier curso que tenga end_time registrado y aún esté vigente
+                    // Resaltar cualquier curso que tenga end_time registrado y aÃºn estÃ© vigente
                     return _ed.getTime() >= _today.getTime();
                 }
 
@@ -2821,7 +1612,7 @@ class FairPlay_LMS_Plugin {
                     var sd = new Date( s.getFullYear(), s.getMonth(), s.getDate() );
                     var dd = new Date( d.getFullYear(), d.getMonth(), d.getDate() );
                     if ( dd < sd ) return false;
-                    // Sin fecha de vencimiento: siempre activo — visible en todos los días
+                    // Sin fecha de vencimiento: siempre activo â€” visible en todos los dÃ­as
                     if ( ! c.date_end ) return true;
                     var e = parseISO( c.date_end );
                     var ed = new Date( e.getFullYear(), e.getMonth(), e.getDate() );
@@ -2897,7 +1688,7 @@ class FairPlay_LMS_Plugin {
                             if ( ! co ) return;
                             popDot.style.background = co._color;
 
-                            // Título clicable (si tiene view_url)
+                            // TÃ­tulo clicable (si tiene view_url)
                             if ( co.view_url ) {
                                 popTitle.innerHTML = '<a href="' + esc( co.view_url ) + '" target="_blank" rel="noopener">' + esc( co.title ) + '</a>';
                             } else {
@@ -3002,13 +1793,13 @@ class FairPlay_LMS_Plugin {
                     } );
                 }
 
-                // PDF export — calendario + tabla de cursos del período visible
+                // PDF export â€” calendario + tabla de cursos del perÃ­odo visible
                 var pdfBtn = container.querySelector( '#fplms-cal-pdf-btn' );
                 if ( pdfBtn ) pdfBtn.addEventListener( 'click', function () {
                     var titleText = titleEl ? titleEl.textContent : 'Mi Calendario';
                     var gridHTML  = gridWrap ? gridWrap.innerHTML : '';
 
-                    // Determinar rango de fechas visible según la vista actual
+                    // Determinar rango de fechas visible segÃºn la vista actual
                     var rangeStart, rangeEnd;
                     if ( calView === 'week' ) {
                         var dow  = ( viewDate.getDay() + 6 ) % 7;
@@ -3023,7 +1814,7 @@ class FairPlay_LMS_Plugin {
                     // Filtrar cursos visibles en ese rango
                     var filtered = getFiltered().filter( function ( c ) {
                         var s = parseISO( c.date_start ); if ( ! s ) return false;
-                        // Courses with no end date are ongoing — always include them in the table
+                        // Courses with no end date are ongoing â€” always include them in the table
                         if ( ! c.date_end ) return true;
                         var e = parseISO( c.date_end ); if ( ! e ) return true;
                         var sd = new Date( s.getFullYear(), s.getMonth(), s.getDate() );
@@ -3079,7 +1870,7 @@ class FairPlay_LMS_Plugin {
                         '<table class="pdf-tbl"><thead><tr>' +
                         '<th>ID</th><th>Nombre del curso</th>' +
                         ( isInstructor ? '<th>Estudiantes</th>' : '<th>Progreso</th>' ) +
-                        '<th>Fecha de inicio</th><th>Fecha de finalización</th></tr></thead><tbody>' +
+                        '<th>Fecha de inicio</th><th>Fecha de finalizaciÃ³n</th></tr></thead><tbody>' +
                         tableRows +
                         '</tbody></table>'
                         ) : '<p style="color:#aaa;font-size:12px;">No hay cursos en este per\u00edodo.</p>' ) +
@@ -3113,7 +1904,7 @@ class FairPlay_LMS_Plugin {
                     buildCalendarPanel( cont, instrCoursesData.courses_list || [], true );
                 }
 
-                // Ocultar todos los hijos del contenedor excepto el menú y nuestro calendario
+                // Ocultar todos los hijos del contenedor excepto el menÃº y nuestro calendario
                 Array.prototype.forEach.call( acctContainer.children, function ( child ) {
                     if ( child.id !== 'fplms-cal-instr-page' &&
                          ! child.classList.contains( 'masterstudy-account-menu' ) &&
@@ -3169,7 +1960,7 @@ class FairPlay_LMS_Plugin {
                     buildCalendarPanel( cont, ( studentCalData.courses_list || [] ), false );
                 }
 
-                // Ocultar todos los hijos del contenedor excepto el menú y nuestro calendario
+                // Ocultar todos los hijos del contenedor excepto el menÃº y nuestro calendario
                 Array.prototype.forEach.call( acctContainer.children, function ( child ) {
                     if ( child.id !== 'fplms-cal-student-page' &&
                          ! child.classList.contains( 'masterstudy-account-menu' ) &&
@@ -3211,9 +2002,9 @@ class FairPlay_LMS_Plugin {
             }
 
             /**
-             * Inyecta el botón "Mi Calendario" en el sidebar del estudiante.
+             * Inyecta el botÃ³n "Mi Calendario" en el sidebar del estudiante.
              * Usa un observer persistente para re-inyectarlo cada vez que Vue
-             * re-renderiza el menú lateral al navegar entre páginas.
+             * re-renderiza el menÃº lateral al navegar entre pÃ¡ginas.
              */
             function injectStudentCalendarSidebarLink() {
                 function tryBuild() {
@@ -3223,7 +2014,7 @@ class FairPlay_LMS_Plugin {
                     var items = document.querySelectorAll( '.masterstudy-account-menu__list-item' );
                     if ( ! items.length ) return;
 
-                    // Insertar antes de la sección AJUSTES DE CUENTA
+                    // Insertar antes de la secciÃ³n AJUSTES DE CUENTA
                     var anchor = null;
                     items.forEach( function ( a ) {
                         var txt = ( a.textContent || '' ).trim();
@@ -3249,7 +2040,7 @@ class FairPlay_LMS_Plugin {
                         showStudentCalendarPage();
                     } );
 
-                    // Ocultar calendario al pulsar cualquier otro ítem del menú
+                    // Ocultar calendario al pulsar cualquier otro Ã­tem del menÃº
                     var menu = anchor.closest( '.masterstudy-account-menu' );
                     if ( menu && ! menu.dataset.fplmsStudentCalListened ) {
                         menu.dataset.fplmsStudentCalListened = '1';
@@ -3263,7 +2054,7 @@ class FairPlay_LMS_Plugin {
                 // Primer intento inmediato
                 tryBuild();
 
-                // Observer persistente: re-inyecta si el menú se re-renderiza
+                // Observer persistente: re-inyecta si el menÃº se re-renderiza
                 var debounceTimer;
                 var sidebarObs = new MutationObserver( function () {
                     clearTimeout( debounceTimer );
@@ -3273,8 +2064,8 @@ class FairPlay_LMS_Plugin {
             }
 
             /**
-             * Inyecta los ítems "Mis Cursos" y "Mi Calendario" en el menú lateral
-             * del instructor. Observer persistente — sobrevive a re-renders de Vue.
+             * Inyecta los Ã­tems "Mis Cursos" y "Mi Calendario" en el menÃº lateral
+             * del instructor. Observer persistente â€” sobrevive a re-renders de Vue.
              */
             function injectMisCursosSidebarLink() {
                 function tryBuild() {
@@ -3325,7 +2116,7 @@ class FairPlay_LMS_Plugin {
                         showInstructorCalendarPage();
                     } );
 
-                    // Ocultar páginas custom al navegar a otra sección
+                    // Ocultar pÃ¡ginas custom al navegar a otra secciÃ³n
                     var menu = anchor.closest( '.masterstudy-account-menu' );
                     if ( menu && ! menu.dataset.fplmsInstrListened ) {
                         menu.dataset.fplmsInstrListened = '1';
@@ -3346,7 +2137,7 @@ class FairPlay_LMS_Plugin {
                 // Primer intento inmediato
                 tryBuild();
 
-                // Observer persistente: re-inyecta cada vez que Vue re-renderiza el menú
+                // Observer persistente: re-inyecta cada vez que Vue re-renderiza el menÃº
                 var debounceTimer;
                 var sidebarObs = new MutationObserver( function () {
                     clearTimeout( debounceTimer );
@@ -3355,7 +2146,7 @@ class FairPlay_LMS_Plugin {
                 sidebarObs.observe( document.body, { childList: true, subtree: true } );
             }
 
-            /* ── Helpers de bloque ───────────────────────────────────────────── */
+            /* â”€â”€ Helpers de bloque â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
             function mkStudentBlock( iconMod, title, value ) {
                 return '<div class="masterstudy-enrolled-courses-sorting__block-wrapper">' +
@@ -3378,7 +2169,7 @@ class FairPlay_LMS_Plugin {
                     '</div></div></div>';
             }
 
-            /* ── Render student ──────────────────────────────────────────────── */
+            /* â”€â”€ Render student â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
             function renderStudent( el, data ) {
                 var avg  = (data.avg_progress || 0) + '%';
@@ -3387,7 +2178,7 @@ class FairPlay_LMS_Plugin {
                          + mkStudentBlock( 'groups',       'Avance Promedio',    avg                    )
                          + mkStudentBlock( 'courses',      'Cursos Completados', data.completed     || 0 )
                          + mkStudentBlock( 'certificates', 'Certificados',       data.certificates  || 0 )
-                         + mkStudentBlock( 'groups',       'Horas de Formación', hrs                    );
+                         + mkStudentBlock( 'groups',       'Horas de FormaciÃ³n', hrs                    );
                 el.innerHTML = html;
                 studentCalData  = data;
                 renderedStudent = true;
@@ -3406,7 +2197,7 @@ class FairPlay_LMS_Plugin {
                 injectStudentCalendarSidebarLink();
             }
 
-            /* ── Render instructor ───────────────────────────────────────────── */
+            /* â”€â”€ Render instructor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
             function renderInstructor( el, data ) {
                 instrCoursesData = data;
@@ -3419,7 +2210,7 @@ class FairPlay_LMS_Plugin {
                 el.innerHTML = html;
                 renderedInstructor = true;
 
-                // Barra de búsqueda en la vista "Escritorio" del instructor
+                // Barra de bÃºsqueda en la vista "Escritorio" del instructor
                 if ( ! searchInjectedInstr ) {
                     searchInjectedInstr = true;
                     injectSearchBar( el, {
@@ -3437,7 +2228,7 @@ class FairPlay_LMS_Plugin {
                 injectMisCursosSidebarLink();
             }
 
-            /* ── Fetch and render ────────────────────────────────────────────── */
+            /* â”€â”€ Fetch and render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
             function fetchStats( type, callback ) {
                 var fd = new FormData();
@@ -3460,7 +2251,7 @@ class FairPlay_LMS_Plugin {
                         if ( data ) {
                             renderStudent( studentEl, data );
                         } else {
-                            renderedStudent = false; // permitir reintento si AJAX devuelve vacío
+                            renderedStudent = false; // permitir reintento si AJAX devuelve vacÃ­o
                         }
                     } );
                 }
@@ -3471,13 +2262,13 @@ class FairPlay_LMS_Plugin {
                         if ( data ) {
                             renderInstructor( instructorEl, data );
                         } else {
-                            renderedInstructor = false; // permitir reintento si AJAX devuelve vacío
+                            renderedInstructor = false; // permitir reintento si AJAX devuelve vacÃ­o
                         }
                     } );
                 }
             }
 
-            /* ── Parche botón "Reportes Detallados" ─────────────────────────── */
+            /* â”€â”€ Parche botÃ³n "Reportes Detallados" â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
             /*
              * Intercepta el clic en [data-id="user-detailed-report"] para navegar
              * directamente a /analytics/engagement/ en lugar de /analytics/ (que
@@ -3502,7 +2293,7 @@ class FairPlay_LMS_Plugin {
                 } ).observe( document.body, { childList: true, subtree: true } );
             }
 
-            /* ── Init ────────────────────────────────────────────────────────── */
+            /* â”€â”€ Init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
             function init() {
                 tryRender();
@@ -3530,91 +2321,3 @@ class FairPlay_LMS_Plugin {
                 init();
             }
         })();
-        </script>
-        <?php
-    }
-
-    /**
-     * Oculta la pestaña "Ingresos" (data-id="revenue") en la página
-     * /user-account/analytics/ y activa "Participación" por defecto.
-     */
-    public function inject_analytics_revenue_hide_script(): void {
-        if ( is_admin() || ! is_user_logged_in() ) {
-            return;
-        }
-        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
-        // Solo en /user-account/analytics/
-        if ( false === strpos( $request_uri, '/user-account/analytics' ) ) {
-            return;
-        }
-        ?>
-        <style id="fplms-analytics-revenue-css">
-        /*
-         * Ocultar pestaña "Ingresos" en la barra de navegación principal de analytics.
-         * El selector cubre cualquier página de analytics (revenue, engagement,
-         * instructor-students) porque Vue reemplaza el contenedor raíz al cambiar de tab.
-         */
-        .masterstudy-tabs.masterstudy-tabs_style-nav-sm li[data-id="revenue"] {
-            display: none !important;
-        }
-        </style>
-        <script id="fplms-analytics-revenue-hide">
-        (function () {
-            'use strict';
-
-            var done = false;
-            var obs;
-
-            function patchTabs() {
-                if ( done ) return true;
-
-                /*
-                 * Buscar la lista de tabs de navegación principal de analytics.
-                 * Puede estar dentro de cualquier página (__revenue-page__tabs,
-                 * __engagement-page__tabs, etc.) porque Vue la re-monta al cambiar tab.
-                 */
-                var navList = document.querySelector(
-                    'ul.masterstudy-tabs.masterstudy-tabs_style-nav-sm'
-                );
-                if ( ! navList ) return false;
-
-                var revenueTab = navList.querySelector( 'li[data-id="revenue"]' );
-                if ( ! revenueTab ) return false;
-
-                // Ocultar (el CSS ya lo hace; esto es por si el estilo inline de Vue lo sobreescribe)
-                revenueTab.style.setProperty( 'display', 'none', 'important' );
-
-                // Si revenue está activo, activar engagement UNA sola vez
-                if ( revenueTab.classList.contains( 'masterstudy-tabs__item_active' ) ) {
-                    done = true; // marcar antes del click para evitar re-entrada
-
-                    // Desconectar el observer ANTES del click para que el re-render
-                    // de Vue no dispare patchTabs de nuevo
-                    if ( obs ) { obs.disconnect(); obs = null; }
-
-                    var engTab = navList.querySelector( 'li[data-id="engagement"]' );
-                    if ( engTab ) {
-                        setTimeout( function () { engTab.click(); }, 30 );
-                    }
-                } else {
-                    // Revenue ya no está activo: solo desconectar
-                    done = true;
-                    if ( obs ) { obs.disconnect(); obs = null; }
-                }
-
-                return true;
-            }
-
-            if ( ! patchTabs() ) {
-                obs = new MutationObserver( function () { patchTabs(); } );
-                obs.observe( document.body, { childList: true, subtree: true } );
-                setTimeout( function () {
-                    if ( obs ) { obs.disconnect(); obs = null; }
-                }, 15000 );
-            }
-        })();
-        </script>
-        <?php
-    }
-}
-

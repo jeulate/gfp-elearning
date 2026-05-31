@@ -201,6 +201,37 @@ class FairPlay_LMS_Progress_Service {
             }
         }
 
+        // Aplicar visibilidad de cursos inactivos (draft/private/pending):
+        // solo visibles para administrador o creador del curso.
+        if ( ! empty( $enrolled_ids ) ) {
+            $enrolled_ids = array_filter(
+                $enrolled_ids,
+                static function ( $course_data, $course_id ) use ( $user_id ): bool {
+                    $cid = (int) $course_id;
+                    if ( $cid <= 0 ) {
+                        return false;
+                    }
+
+                    if ( current_user_can( 'manage_options' ) ) {
+                        return true;
+                    }
+
+                    $status = get_post_status( $cid );
+                    if ( false === $status ) {
+                        return false;
+                    }
+
+                    if ( 'publish' === $status ) {
+                        return true;
+                    }
+
+                    $author_id = (int) get_post_field( 'post_author', $cid );
+                    return $author_id > 0 && $author_id === (int) $user_id;
+                },
+                ARRAY_FILTER_USE_BOTH
+            );
+        }
+
         $stats['enrolled'] = count( $enrolled_ids );
 
         if ( $stats['enrolled'] > 0 ) {
@@ -399,7 +430,7 @@ class FairPlay_LMS_Progress_Service {
         // 1. Cursos publicados del instructor — ordenados por fecha de creación descendente
         $course_ids = array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare(
             "SELECT ID FROM {$wpdb->posts}
-             WHERE post_type = %s AND post_author = %d AND post_status = 'publish'
+             WHERE post_type = %s AND post_author = %d AND post_status IN ('publish','draft')
              ORDER BY post_date DESC",
             FairPlay_LMS_Config::MS_PT_COURSE,
             $user_id

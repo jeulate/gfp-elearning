@@ -1,0 +1,36 @@
+/* Fixed width for translated action button in MasterStudy builder */
+.chakra-j6rous,
+button.chakra-button.chakra-j6rous,
+button.chakra-button.chakra-j6rous[disabled],
+button.chakra-button.chakra-j6rous[aria-disabled="true"] {
+    width: 52px !important;
+    min-width: 52px !important;
+    max-width: 52px !important;
+    flex: 0 0 52px !important;
+}
+
+button.chakra-button.chakra-j6rous > div {
+    width: 100% !important;
+    justify-content: center !important;
+}
+
+button.chakra-button.chakra-j6rous p {
+    display: inline-block !important;
+}
+
+/* Structural fallback: input for new answer + action button */
+div[role="group"] input[placeholder*="nueva respuesta"] + button.chakra-button,
+div[role="group"] input[placeholder*="new answer"] + button.chakra-button,
+div[role="group"] input[placeholder*="respuesta"] + button.chakra-button {
+    width: 52px !important;
+    min-width: 52px !important;
+    max-width: 52px !important;
+    flex: 0 0 52px !important;
+}
+
+div[role="group"] input[placeholder*="nueva respuesta"] + button.chakra-button > div,
+div[role="group"] input[placeholder*="new answer"] + button.chakra-button > div,
+div[role="group"] input[placeholder*="respuesta"] + button.chakra-button > div {
+    width: 100% !important;
+    justify-content: center !important;
+}
