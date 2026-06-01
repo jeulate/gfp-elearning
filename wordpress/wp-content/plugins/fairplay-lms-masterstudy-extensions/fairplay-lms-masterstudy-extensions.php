@@ -199,12 +199,26 @@ function fplms_custom_login_translations($translated, $text, $domain) {
     return $translated;
 }
 
-add_action( 'wp_enqueue_scripts', 'fplms_enqueue_masterstudy_builder_custom_styles', 999 );
-add_action( 'wp_head', 'fplms_masterstudy_builder_inline_style_fallback', 999 );
-add_action( 'wp_footer', 'fplms_masterstudy_builder_js_width_fallback', 999 );
+//add_action( 'wp_enqueue_scripts', 'fplms_enqueue_masterstudy_builder_custom_styles', 999 );
+//add_action( 'wp_head', 'fplms_masterstudy_builder_inline_style_fallback', 999 );
+//add_action( 'wp_footer', 'fplms_masterstudy_builder_js_width_fallback', 999 );
 
 function fplms_is_masterstudy_builder_request() {
-    return is_user_logged_in();
+    if ( ! is_user_logged_in() ) {
+        return false;
+    }
+
+    $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+
+    return (
+        // En MasterStudy, muchas veces la SPA arranca en /user-account/
+        // y luego navega internamente a /edit-course/... sin recarga completa.
+        // Si no permitimos /user-account/, los scripts nunca llegan al HTML inicial.
+        strpos( $request_uri, '/user-account/edit-course/' ) !== false ||
+        strpos( $request_uri, '/edit-quiz/' ) !== false ||
+        strpos( $request_uri, '/curriculum/' ) !== false ||
+        strpos( $request_uri, '/quiz/' ) !== false
+    );
 }
 
 function fplms_enqueue_masterstudy_builder_custom_styles() {
@@ -216,17 +230,21 @@ function fplms_enqueue_masterstudy_builder_custom_styles() {
     $css_abs_path = FPLMS_PLUGIN_DIR . $css_rel_path;
     $css_version  = file_exists( $css_abs_path ) ? (string) filemtime( $css_abs_path ) : '1.0.1';
 
-    $translation_js_rel_path = 'assets/js/quiz-type-translations.js';
+    $translation_js_rel_path = 'assets/js/quiz-type-translation.js';
     $translation_js_abs_path = FPLMS_PLUGIN_DIR . $translation_js_rel_path;
     if ( ! file_exists( $translation_js_abs_path ) ) {
-        $translation_js_rel_path = 'assets/js/quiz-type-translation.js';
+        $translation_js_rel_path = 'assets/js/quiz-type-translations.js';
         $translation_js_abs_path = FPLMS_PLUGIN_DIR . $translation_js_rel_path;
     }
-    $translation_js_version = file_exists( $translation_js_abs_path ) ? (string) filemtime( $translation_js_abs_path ) : '1.0.0';
+    $translation_js_version = file_exists( $translation_js_abs_path )
+        ? ( (string) filemtime( $translation_js_abs_path ) . '-' . substr( md5_file( $translation_js_abs_path ), 0, 8 ) )
+        : '1.0.0';
 
     $button_fix_js_rel_path = 'assets/js/masterstudy-builder-button-fix.js';
     $button_fix_js_abs_path = FPLMS_PLUGIN_DIR . $button_fix_js_rel_path;
-    $button_fix_js_version  = file_exists( $button_fix_js_abs_path ) ? (string) filemtime( $button_fix_js_abs_path ) : '1.0.0';
+    $button_fix_js_version  = file_exists( $button_fix_js_abs_path )
+        ? ( (string) filemtime( $button_fix_js_abs_path ) . '-' . substr( md5_file( $button_fix_js_abs_path ), 0, 8 ) )
+        : '1.0.0';
 
     wp_enqueue_style(
         'fplms-masterstudy-builder-custom',
@@ -277,64 +295,92 @@ function fplms_masterstudy_builder_js_width_fallback() {
 
     ?>
     <script id="fplms-masterstudy-builder-js-fallback">
+    /* Fallback inline — refuerza el fix del boton en caso de que el script externo
+       no haya cargado todavia. Comparte la misma logica SPA-aware. */
     (function () {
+        function isBuilderPath() {
+            var p = window.location ? window.location.pathname : '';
+            return /\/user-account\/edit-course\/\d+/.test(p) ||
+                   /\/edit-quiz\/\d+/.test(p) ||
+                   /\/edit-course\/\d+/.test(p) ||
+                   /\/curriculum\//.test(p) ||
+                   /\/quiz\/\d+/.test(p);
+        }
+
         function applyButtonFix(button) {
-            if (!button) {
-                return;
-            }
-
-            button.style.setProperty('width', '52px', 'important');
-            button.style.setProperty('min-width', '52px', 'important');
-            button.style.setProperty('max-width', '52px', 'important');
-            button.style.setProperty('flex', '0 0 52px', 'important');
-
+            if (!button) { return; }
+            button.style.setProperty('width',     '52px',     'important');
+            button.style.setProperty('min-width', '52px',     'important');
+            button.style.setProperty('max-width', '52px',     'important');
+            button.style.setProperty('flex',      '0 0 52px', 'important');
             var inner = button.querySelector(':scope > div');
             if (inner) {
-                inner.style.setProperty('width', '100%', 'important');
+                inner.style.setProperty('width',           '100%',   'important');
                 inner.style.setProperty('justify-content', 'center', 'important');
             }
         }
 
         function findTargetButtons() {
-            var selectors = [
-                'button.chakra-button.chakra-j6rous',
-                'div[role="group"] input[placeholder*="nueva respuesta"] + button.chakra-button',
-                'div[role="group"] input[placeholder*="new answer"] + button.chakra-button',
-                'div[role="group"] input[placeholder*="respuesta"] + button.chakra-button'
-            ];
-
             var seen = new Set();
-            var results = [];
-
-            selectors.forEach(function (selector) {
-                document.querySelectorAll(selector).forEach(function (node) {
-                    if (!seen.has(node)) {
-                        seen.add(node);
-                        results.push(node);
-                    }
-                });
+            [
+                'button.chakra-button.chakra-j6rous',
+                'button.chakra-button[class*="j6r"]',
+                'div[role="group"] input[placeholder*="respuesta"] + button.chakra-button',
+                'div[role="group"] input[placeholder*="answer"] + button.chakra-button'
+            ].forEach(function (sel) {
+                try { document.querySelectorAll(sel).forEach(function (n) { seen.add(n); }); } catch (e) {}
             });
-
-            return results;
+            return seen;
         }
 
         function runFix() {
+            if (!isBuilderPath()) { return; }
             findTargetButtons().forEach(applyButtonFix);
         }
 
         runFix();
 
-        var observer = new MutationObserver(function () {
-            runFix();
-        });
+        var _mt = null;
+        new MutationObserver(function () {
+            clearTimeout(_mt);
+            _mt = setTimeout(runFix, 60);
+        }).observe(document.body, { childList: true, subtree: true, attributes: true,
+            attributeFilter: ['class', 'style', 'disabled', 'aria-disabled'] });
 
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ['class', 'style', 'disabled', 'aria-disabled']
-        });
+        var _lp = window.location ? window.location.pathname : '';
+        setInterval(function () {
+            var cp = window.location ? window.location.pathname : '';
+            if (cp !== _lp) { _lp = cp; runFix(); }
+        }, 200);
     })();
     </script>
     <?php
+}
+
+
+add_action( 'template_redirect', 'fplms_start_builder_output_buffer', 0 );
+
+function fplms_start_builder_output_buffer() {
+    if ( ! fplms_is_masterstudy_builder_request() ) {
+        return;
+    }
+
+    ob_start( 'fplms_inject_builder_assets_into_html' );
+}
+
+function fplms_inject_builder_assets_into_html( $html ) {
+    if ( stripos( $html, '</head>' ) === false ) {
+        return $html;
+    }
+
+    $css_url = FPLMS_PLUGIN_URL . 'assets/css/masterstudy-builder-custom.css?v=' . time();
+    $btn_js  = FPLMS_PLUGIN_URL . 'assets/js/masterstudy-builder-button-fix.js?v=' . time();
+    $tr_js   = FPLMS_PLUGIN_URL . 'assets/js/quiz-type-translation.js?v=' . time();
+
+    $inject = "\n"
+        . '<link rel="stylesheet" id="fplms-builder-custom-css" href="' . esc_url( $css_url ) . '" media="all">' . "\n"
+        . '<script id="fplms-builder-button-fix-js" src="' . esc_url( $btn_js ) . '" defer></script>' . "\n"
+        . '<script id="fplms-quiz-type-translation-js" src="' . esc_url( $tr_js ) . '" defer></script>' . "\n";
+
+    return str_ireplace( '</head>', $inject . '</head>', $html );
 }
