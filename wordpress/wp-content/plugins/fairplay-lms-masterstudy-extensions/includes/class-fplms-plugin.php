@@ -227,7 +227,8 @@ class FairPlay_LMS_Plugin {
         add_action( 'wp_ajax_stm_lms_account_courses',     [ $this, 'intercept_enrolled_courses_per_page' ], 1 );
 
         // Filtrado de cursos matriculados por visibilidad de estructura (respuesta AJAX)
-        add_filter( 'stm_lms_get_user_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
+        // Filtro para modificar la consulta de cursos ANTES de que MasterStudy los renderice
+add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user_courses_query' ], 10, 2 );
         add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
 
         // Invalidar caché de estadísticas del estudiante cuando un curso cambia de estado.
@@ -1103,13 +1104,20 @@ class FairPlay_LMS_Plugin {
      * reciba TODOS los cursos matriculados y pueda aplicar el filtro de visibilidad sobre
      * el conjunto completo — sin que MasterStudy haya truncado por paginación del servidor.
      */
-    public function intercept_enrolled_courses_per_page(): void {
-        if ( current_user_can( 'manage_options' ) ) {
-            return;
-        }
-        $_REQUEST['per_page'] = 500;
-        $_POST['per_page']    = 500;
+   public function intercept_enrolled_courses_per_page(): void {
+    if ( current_user_can( 'manage_options' ) ) {
+        return;
     }
+    // Forzar per_page a 500 para obtener TODOS los cursos en una sola página
+    $_REQUEST['per_page'] = 500;
+    $_POST['per_page']    = 500;
+    $_GET['per_page']     = 500;
+    
+    // También forzar page=1 para asegurar que obtenemos la primera página
+    $_REQUEST['page'] = 1;
+    $_POST['page']    = 1;
+    $_GET['page']     = 1;
+}
 
     /**
      * Invalida la caché del dashboard de estudiante cuando MasterStudy dispara un hook
@@ -1672,8 +1680,21 @@ class FairPlay_LMS_Plugin {
                 );
                 cards.forEach( function ( card ) {
                     if ( ! isAllowedStudentCourse( card ) ) {
-                        card.style.display = 'none';
-                        return;
+                        // Modo conservador también para filtros custom:
+                        // si la tarjeta no se puede identificar de forma fiable,
+                        // no la ocultamos aquí para evitar listas en blanco tras
+                        // re-renders/paginación de Vue con markup parcial.
+                        var _cidCheck = extractCourseIdFromCard( card );
+                        var _hasKnownUrl = false;
+                        var _linksCheck = card.querySelectorAll( 'a[href]' );
+                        for ( var _lc = 0; _lc < _linksCheck.length; _lc++ ) {
+                            var _kc = normalizeUrl( _linksCheck[ _lc ].href );
+                            if ( _kc && studentVisibleUrlMap[ _kc ] ) { _hasKnownUrl = true; break; }
+                        }
+                        if ( _cidCheck || _hasKnownUrl ) {
+                            card.style.display = 'none';
+                            return;
+                        }
                     }
 
                     var visible;
@@ -1685,7 +1706,18 @@ class FairPlay_LMS_Plugin {
                         visible = p >= 100;
                     } else {
                         var cid = extractCourseIdFromCard( card );
-                        visible = ( cid && ids.indexOf( cid ) !== -1 );
+                        if ( ! cid ) {
+                            var _links = card.querySelectorAll( 'a[href]' );
+                            for ( var _li = 0; _li < _links.length; _li++ ) {
+                                var _key = normalizeUrl( _links[ _li ].href );
+                                if ( _key && studentVisibleUrlToId[ _key ] ) {
+                                    cid = parseInt( studentVisibleUrlToId[ _key ] ) || 0;
+                                    break;
+                                }
+                            }
+                        }
+                        // Si no se logró identificar el curso, modo conservador.
+                        visible = cid ? ( ids.indexOf( cid ) !== -1 ) : true;
                     }
                     card.style.display = visible ? '' : 'none';
                 } );
@@ -1950,8 +1982,12 @@ class FairPlay_LMS_Plugin {
                             return;
                         }
 
+                        // Vue puede tardar más de 300 ms en reconstruir cards/paginación.
+                        // Re-aplicamos en varios ticks para cubrir cargas lentas.
                         setTimeout( reapplyStudentVisibility, 120 );
                         setTimeout( reapplyStudentVisibility, 320 );
+                        setTimeout( reapplyStudentVisibility, 700 );
+                        setTimeout( reapplyStudentVisibility, 1200 );
                     }, true );
                 }
 
@@ -1962,12 +1998,14 @@ class FairPlay_LMS_Plugin {
                     if ( document.getElementById( 'fplms-filter-buttons' ) ) { filtersInjected = true; return; }
                     filtersInjected = true;
 
-                    // Ocultar todos los tabs nativos excepto "Todos"
-                    // Vue sólo verá el tab "all" → siempre carga todos los cursos → estado consistente
+                    // Modo definitivo solicitado:
+                    // ocultar completamente los tabs nativos y utilizar solo
+                    // los botones custom (#fplms-filter-buttons) para filtrar.
+                    // Esto evita conflictos de render/paginación entre Vue y tabs.
+                    blocks.style.display = 'none';
+                    blocks.setAttribute( 'aria-hidden', 'true' );
                     blocks.querySelectorAll( '[data-status]' ).forEach( function ( t ) {
-                        if ( t.dataset.status && t.dataset.status !== 'all' ) {
-                            t.style.display = 'none';
-                        }
+                        t.style.display = 'none';
                     } );
 
                     // ── Botones de filtro (reemplazan a los tabs) ─────────────────────────

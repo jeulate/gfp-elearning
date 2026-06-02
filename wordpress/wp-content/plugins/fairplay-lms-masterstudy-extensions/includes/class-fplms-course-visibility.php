@@ -74,47 +74,72 @@ class FairPlay_LMS_Course_Visibility_Service {
      * @return bool True si el usuario puede ver el curso, false en caso contrario.
      */
     public function can_user_see_course( int $user_id, int $course_id, array $user_structures = [] ): bool {
-
-        if ( ! $this->can_user_view_course_status( $user_id, $course_id ) ) {
-            return false;
-        }
-
-        // Si no se pasan estructuras, obtenerlas
-        if ( empty( $user_structures ) ) {
-            $user_structures = $this->get_user_structures( $user_id );
-        }
-
-        // Si el usuario no tiene estructura asignada, puede ver todos los cursos
-        if ( empty( $user_structures ) ) {
-            return true;
-        }
-
-        // Obtener estructuras asignadas al curso
-        $course_structures = $this->get_course_structures( $course_id );
-
-        // Si el curso no tiene restricciones de estructura, es visible para todos
-        if ( $this->course_has_no_restrictions( $course_structures ) ) {
-            return true;
-        }
-
-        // Verificar si hay coincidencia entre estructuras del usuario y del curso
-        return $this->structures_match( $user_structures, $course_structures );
+    // Depuración temporal para curso 53818
+    if ( $course_id === 53818 && $user_id === 5 ) {
+        error_log( "=== FPLMS DEBUG: can_user_see_course para curso 53818 ===" );
     }
+    
+    if ( ! $this->can_user_view_course_status( $user_id, $course_id ) ) {
+        if ( $course_id === 53818 && $user_id === 5 ) {
+            error_log( "FPLMS: Curso 53818 - FALLÓ por can_user_view_course_status" );
+        }
+        return false;
+    }
+
+    // Si no se pasan estructuras, obtenerlas
+    if ( empty( $user_structures ) ) {
+        $user_structures = $this->get_user_structures( $user_id );
+        if ( $course_id === 53818 && $user_id === 5 ) {
+            error_log( "FPLMS: Estructuras del usuario: " . print_r($user_structures, true) );
+        }
+    }
+
+    // Si el usuario no tiene estructura asignada, puede ver todos los cursos
+    if ( empty( $user_structures ) ) {
+        if ( $course_id === 53818 && $user_id === 5 ) {
+            error_log( "FPLMS: Curso 53818 - visible porque usuario no tiene estructuras" );
+        }
+        return true;
+    }
+
+    // Obtener estructuras asignadas al curso
+    $course_structures = $this->get_course_structures( $course_id );
+    if ( $course_id === 53818 && $user_id === 5 ) {
+        error_log( "FPLMS: Estructuras del curso: " . print_r($course_structures, true) );
+    }
+
+    // Si el curso no tiene restricciones de estructura, es visible para todos
+    if ( $this->course_has_no_restrictions( $course_structures ) ) {
+        if ( $course_id === 53818 && $user_id === 5 ) {
+            error_log( "FPLMS: Curso 53818 - visible porque curso no tiene restricciones" );
+        }
+        return true;
+    }
+
+    $result = $this->structures_match( $user_structures, $course_structures );
+    if ( $course_id === 53818 && $user_id === 5 ) {
+        error_log( "FPLMS: Curso 53818 - structures_match = " . ($result ? 'TRUE' : 'FALSE') );
+    }
+    
+    return $result;
+}
 
     /**
      * Obtiene las estructuras asignadas a un usuario.
+     * Las meta keys son las que realmente existen en la base de datos.
      *
      * @param int $user_id ID del usuario.
-     * @return array Array con estructura: ['city' => id, 'company' => id, 'channel' => id, 'branch' => id, 'role' => id].
+     * @return array Array con estructura: ['channel' => id, 'branch' => id, 'role' => id, 'city' => id, 'company' => id].
      */
     private function get_user_structures( int $user_id ): array {
 
+        // Las meta keys REALES en la base de datos
         $structures = [
-            'city'    => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CITY, true ),
-            'company' => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_COMPANY, true ),
-            'channel' => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_CHANNEL, true ),
-            'branch'  => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_BRANCH, true ),
-            'role'    => (int) get_user_meta( $user_id, FairPlay_LMS_Config::USER_META_ROLE, true ),
+            'city'    => (int) get_user_meta( $user_id, 'fplms_city', true ),
+            'company' => (int) get_user_meta( $user_id, 'fplms_company', true ),
+            'channel' => (int) get_user_meta( $user_id, 'fplms_channel', true ),
+            'branch'  => (int) get_user_meta( $user_id, 'fplms_branch', true ),
+            'role'    => (int) get_user_meta( $user_id, 'fplms_job_role', true ),
         ];
 
         // Remover estructura vacía (0 significa no asignada)
@@ -131,9 +156,6 @@ class FairPlay_LMS_Course_Visibility_Service {
      */
     private function get_course_structures( int $course_id ): array {
 
-        // array_filter elimina strings vacíos / ceros que WordPress devuelve cuando
-        // el meta nunca fue guardado: get_post_meta() → '' → (array)'' = [''] ≠ []
-        // Sin este filtro, [''] se interpreta como restricción real y bloquea todo.
         return [
             'cities'    => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_CITIES, true ) ) ),
             'companies' => array_filter( array_map( 'intval', (array) get_post_meta( $course_id, FairPlay_LMS_Config::META_COURSE_COMPANIES, true ) ) ),
@@ -172,7 +194,6 @@ class FairPlay_LMS_Course_Visibility_Service {
      */
     private function structures_match( array $user_structures, array $course_structures ): bool {
 
-        // Mapeo de claves: usuario vs curso
         $mapping = [
             'city'    => 'cities',
             'company' => 'companies',
@@ -183,26 +204,22 @@ class FairPlay_LMS_Course_Visibility_Service {
 
         foreach ( $mapping as $user_key => $course_key ) {
 
-            // Si el curso no tiene restricción en este nivel, no filtra → continuar
             if ( empty( $course_structures[ $course_key ] ) ) {
                 continue;
             }
 
-            // El curso restringe este nivel → el usuario DEBE tener valor y coincidir
             if ( ! isset( $user_structures[ $user_key ] ) ) {
-                return false; // Usuario no tiene asignado un nivel que el curso requiere
+                return false;
             }
 
-            // Normalizar a int y verificar coincidencia
             $user_val    = (int) $user_structures[ $user_key ];
             $course_vals = array_map( 'intval', (array) $course_structures[ $course_key ] );
 
             if ( ! in_array( $user_val, $course_vals, true ) ) {
-                return false; // No coincide en este nivel
+                return false;
             }
         }
 
-        // Todos los niveles asignados al curso coinciden con el usuario (AND entre niveles)
         return true;
     }
 
@@ -228,50 +245,36 @@ class FairPlay_LMS_Course_Visibility_Service {
     /**
      * Filtra un array de cursos según la visibilidad del usuario.
      *
-     * Útil para aplicar como filtro WordPress a queries de cursos.
-     *
      * @param array $course_ids Array de IDs de cursos.
-     * @param int   $user_id ID del usuario (actual si no se especifica).
+     * @param int   $user_id ID del usuario.
      * @return array Array filtrado de IDs de cursos.
      */
     public function filter_courses_array( array $course_ids, $raw_user_id = 0 ): array {
 
-        // MasterStudy puede pasar el user_id como segundo argumento o no pasarlo.
-        // Normalizamos a int y fallback a current user.
         $user_id = (int) $raw_user_id;
         if ( 0 === $user_id ) {
             $user_id = get_current_user_id();
         }
         if ( 0 === $user_id ) {
-            return $course_ids; // Sin usuario identificado, no filtrar
+            return $course_ids;
         }
 
-        // Admin puede ver todos los cursos
         if ( current_user_can( 'manage_options' ) ) {
             return $course_ids;
         }
 
-        // MasterStudy puede pasar el array en tres formatos distintos:
-        //   A) Indexado:              [ 0 => 877, 1 => 882 ]
-        //      → el valor ES el course_id (numérico)
-        //   B) Asociativo numérico:   [ 877 => ['progress'=>0,...], 882 => [...] ]
-        //      → la clave es el course_id como int/string numérico
-        //   C) Asociativo con clave:  [ 'stm_lms_course_877' => ['progress'=>0,...] ]
-        //      → la clave es un string tipo 'stm_lms_course_877'; extraemos el número
         return array_filter(
             $course_ids,
             function( $value, $key ) use ( $user_id ) {
                 if ( is_array( $value ) || is_object( $value ) ) {
-                    // Formato B o C: la clave identifica el curso
                     if ( is_numeric( $key ) ) {
-                        $course_id = (int) $key; // Formato B
+                        $course_id = (int) $key;
                     } else {
-                        // Formato C: extraer el número del final del string (ej: 'stm_lms_course_877')
                         preg_match( '/(\d+)$/', (string) $key, $m );
                         $course_id = ! empty( $m[1] ) ? (int) $m[1] : 0;
                     }
                 } else {
-                    $course_id = (int) $value; // Formato A
+                    $course_id = (int) $value;
                 }
 
                 if ( $course_id <= 0 ) {
@@ -284,136 +287,173 @@ class FairPlay_LMS_Course_Visibility_Service {
     }
 
     /**
-     * Filtra la respuesta AJAX de cursos matriculados (filtro 'stm_lms_get_user_courses_filter').
+     * Filtra la respuesta AJAX de cursos matriculados.
      *
-     * MasterStudy pasa $r = ['courses' => [...], 'total_posts' => N, ...] al AJAX handler.
-     * Filtramos $r['courses'] para mostrar solo los que el usuario puede ver.
-     *
-     * @param array $response Respuesta completa con claves: courses, pagination, total_pages, total_posts.
-     * @return array Respuesta con cursos filtrados según visibilidad de estructura.
+     * @param array $response Respuesta completa.
+     * @return array Respuesta con cursos filtrados.
      */
     public function filter_user_courses_response( array $response ): array {
-        // Administrador: ve todo sin restricción.
-        if ( current_user_can( 'manage_options' ) ) {
-            return $response;
+    // Administrador: ve todo sin restricción
+    if ( current_user_can( 'manage_options' ) ) {
+        return $response;
+    }
+
+    // Log para depuración
+    error_log( "FPLMS: filter_user_courses_response - Inicio. Claves de respuesta: " . print_r(array_keys($response), true) );
+    
+    // Intentar encontrar los cursos en diferentes estructuras posibles
+    $courses = null;
+    $courses_key = null;
+    
+    // Formato 1: $response['courses'] (más común)
+    if ( isset( $response['courses'] ) && is_array( $response['courses'] ) ) {
+        $courses = $response['courses'];
+        $courses_key = 'courses';
+        error_log( "FPLMS: Cursos encontrados en 'courses', count=" . count($courses) );
+    }
+    // Formato 2: $response['data']['courses']
+    elseif ( isset( $response['data']['courses'] ) && is_array( $response['data']['courses'] ) ) {
+        $courses = $response['data']['courses'];
+        $courses_key = 'data.courses';
+        error_log( "FPLMS: Cursos encontrados en 'data.courses', count=" . count($courses) );
+    }
+    // Formato 3: $response directo es un array indexado
+    elseif ( is_array( $response ) && ! isset( $response['courses'] ) && ! isset( $response['data'] ) ) {
+        // Verificar si el primer elemento tiene 'course_id'
+        $first = reset($response);
+        if ( is_array( $first ) && ( isset( $first['course_id'] ) || isset( $first['id'] ) ) ) {
+            $courses = $response;
+            $courses_key = 'direct';
+            error_log( "FPLMS: Cursos encontrados en array directo, count=" . count($courses) );
         }
-
-        if ( empty( $response['courses'] ) || ! is_array( $response['courses'] ) ) {
-            return $response;
-        }
-
-        $user_id = get_current_user_id(); // 0 = no logueado / perfil público visitado por anónimo.
-
-        $response['courses'] = array_values(
-            array_filter(
-                $response['courses'],
-                function( $course ) use ( $user_id ) {
-                    $course_id = ! empty( $course['course_id'] ) ? (int) $course['course_id'] : 0;
+    }
+    
+    if ( empty( $courses ) ) {
+        error_log( "FPLMS: No se encontraron cursos en la respuesta. Retornando original." );
+        return $response;
+    }
+    
+    $user_id = get_current_user_id();
+    $original_count = count( $courses );
+    error_log( "FPLMS: Procesando {$original_count} cursos para usuario {$user_id}" );
+    
+    // Filtrar cursos
+    $filtered_courses = array_values(
+        array_filter(
+            $courses,
+            function( $course ) use ( $user_id ) {
+                // Extraer course_id de diferentes formatos
+                $course_id = 0;
+                
+                if ( is_array( $course ) ) {
+                    if ( isset( $course['course_id'] ) ) {
+                        $course_id = (int) $course['course_id'];
+                    } elseif ( isset( $course['id'] ) ) {
+                        $course_id = (int) $course['id'];
+                    } elseif ( isset( $course['ID'] ) ) {
+                        $course_id = (int) $course['ID'];
+                    } elseif ( isset( $course['post_id'] ) ) {
+                        $course_id = (int) $course['post_id'];
+                    }
+                } elseif ( is_numeric( $course ) ) {
+                    $course_id = (int) $course;
+                    } elseif ( is_object( $course ) ) {
+                        $course_id = (int) ($course->course_id ?? $course->id ?? $course->ID ?? 0);
+                    }
+                    
                     if ( $course_id <= 0 ) {
+                        error_log( "FPLMS: No se pudo extraer course_id del curso: " . print_r($course, true) );
                         return false;
                     }
-
-                    // Caso 1: visitante no autenticado — solo cursos publicados.
-                    if ( 0 === $user_id ) {
-                        return 'publish' === get_post_status( $course_id );
+                    
+                    $visible = $this->can_user_see_course( $user_id, $course_id );
+                    
+                    if ( $course_id === 53818 ) {
+                        error_log( "FPLMS: Curso 53818 - can_user_see_course = " . ($visible ? 'TRUE' : 'FALSE') );
                     }
-
-                    // Caso 2: usuario autenticado — filtro completo (estado + estructuras).
-                    return $this->can_user_see_course( $user_id, $course_id );
+                    
+                    return $visible;
                 }
             )
         );
-
-        // Corregir metadata de paginación para que MasterStudy calcule las páginas
-        // en base al total de cursos VISIBLES, no al total bruto de matrículas.
-        // Sin esto MasterStudy muestra N páginas con cursos ocultos vacíos y
-        // los filtros de tab (Completado / En Progreso) no encuentran tarjetas
-        // que están en páginas todavía no renderizadas en el DOM.
-        if ( $user_id > 0 ) {
-            $filtered_total = $this->get_filtered_enrolled_count( $user_id );
-            $per_page       = $this->get_per_page_from_response( $response );
-
-            $response['total_posts'] = $filtered_total;
-            $response['total_pages'] = max( 1, (int) ceil( $filtered_total / $per_page ) );
-
-            // Algunos temas/versiones de MasterStudy usan sub-array 'pagination'.
-            if ( isset( $response['pagination'] ) && is_array( $response['pagination'] ) ) {
-                $response['pagination']['total_pages'] = $response['total_pages'];
-                $response['pagination']['total_posts'] = $response['total_posts'];
-            }
+        
+        $filtered_count = count( $filtered_courses );
+        error_log( "FPLMS: Cursos después de filtrar: {$filtered_count}" );
+        
+        // Actualizar la respuesta con los cursos filtrados
+        if ( $courses_key === 'courses' ) {
+            $response['courses'] = $filtered_courses;
+        } elseif ( $courses_key === 'data.courses' ) {
+            $response['data']['courses'] = $filtered_courses;
+        } elseif ( $courses_key === 'direct' ) {
+            $response = $filtered_courses;
         }
-
+        
+        // Recalcular totales
+        $per_page = isset( $_POST['per_page'] ) ? (int) $_POST['per_page'] : 10;
+        if ( $per_page <= 0 ) $per_page = 10;
+        
+        $total_pages = max( 1, (int) ceil( $filtered_count / $per_page ) );
+        $current_page = isset( $_POST['page'] ) ? (int) $_POST['page'] : 1;
+        if ( $current_page < 1 ) $current_page = 1;
+        
+        // Actualizar totales en la respuesta
+        if ( isset( $response['total_posts'] ) ) {
+            $response['total_posts'] = $filtered_count;
+        }
+        if ( isset( $response['total_pages'] ) ) {
+            $response['total_pages'] = $total_pages;
+        }
+        if ( isset( $response['data']['total_posts'] ) ) {
+            $response['data']['total_posts'] = $filtered_count;
+        }
+        if ( isset( $response['data']['total_pages'] ) ) {
+            $response['data']['total_pages'] = $total_pages;
+        }
+        
+        // Actualizar paginación si existe
+        if ( isset( $response['pagination'] ) && is_array( $response['pagination'] ) ) {
+            $response['pagination']['total_pages'] = $total_pages;
+            $response['pagination']['total_posts'] = $filtered_count;
+            $response['pagination']['per_page'] = $per_page;
+            $response['pagination']['current_page'] = $current_page;
+        }
+        
+        error_log( "FPLMS: Resultado final - Total visible: {$filtered_count}, Per page: {$per_page}, Total pages: {$total_pages}, Current page: {$current_page}" );
+        
         return $response;
     }
 
     /**
-     * Cuenta cuántos cursos matriculados del usuario pasan el filtro de visibilidad.
-     * Se cachea por request (static) para no repetir la query cuando MasterStudy
-     * llama al hook en varias páginas dentro de la misma petición HTTP.
+     * Filtra los argumentos de la consulta de cursos ANTES de que MasterStudy
+     * renderice las tarjetas. Esto permite filtrar los IDs de cursos visibles
+     * antes de que se genere el HTML.
      *
-     * @param int $user_id ID del usuario autenticado.
-     * @return int Total de cursos visibles entre todos los matriculados.
+     * @param array $args Argumentos de WP_Query.
+     * @param int   $user_id ID del usuario.
+     * @return array Argumentos modificados.
      */
-    private function get_filtered_enrolled_count( int $user_id ): int {
-        static $cache = [];
-        if ( isset( $cache[ $user_id ] ) ) {
-            return $cache[ $user_id ];
+    public function filter_user_courses_query( array $args, int $user_id ): array {
+        // Administrador: ver todo sin restricción
+        if ( current_user_can( 'manage_options' ) ) {
+            return $args;
         }
-
-        global $wpdb;
-
-        $ms_table = null;
-        foreach ( [ $wpdb->prefix . 'stm_lms_user_courses', $wpdb->prefix . 'stm_lms_users' ] as $t ) {
-            if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t ) {
-                $ms_table = $t;
-                break;
-            }
+        
+        error_log( "FPLMS: filter_user_courses_query para usuario {$user_id}" );
+        
+        // Obtener cursos visibles para este usuario
+        $visible_courses = $this->get_visible_courses_for_user( $user_id );
+        
+        error_log( "FPLMS: Cursos visibles para usuario {$user_id}: " . count($visible_courses) );
+        
+        if ( ! empty( $visible_courses ) ) {
+            $args['post__in'] = $visible_courses;
+            $args['posts_per_page'] = -1; // Obtener todos los cursos visibles
+            $args['nopaging'] = true;
+        } else {
+            $args['post__in'] = [ 0 ]; // No mostrar ningún curso
         }
-
-        $enrolled_ids = [];
-        if ( $ms_table ) {
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-            $rows = $wpdb->get_col(
-                $wpdb->prepare( "SELECT course_id FROM `{$ms_table}` WHERE user_id = %d", $user_id )
-            );
-            $enrolled_ids = array_map( 'intval', (array) $rows );
-        }
-
-        $count = 0;
-        foreach ( $enrolled_ids as $cid ) {
-            if ( $cid > 0 && $this->can_user_see_course( $user_id, $cid ) ) {
-                $count++;
-            }
-        }
-
-        $cache[ $user_id ] = $count;
-        return $count;
-    }
-
-    /**
-     * Detecta el número de cursos por página de la respuesta MasterStudy.
-     * Prueba varias claves conocidas; si no encuentra ninguna, infiere de
-     * total_posts/total_pages; fallback = 5 (valor por defecto de MasterStudy).
-     *
-     * @param array $response Respuesta del hook stm_lms_get_user_courses_filter.
-     * @return int Cursos por página.
-     */
-    private function get_per_page_from_response( array $response ): int {
-        foreach ( [ 'per_page', 'courses_per_page' ] as $key ) {
-            if ( ! empty( $response[ $key ] ) && (int) $response[ $key ] > 0 ) {
-                return (int) $response[ $key ];
-            }
-        }
-        if ( ! empty( $response['pagination']['per_page'] ) && (int) $response['pagination']['per_page'] > 0 ) {
-            return (int) $response['pagination']['per_page'];
-        }
-        // Inferir: total_posts / total_pages (antes del filtro → valor bruto de MasterStudy)
-        if ( ! empty( $response['total_posts'] ) && ! empty( $response['total_pages'] ) ) {
-            $inferred = (int) ceil( (int) $response['total_posts'] / (int) $response['total_pages'] );
-            if ( $inferred > 0 ) {
-                return $inferred;
-            }
-        }
-        return 5; // Default MasterStudy LMS
+        
+        return $args;
     }
 }

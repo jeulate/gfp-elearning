@@ -103,7 +103,6 @@ class FairPlay_LMS_Progress_Service {
             'total_users' => 0,
         ];
 
-        // Por defecto solo consideramos estudiantes (subscribers)
         $query = new WP_User_Query(
             [
                 'role'   => 'subscriber',
@@ -127,12 +126,14 @@ class FairPlay_LMS_Progress_Service {
 
     /**
      * Estadísticas del panel /user-account/ para el rol estudiante.
-     * Devuelve: enrolled, avg_progress, completed, certificates, hours.
      */
     public function get_student_dashboard_stats( int $user_id ): array {
         global $wpdb;
 
-        $cache_key = 'fplms_sdash_v9_' . $user_id;
+        // Forzar limpieza de caché para debugging (eliminar en producción)
+        // delete_transient( 'fplms_sdash_v12_' . $user_id );
+
+        $cache_key = 'fplms_sdash_v12_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
@@ -152,88 +153,72 @@ class FairPlay_LMS_Progress_Service {
             'courses_list'      => [],
         ];
 
-        // 1. Matrículas — tabla custom MasterStudy o usermeta como fallback
-        $enrolled_ids = [];
-        $ms_table     = null;
-        foreach ( [ $wpdb->prefix . 'stm_lms_user_courses', $wpdb->prefix . 'stm_lms_users' ] as $t ) {
-            if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t ) {
-                $ms_table = $t;
-                break;
+        // 1. Matrículas desde la tabla MasterStudy
+        $enrolled_raw = [];
+        $ms_table     = $wpdb->prefix . 'stm_lms_user_courses';
+
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT course_id, progress_percent, status FROM {$ms_table} WHERE user_id = %d",
+                $user_id
+            )
+        );
+
+        foreach ( $rows as $row ) {
+            $cid = (int) $row->course_id;
+            if ( $cid > 0 ) {
+                $enrolled_raw[ $cid ] = [
+                    'progress' => (float) $row->progress_percent,
+                    'status'   => (string) $row->status,
+                ];
             }
         }
 
-        if ( $ms_table ) {
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-            $rows = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT course_id, progress_percent, status FROM `{$ms_table}` WHERE user_id = %d",
-                    $user_id
-                )
-            );
-            foreach ( $rows as $row ) {
-                $cid = (int) $row->course_id;
-                if ( $cid > 0 ) {
-                    $enrolled_ids[ $cid ] = [
-                        'progress' => (float) $row->progress_percent,
-                        'status'   => (string) $row->status,
-                    ];
+        // 🔍 DEPURACIÓN: Ver cursos crudos antes de filtrar
+        if ( $user_id === 5 ) {
+            error_log( '=== FPLMS DEBUG: Cursos crudos del usuario 5 ===' );
+            error_log( 'IDs: ' . print_r( array_keys( $enrolled_raw ), true ) );
+        }
+
+        /**
+         * FILTRO 1: Solo cursos publicados
+         */
+        $enrolled_ids = array_filter(
+            $enrolled_raw,
+            static function ( $course_data, $course_id ) use ( $user_id ): bool {
+                $cid = (int) $course_id;
+                if ( $cid <= 0 ) {
+                    return false;
                 }
-            }
-        }
 
-        // Fallback: usermeta (matrículas vía meta stm_lms_course_NNN)
-        if ( empty( $enrolled_ids ) ) {
-            $meta_rows = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT meta_key, meta_value FROM {$wpdb->usermeta}
-                     WHERE user_id = %d AND meta_key REGEXP '^stm_lms_course_[0-9]+$'",
-                    $user_id
-                )
-            );
-            foreach ( $meta_rows as $row ) {
-                if ( preg_match( '/^stm_lms_course_(\d+)$/', $row->meta_key, $rm ) ) {
-                    $cid       = (int) $rm[1];
-                    $prog_data = maybe_unserialize( $row->meta_value );
-                    $enrolled_ids[ $cid ] = is_array( $prog_data )
-                        ? $prog_data
-                        : [ 'progress' => (float) $prog_data, 'status' => '' ];
+                if ( current_user_can( 'manage_options' ) ) {
+                    return true;
                 }
-            }
+
+                $status = get_post_status( $cid );
+                if ( false === $status ) {
+                    return false;
+                }
+
+                if ( 'publish' === $status ) {
+                    return true;
+                }
+
+                $author_id = (int) get_post_field( 'post_author', $cid );
+                return $author_id > 0 && $author_id === (int) $user_id;
+            },
+            ARRAY_FILTER_USE_BOTH
+        );
+
+        // 🔍 DEPURACIÓN: Después de filtrar por estado
+        if ( $user_id === 5 ) {
+            error_log( '=== FPLMS DEBUG: Después de filtrar por publish ===' );
+            error_log( 'IDs: ' . print_r( array_keys( $enrolled_ids ), true ) );
         }
 
-        // Aplicar visibilidad de cursos inactivos (draft/private/pending):
-        // solo visibles para administrador o creador del curso.
-        if ( ! empty( $enrolled_ids ) ) {
-            $enrolled_ids = array_filter(
-                $enrolled_ids,
-                static function ( $course_data, $course_id ) use ( $user_id ): bool {
-                    $cid = (int) $course_id;
-                    if ( $cid <= 0 ) {
-                        return false;
-                    }
-
-                    if ( current_user_can( 'manage_options' ) ) {
-                        return true;
-                    }
-
-                    $status = get_post_status( $cid );
-                    if ( false === $status ) {
-                        return false;
-                    }
-
-                    if ( 'publish' === $status ) {
-                        return true;
-                    }
-
-                    $author_id = (int) get_post_field( 'post_author', $cid );
-                    return $author_id > 0 && $author_id === (int) $user_id;
-                },
-                ARRAY_FILTER_USE_BOTH
-            );
-        }
-
-        // Aplicar también visibilidad por estructuras para mantener consistencia
-        // con el listado de cursos del panel (/user-account/).
+        /**
+         * FILTRO 2: Visibilidad por estructuras
+         */
         if ( ! empty( $enrolled_ids ) && class_exists( 'FairPlay_LMS_Course_Visibility_Service' ) ) {
             $visibility_service = new FairPlay_LMS_Course_Visibility_Service();
             $enrolled_ids = array_filter(
@@ -243,13 +228,49 @@ class FairPlay_LMS_Progress_Service {
                     if ( $cid <= 0 ) {
                         return false;
                     }
-                    return $visibility_service->can_user_see_course( (int) $user_id, $cid );
+                    $can_see = $visibility_service->can_user_see_course( (int) $user_id, $cid );
+                    
+                    // 🔍 DEPURACIÓN: Ver cada curso
+                    if ( $user_id === 5 && $cid === 53818 ) {
+                        error_log( "FPLMS DEBUG: Curso 53818 - can_user_see_course = " . ($can_see ? 'TRUE' : 'FALSE') );
+                    }
+                    
+                    return $can_see;
                 },
                 ARRAY_FILTER_USE_BOTH
             );
         }
 
+        // 🔍 DEPURACIÓN: Después de filtrar por estructuras
+        if ( $user_id === 5 ) {
+            error_log( '=== FPLMS DEBUG: Después de filtrar por estructuras ===' );
+            error_log( 'IDs: ' . print_r( array_keys( $enrolled_ids ), true ) );
+        }
+
+        /**
+         * FILTRO 3: Eliminar cursos huérfanos
+         */
+        $enrolled_ids = array_filter(
+            $enrolled_ids,
+            static function ( $course_data, $course_id ): bool {
+                $cid = (int) $course_id;
+                if ( $cid <= 0 ) {
+                    return false;
+                }
+                $post = get_post( $cid );
+                return $post !== null && $post->post_type === 'stm-courses';
+            },
+            ARRAY_FILTER_USE_BOTH
+        );
+
+        // 🔧 Recalcular enrolled DESPUÉS de TODOS los filtros
         $stats['enrolled'] = count( $enrolled_ids );
+
+        // 🔍 DEPURACIÓN: Resultado final
+        if ( $user_id === 5 ) {
+            error_log( '=== FPLMS DEBUG: enrolled FINAL = ' . $stats['enrolled'] );
+            error_log( 'IDs FINALES: ' . print_r( array_keys( $enrolled_ids ), true ) );
+        }
 
         if ( $stats['enrolled'] > 0 ) {
             $total_progress = 0.0;
@@ -270,22 +291,16 @@ class FairPlay_LMS_Progress_Service {
 
             $stats['avg_progress'] = (int) round( $total_progress / $stats['enrolled'] );
 
-            // 2. Horas de formación por curso completado.
-            // Lógica: duration_info es la base (ej: "10 hours").
-            //         Si además existe video_duration (ej: "2 horas"), se suma al valor base.
-            //         Si solo existe uno de los dos, se usa ese.
-            // Los valores son strings — se extrae el número con regex.
+            // Horas de formación
             $total_hours = 0.0;
             if ( ! empty( $completed_ids ) ) {
                 $ids_safe = implode( ',', array_map( 'intval', $completed_ids ) );
-                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $dur_rows = $wpdb->get_results(
                     "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta}
                      WHERE post_id IN ($ids_safe)
                        AND meta_key IN ('duration_info', 'video_duration')
                        AND meta_value != ''"
                 );
-                // Acumular por curso: duration_info + video_duration (ambos si existen).
                 $course_hours = [];
                 foreach ( $dur_rows as $dr ) {
                     $cid_dr = (int) $dr->post_id;
@@ -297,7 +312,6 @@ class FairPlay_LMS_Progress_Service {
                     }
                 }
                 foreach ( $course_hours as $keys ) {
-                    // Base: duration_info; suma video_duration encima si existe.
                     $base  = $keys['duration_info'] ?? 0.0;
                     $extra = $keys['video_duration'] ?? 0.0;
                     $total_hours += $base + $extra;
@@ -305,39 +319,34 @@ class FairPlay_LMS_Progress_Service {
             }
             $stats['hours'] = round( $total_hours, 1 );
 
-            // Cursos próximos a iniciar (status = 'not_started' o coming_soon_status activo).
-            // Cursos con fecha de vencimiento configurada (expiring).
-            $all_cids_safe = implode( ',', array_map( 'intval', array_keys( $enrolled_ids ) ) );
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $expiring_ids = array_map( 'intval', (array) $wpdb->get_col(
-                "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
-                 WHERE post_id IN ($all_cids_safe)
-                   AND meta_key = 'end_time'
-                   AND meta_value != ''
-                   AND meta_value > 0"
-            ) );
-            $stats['expiring_count'] = count( $expiring_ids );
-            $stats['expiring_ids']   = $expiring_ids;
+            // Cursos próximos y por vencer
+            $filtered_cids = array_keys( $enrolled_ids );
+            if ( ! empty( $filtered_cids ) ) {
+                $all_cids_safe = implode( ',', array_map( 'intval', $filtered_cids ) );
+                
+                $expiring_ids = array_map( 'intval', (array) $wpdb->get_col(
+                    "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
+                     WHERE post_id IN ($all_cids_safe)
+                       AND meta_key = 'end_time'
+                       AND meta_value != ''
+                       AND meta_value > 0"
+                ) );
+                $stats['expiring_count'] = count( $expiring_ids );
+                $stats['expiring_ids']   = $expiring_ids;
 
-            // Cursos próximos: coming_soon_status = '1' o 'true' o similar.
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $upcoming_ids = array_map( 'intval', (array) $wpdb->get_col(
-                "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
-                 WHERE post_id IN ($all_cids_safe)
-                   AND meta_key = 'coming_soon_status'
-                   AND meta_value != ''
-                   AND meta_value != '0'"
-            ) );
-            $stats['upcoming_count'] = count( $upcoming_ids );
-            $stats['upcoming_ids']   = $upcoming_ids;
+                $upcoming_ids = array_map( 'intval', (array) $wpdb->get_col(
+                    "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
+                     WHERE post_id IN ($all_cids_safe)
+                       AND meta_key = 'coming_soon_status'
+                       AND meta_value != ''
+                       AND meta_value != '0'"
+                ) );
+                $stats['upcoming_count'] = count( $upcoming_ids );
+                $stats['upcoming_ids']   = $upcoming_ids;
+            }
         }
 
-        // 3. Certificados del usuario — múltiples métodos para compatibilidad con
-        //    distintas versiones de MasterStudy (algunos guardan posts, otros no).
-        $cert_count = 0;
-
-        // Método 1: Posts stm-certificates con meta user_id o stm_user_id.
-        // Se usa %s (string) para evitar problemas de comparación tipo en MySQL.
+        // Certificados
         $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
             "SELECT COUNT(DISTINCT p.ID)
              FROM {$wpdb->posts} p
@@ -349,8 +358,6 @@ class FairPlay_LMS_Progress_Service {
             (string) $user_id
         ) );
 
-        // Método 2: post_author (algunas versiones guardan el certificado con el
-        //           usuario como autor del post, no como meta).
         if ( 0 === $cert_count ) {
             $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
                 "SELECT COUNT(ID) FROM {$wpdb->posts}
@@ -361,58 +368,48 @@ class FairPlay_LMS_Progress_Service {
             ) );
         }
 
-        // Método 3: Tabla MasterStudy — cursos con status completed/passed.
-        // En MasterStudy 3.x los certificados se generan al vuelo y no siempre
-        // quedan registrados como posts; se cuenta desde la tabla de matrículas.
-        if ( 0 === $cert_count && $ms_table ) {
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-            $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
-                "SELECT COUNT(*) FROM `{$ms_table}`
-                 WHERE user_id = %d
-                   AND status IN ('completed','passed')",
-                $user_id
-            ) );
-        }
-
-        // Método 4: Fallback — cursos completados ya calculados arriba.
-        if ( 0 === $cert_count ) {
-            $cert_count = count( $completed_ids );
-        }
-
         $stats['certificates'] = $cert_count;
 
-        // Lista de cursos inscritos para la vista de calendario del estudiante
+        // Lista de cursos para la vista
         if ( ! empty( $enrolled_ids ) ) {
-            $cids_safe = implode( ',', array_map( 'intval', array_keys( $enrolled_ids ) ) );
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $cal_dur_rows = (array) $wpdb->get_results(
-                "SELECT post_id, meta_value FROM {$wpdb->postmeta}
-                 WHERE post_id IN ($cids_safe) AND meta_key = 'end_time'
-                   AND meta_value != '' AND meta_value > 0"
-            );
-            $cal_dur_map = [];
-            foreach ( $cal_dur_rows as $dr ) {
-                $cal_dur_map[ (int) $dr->post_id ] = (int) $dr->meta_value;
-            }
-            foreach ( array_keys( $enrolled_ids ) as $cid ) {
-                $post = get_post( $cid );
-                if ( ! $post ) continue;
-                $start_iso   = get_the_date( 'Y-m-d', $cid );
-                $prog_data   = $enrolled_ids[ $cid ];
-                $progress    = (float) ( $prog_data['progress'] ?? 0 );
-                $status      = strtolower( (string) ( $prog_data['status'] ?? '' ) );
-                $is_complete = ( 'completed' === $status || $progress >= 100.0 );
-                $stats['courses_list'][] = [
-                    'id'         => $cid,
-                    'title'      => get_the_title( $cid ),
-                    'view_url'   => (string) get_permalink( $cid ),
-                    'date_start' => $start_iso,
-                    'date_end'   => isset( $cal_dur_map[ $cid ] )
-                        ? wp_date( 'Y-m-d', strtotime( $start_iso ) + $cal_dur_map[ $cid ] * DAY_IN_SECONDS )
-                        : null,
-                    'progress'   => (int) round( $progress ),
-                    'completed'  => $is_complete,
-                ];
+            $filtered_cids = array_keys( $enrolled_ids );
+            if ( ! empty( $filtered_cids ) ) {
+                $cids_safe = implode( ',', array_map( 'intval', $filtered_cids ) );
+                
+                $cal_dur_rows = (array) $wpdb->get_results(
+                    "SELECT post_id, meta_value FROM {$wpdb->postmeta}
+                     WHERE post_id IN ($cids_safe) AND meta_key = 'end_time'
+                       AND meta_value != '' AND meta_value > 0"
+                );
+                $cal_dur_map = [];
+                foreach ( $cal_dur_rows as $dr ) {
+                    $cal_dur_map[ (int) $dr->post_id ] = (int) $dr->meta_value;
+                }
+
+                foreach ( $filtered_cids as $cid ) {
+                    $post = get_post( $cid );
+                    if ( ! $post ) {
+                        continue;
+                    }
+                    
+                    $start_iso   = get_the_date( 'Y-m-d', $cid );
+                    $prog_data   = $enrolled_ids[ $cid ];
+                    $progress    = (float) ( $prog_data['progress'] ?? 0 );
+                    $status      = strtolower( (string) ( $prog_data['status'] ?? '' ) );
+                    $is_complete = ( 'completed' === $status || $progress >= 100.0 );
+                    
+                    $stats['courses_list'][] = [
+                        'id'         => $cid,
+                        'title'      => get_the_title( $cid ),
+                        'view_url'   => (string) get_permalink( $cid ),
+                        'date_start' => $start_iso,
+                        'date_end'   => isset( $cal_dur_map[ $cid ] )
+                            ? wp_date( 'Y-m-d', strtotime( $start_iso ) + $cal_dur_map[ $cid ] * DAY_IN_SECONDS )
+                            : null,
+                        'progress'   => (int) round( $progress ),
+                        'completed'  => $is_complete,
+                    ];
+                }
             }
         }
 
@@ -421,14 +418,12 @@ class FairPlay_LMS_Progress_Service {
     }
 
     /**
-     * Estadísticas del panel /user-account/ para rol instructor/tutor.
-     * Devuelve: created_courses, expiring_courses, total_students,
-     *           avg_student_progress, total_certificates, expiring_ids, courses_list.
+     * Estadísticas del panel para rol instructor.
      */
     public function get_instructor_dashboard_stats( int $user_id ): array {
         global $wpdb;
 
-        $cache_key = 'fplms_idash_v4_' . $user_id;
+        $cache_key = 'fplms_idash_v5_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
@@ -444,22 +439,19 @@ class FairPlay_LMS_Progress_Service {
             'courses_list'         => [],
         ];
 
-        // 1. Cursos publicados del instructor — ordenados por fecha de creación descendente
         $course_ids = array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare(
             "SELECT ID FROM {$wpdb->posts}
              WHERE post_type = %s AND post_author = %d AND post_status IN ('publish','draft')
              ORDER BY post_date DESC",
-            FairPlay_LMS_Config::MS_PT_COURSE,
+            'stm-courses',
             $user_id
         ) ) );
 
         $stats['created_courses'] = count( $course_ids );
 
         if ( ! empty( $course_ids ) ) {
-            $in = implode( ',', $course_ids ); // seguro: todos son intval
+            $in = implode( ',', $course_ids );
 
-            // 2. Cursos con límite de duración ("por vencer") — count e IDs
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $exp_ids = array_map( 'intval', (array) $wpdb->get_col(
                 "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
                  WHERE post_id IN ($in)
@@ -470,18 +462,10 @@ class FairPlay_LMS_Progress_Service {
             $stats['expiring_courses'] = count( $exp_ids );
             $stats['expiring_ids']     = $exp_ids;
 
-            // 3. Estudiantes inscritos y progreso promedio
-            $ms_table = null;
-            foreach ( [ $wpdb->prefix . 'stm_lms_user_courses', $wpdb->prefix . 'stm_lms_users' ] as $t ) {
-                if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $t ) ) === $t ) {
-                    $ms_table = $t;
-                    break;
-                }
-            }
+            $ms_table = $wpdb->prefix . 'stm_lms_user_courses';
             if ( $ms_table ) {
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
                 $rows = (array) $wpdb->get_results(
-                    "SELECT user_id, progress_percent FROM `{$ms_table}` WHERE course_id IN ($in)"
+                    "SELECT user_id, progress_percent FROM {$ms_table} WHERE course_id IN ($in)"
                 );
                 if ( ! empty( $rows ) ) {
                     $unique_students = array_unique( array_column( $rows, 'user_id' ) );
@@ -491,8 +475,6 @@ class FairPlay_LMS_Progress_Service {
                 }
             }
 
-            // 4. Certificados emitidos para los cursos del instructor
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $stats['total_certificates'] = (int) $wpdb->get_var(
                 "SELECT COUNT(DISTINCT p.ID)
                  FROM {$wpdb->posts} p
@@ -503,13 +485,10 @@ class FairPlay_LMS_Progress_Service {
                    AND pm.meta_value IN ($in)"
             );
 
-            // 5. Lista detallada de cursos para el panel frontend del instructor
-            // Conteo de estudiantes por curso (evitar N queries)
             $students_by_course = [];
             if ( $ms_table ) {
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared
                 $sc_rows = (array) $wpdb->get_results(
-                    "SELECT course_id, COUNT(DISTINCT user_id) AS cnt FROM `{$ms_table}`
+                    "SELECT course_id, COUNT(DISTINCT user_id) AS cnt FROM {$ms_table}
                      WHERE course_id IN ($in) GROUP BY course_id"
                 );
                 foreach ( $sc_rows as $sc ) {
@@ -517,24 +496,21 @@ class FairPlay_LMS_Progress_Service {
                 }
             }
 
-            // Metas de estructura en una sola query masiva (solo canal, sucursal, cargo)
             $struct_meta_keys = [
-                FairPlay_LMS_Config::META_COURSE_CHANNELS => FairPlay_LMS_Config::TAX_CHANNEL,
-                FairPlay_LMS_Config::META_COURSE_BRANCHES => FairPlay_LMS_Config::TAX_BRANCH,
-                FairPlay_LMS_Config::META_COURSE_ROLES    => FairPlay_LMS_Config::TAX_ROLE,
+                'fplms_course_channels',
+                'fplms_course_branches',
+                'fplms_course_roles',
             ];
-            $struct_keys_list = array_keys( $struct_meta_keys );
-            $struct_keys_sql  = implode( ',', array_fill( 0, count( $struct_keys_list ), '%s' ) );
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $struct_keys_sql  = implode( ',', array_fill( 0, count( $struct_meta_keys ), '%s' ) );
             $struct_rows = (array) $wpdb->get_results(
                 $wpdb->prepare(
                     "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta}
                      WHERE post_id IN ($in) AND meta_key IN ($struct_keys_sql)",
-                    ...$struct_keys_list
+                    ...$struct_meta_keys
                 )
             );
-            // Indexar por curso y tipo
-            $struct_by_course = []; // [ cid => [ meta_key => [ids] ] ]
+            
+            $struct_by_course = [];
             foreach ( $struct_rows as $sr ) {
                 $cid_s   = (int) $sr->post_id;
                 $ids_arr = array_values( array_filter( array_map( 'intval', (array) maybe_unserialize( $sr->meta_value ) ) ) );
@@ -543,7 +519,6 @@ class FairPlay_LMS_Progress_Service {
                 }
             }
 
-            // Helper: resolver IDs de términos a nombres
             $term_cache    = [];
             $resolve_terms = function( array $ids, string $taxonomy ) use ( &$term_cache ): array {
                 $names = [];
@@ -562,9 +537,7 @@ class FairPlay_LMS_Progress_Service {
 
             $account_base = rtrim( home_url( '/user-account/edit-course/' ), '/' );
 
-            // Duración de acceso por curso (días) — para calcular fecha de fin de vigencia
             $duration_map = [];
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             $dur_rows = (array) $wpdb->get_results(
                 "SELECT post_id, meta_value FROM {$wpdb->postmeta}
                  WHERE post_id IN ($in) AND meta_key = 'end_time'
@@ -581,16 +554,16 @@ class FairPlay_LMS_Progress_Service {
                 $cid_structs = $struct_by_course[ $cid ] ?? [];
 
                 $channels = $resolve_terms(
-                    $cid_structs[ FairPlay_LMS_Config::META_COURSE_CHANNELS ] ?? [],
-                    FairPlay_LMS_Config::TAX_CHANNEL
+                    $cid_structs['fplms_course_channels'] ?? [],
+                    'fplms_channel'
                 );
                 $branches = $resolve_terms(
-                    $cid_structs[ FairPlay_LMS_Config::META_COURSE_BRANCHES ] ?? [],
-                    FairPlay_LMS_Config::TAX_BRANCH
+                    $cid_structs['fplms_course_branches'] ?? [],
+                    'fplms_branch'
                 );
                 $roles = $resolve_terms(
-                    $cid_structs[ FairPlay_LMS_Config::META_COURSE_ROLES ] ?? [],
-                    FairPlay_LMS_Config::TAX_ROLE
+                    $cid_structs['fplms_course_roles'] ?? [],
+                    'fplms_job_role'
                 );
 
                 $start_iso = get_the_date( 'Y-m-d', $cid );
@@ -623,8 +596,6 @@ class FairPlay_LMS_Progress_Service {
 
     /**
      * Extrae IDs de lecciones/items del array curriculum de MasterStudy.
-     * Soporta formato plano [id, id, ...], sección [['id'=>…]] y sección con
-     * sublecciones [['lessons' => [id, id, ...]]].
      */
     private static function extract_lesson_ids( array $curriculum ): array {
         $ids = [];
