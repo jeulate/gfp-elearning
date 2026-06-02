@@ -194,6 +194,9 @@ class FairPlay_LMS_Plugin {
         // Ocultar pestaña "Ingresos" en /user-account/analytics/
         add_action( 'wp_footer', [ $this, 'inject_analytics_revenue_hide_script' ] );
 
+        // Reemplazar Información Adicional por estructuras del usuario en /user-account/settings/
+        add_action( 'wp_footer', [ $this, 'inject_settings_structures_script' ] );
+
         // Forzar duration_measure = minutes en cada guardado de quiz (server-side)
         add_action( 'save_post_stm-quizzes', [ $this, 'enforce_quiz_duration_minutes' ], 20, 1 );
 
@@ -3236,7 +3239,7 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                         '.fplms-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);border-left:1px solid #e8e8e8;border-top:1px solid #e8e8e8;}' +
                         '.fplms-cal-grid-hdr{background:#f8f8f8;padding:7px 0;text-align:center;font-size:11px;font-weight:700;color:#666;text-transform:uppercase;border-right:1px solid #e8e8e8;border-bottom:1px solid #e8e8e8;}' +
                         '.fplms-cal-day{min-height:88px;padding:5px 5px 3px;border-right:1px solid #e8e8e8;border-bottom:1px solid #e8e8e8;background:#fff;overflow:hidden;}' +
-                        '.fplms-cal-day.other-month{background:#fafafa;}' +
+                        '.fplms-cal-day.other-month{background:#d7d7d7;}' +
                         '.fplms-cal-day.today{background:#fffaf0;}' +
                         '.fplms-cal-day-num{font-size:12px;font-weight:600;color:#444;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;margin-bottom:2px;}' +
                         '.fplms-cal-day.today .fplms-cal-day-num{background:#ffa800;color:#fff;}' +
@@ -4465,6 +4468,129 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                 }, 15000 );
             }
         })();
+        </script>
+        <?php
+    }
+
+    /**
+     * Reemplaza los campos de "Información Adicional" en /user-account/settings/
+     * por la estructura asignada al usuario logueado.
+     */
+    public function inject_settings_structures_script(): void {
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        if ( false === strpos( $request_uri, '/user-account/settings' ) ) {
+            return;
+        }
+
+        $user_id = get_current_user_id();
+        $data    = $this->users->get_user_structures_data( $user_id );
+        ?>
+        <style id="fplms-settings-structures-css">
+        .fplms-account-structure-value {
+            display: block;
+            padding: 14px 16px;
+            border: 1px solid #d9dde6;
+            border-radius: 10px;
+            background: #f8fafc;
+            color: #1f2937;
+            font-size: 14px;
+            line-height: 1.45;
+            min-height: 48px;
+            box-sizing: border-box;
+        }
+        .fplms-account-structure-value.is-empty {
+            color: #6b7280;
+            font-style: italic;
+        }
+        </style>
+        <script id="fplms-settings-structures-script">
+        (function () {
+            'use strict';
+
+            var userStructures = <?php echo wp_json_encode( $data ); ?>;
+            var observer = null;
+
+            function escapeHtml(str) {
+                return String(str || '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            function makeField(label, value) {
+                var empty = !value;
+                return '' +
+                    '<div class="masterstudy-account-settings__field">' +
+                        '<div class="masterstudy-account-settings__field-wrapper">' +
+                            '<label class="masterstudy-account-settings__field-label">' + escapeHtml(label) + '</label>' +
+                            '<div class="fplms-account-structure-value' + ( empty ? ' is-empty' : '' ) + '">' +
+                                escapeHtml(empty ? 'Sin asignar' : value) +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
+            }
+
+            function buildMarkup() {
+                return [
+                    makeField('Ciudad', userStructures.city_name),
+                    makeField('Empresa', userStructures.company_name),
+                    makeField('Canal', userStructures.channel_name),
+                    makeField('Sucursal', userStructures.branch_name),
+                    makeField('Cargo', userStructures.role_name)
+                ].join('');
+            }
+
+            function replaceBillingFields() {
+                var billingSection = document.querySelector('.masterstudy-account-settings__billing');
+                if (!billingSection) {
+                    return false;
+                }
+
+                var billingList = billingSection.querySelector('.masterstudy-account-settings__billing-list');
+                if (!billingList) {
+                    return false;
+                }
+
+                var nextMarkup = buildMarkup();
+                if (billingList.getAttribute('data-fplms-structures-rendered') === '1' && billingList.innerHTML === nextMarkup) {
+                    return true;
+                }
+
+                billingList.innerHTML = nextMarkup;
+                billingList.setAttribute('data-fplms-structures-rendered', '1');
+                return true;
+            }
+
+            function startObserver() {
+                if (observer) {
+                    return;
+                }
+
+                var debounceTimer = null;
+                observer = new MutationObserver(function () {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(replaceBillingFields, 80);
+                });
+
+                observer.observe(document.body, { childList: true, subtree: true });
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', function () {
+                    replaceBillingFields();
+                    startObserver();
+                });
+            } else {
+                replaceBillingFields();
+                startObserver();
+            }
+        }());
         </script>
         <?php
     }

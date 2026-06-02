@@ -152,6 +152,51 @@ class FairPlay_LMS_Users_Controller {
     }
 
     /**
+     * Obtiene las estructuras asignadas a un usuario junto con sus nombres legibles.
+     *
+     * @param int $user_id ID del usuario.
+     * @return array<string, int|string|null>
+     */
+    public function get_user_structures_data( int $user_id ): array {
+
+        $taxonomy_map = [
+            'city'    => FairPlay_LMS_Config::TAX_CITY,
+            'company' => FairPlay_LMS_Config::TAX_COMPANY,
+            'channel' => FairPlay_LMS_Config::TAX_CHANNEL,
+            'branch'  => FairPlay_LMS_Config::TAX_BRANCH,
+            'role'    => FairPlay_LMS_Config::TAX_ROLE,
+        ];
+
+        $meta_map = [
+            'city'    => FairPlay_LMS_Config::USER_META_CITY,
+            'company' => FairPlay_LMS_Config::USER_META_COMPANY,
+            'channel' => FairPlay_LMS_Config::USER_META_CHANNEL,
+            'branch'  => FairPlay_LMS_Config::USER_META_BRANCH,
+            'role'    => FairPlay_LMS_Config::USER_META_ROLE,
+        ];
+
+        $structures = [];
+
+        foreach ( $taxonomy_map as $key => $taxonomy ) {
+            $term_id = (int) get_user_meta( $user_id, $meta_map[ $key ], true );
+
+            $structures[ $key ] = $term_id;
+            $structures[ $key . '_name' ] = null;
+
+            if ( $term_id <= 0 ) {
+                continue;
+            }
+
+            $term = get_term( $term_id, $taxonomy );
+            if ( $term && ! is_wp_error( $term ) ) {
+                $structures[ $key . '_name' ] = $term->name;
+            }
+        }
+
+        return $structures;
+    }
+
+    /**
      * Registra la fecha y hora del último login del usuario.
      * Se ejecuta cuando un usuario inicia sesión mediante el hook wp_login.
      *
@@ -548,10 +593,10 @@ class FairPlay_LMS_Users_Controller {
         $can_edit = current_user_can( 'manage_options' );
 
         // Roles simplificados: 3 opciones con nombres en español
-        // Mapeo: Estudiante->subscriber (MasterStudy), Docente->stm_lms_instructor, Administrador->administrator
+        // Mapeo: Estudiante->subscriber (MasterStudy), tutor->stm_lms_instructor, Administrador->administrator
         $roles_def_labels = [
             'subscriber'                      => 'Estudiante',
-            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Docente',
+            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Tutor',
             'administrator'                   => 'Administrador',
         ];
 
@@ -3444,7 +3489,7 @@ class FairPlay_LMS_Users_Controller {
         $role_struct_name_orig = $role_id    && isset( $job_roles[ $role_id ] )        ? $job_roles[ $role_id ]        : '—';
         $roles_display_map = [
             'subscriber'                            => 'Estudiante',
-            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Docente',
+            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Tutor',
             'administrator'                         => 'Administrador',
         ];
         $role_display_orig = $roles_display_map[ $user_role ] ?? ucfirst( $user_role );
@@ -3452,7 +3497,7 @@ class FairPlay_LMS_Users_Controller {
         // Roles disponibles
         $roles_def_labels = [
             'subscriber'                                  => 'Estudiante',
-            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR       => 'Docente',
+            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR       => 'Tutor',
             'administrator'                               => 'Administrador',
         ];
         
@@ -4448,7 +4493,7 @@ class FairPlay_LMS_Users_Controller {
 
         $roles_display = [
             'subscriber'                            => 'Estudiante',
-            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Docente',
+            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Tutor',
             'administrator'                         => 'Administrador',
         ];
         $role_display = $roles_display[ $user_role ] ?? ucfirst( $user_role );
@@ -5772,7 +5817,7 @@ class FairPlay_LMS_Users_Controller {
         $cities = $this->structures->get_active_terms_for_select( FairPlay_LMS_Config::TAX_CITY );
         $roles_def_labels = [
             'subscriber'                            => 'Estudiante',
-            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Docente',
+            FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR => 'Tutor',
             'administrator'                         => 'Administrador',
         ];
 
