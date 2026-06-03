@@ -234,13 +234,22 @@ class FairPlay_LMS_Plugin {
 
         // Filtrado de cursos matriculados por visibilidad de estructura (respuesta AJAX)
         // Filtro para modificar la consulta de cursos ANTES de que MasterStudy los renderice
-add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user_courses_query' ], 10, 2 );
+        add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user_courses_query' ], 10, 2 );
         add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
 
         // Invalidar caché de estadísticas del estudiante cuando un curso cambia de estado.
         // Garantiza que publish→draft o draft→publish toma efecto inmediatamente en el
         // panel del usuario (sin esperar los 5 min de TTL del transient).
         add_action( 'transition_post_status', [ $this, 'on_course_status_change' ], 10, 3 );
+
+        // Reemplazar "En borrador" por "Inactivo" en el panel del instructor
+        add_action( 'wp_footer', [ $this, 'inject_instructor_status_translation_script' ] );
+        // Reemplazar "En borrador" por "Inactivo" en los tabs del instructor
+        add_action( 'wp_footer', [ $this, 'inject_instructor_tab_translation_script' ] );
+        // Reemplazar "Modo instructor" por "Modo tutor" en el selector de modo del panel de usuario
+        add_action( 'wp_footer', [ $this, 'inject_instructor_mode_translation_script' ] );
+        // Reemplazar "Lista de deseos" por "Mi Calendario" en el menú móvil
+        add_action( 'wp_footer', [ $this, 'inject_mobile_menu_wishlist_to_calendar_script' ] );
 
         // Filtrado de cursos por estructura en pre_get_posts (frontend + admin instructores)
         add_action( 'pre_get_posts', [ $this, 'filter_courses_pre_get_posts' ] );
@@ -841,6 +850,463 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
         return $query_args;
     }
 
+    /**
+     * Reemplaza el texto "En borrador" por "Inactivo" en el panel del instructor
+     * para los cursos que están en estado draft.
+     */
+    public function inject_instructor_status_translation_script(): void {
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        // Solo ejecutar en páginas del panel del instructor que contengan cursos
+        if ( false === strpos( $request_uri, '/user-account' ) ) {
+            return;
+        }
+
+        ?>
+        <script id="fplms-instructor-status-translation">
+        (function() {
+            'use strict';
+
+            var TARGET_TEXT = 'En borrador';
+            var REPLACEMENT = 'Inactivo';
+
+            function replaceStatusText() {
+                // Buscar todos los elementos que contienen el texto "En borrador"
+                var statusElements = document.querySelectorAll(
+                    '.masterstudy-instructor-course-actions__status'
+                );
+
+                statusElements.forEach(function(el) {
+                    var originalText = el.textContent.trim().toLowerCase();
+                    if (originalText === TARGET_TEXT.toLowerCase() || 
+                        originalText === 'en borrador') {
+                        el.textContent = REPLACEMENT;
+                        // Mantener la clase pero asegurar consistencia visual
+                        if (!el.classList.contains('masterstudy-instructor-course-actions__status_draft')) {
+                            el.classList.add('masterstudy-instructor-course-actions__status_draft');
+                        }
+                    }
+                });
+            }
+
+            // Ejecutar inmediatamente si el DOM ya está listo
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', replaceStatusText);
+            } else {
+                replaceStatusText();
+            }
+
+            // Observer para detectar cambios dinámicos (Vue re-renderiza la lista)
+            var observer = null;
+            var debounceTimer = null;
+
+            function startObserver() {
+                if (observer) return;
+                
+                observer = new MutationObserver(function() {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(replaceStatusText, 80);
+                });
+                
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['class', 'style']
+                });
+            }
+
+            // Iniciar el observer después de un pequeño retraso para no interferir con la carga inicial
+            setTimeout(startObserver, 500);
+            
+            // Detener observer después de 30 segundos para liberar recursos
+            setTimeout(function() {
+                if (observer) {
+                    observer.disconnect();
+                    observer = null;
+                }
+            }, 30000);
+        })();
+        </script>
+        <style id="fplms-instructor-status-style">
+            /* Opcional: mantener consistencia visual del estado "Inactivo" */
+            .masterstudy-instructor-course-actions__status_draft {
+                /* Puedes ajustar el color si lo deseas, por ejemplo: */
+                /* background-color: #f5c6cb; */
+                /* color: #721c24; */
+            }
+        </style>
+        <?php
+    }
+
+    /**
+     * Reemplaza el texto "En borrador" por "Inactivo" en los tabs del panel del instructor.
+     * Afecta tanto al tab activo como a los tabs de filtrado por estado del curso.
+     */
+    public function inject_instructor_tab_translation_script(): void {
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        // Solo ejecutar en páginas del panel del instructor
+        if ( false === strpos( $request_uri, '/user-account' ) ) {
+            return;
+        }
+
+        ?>
+        <script id="fplms-instructor-tab-translation">
+        (function() {
+            'use strict';
+
+            var TARGET_TEXT = 'En borrador';
+            var REPLACEMENT = 'Inactivo';
+
+            function replaceTabText() {
+                // Buscar todos los tabs que contienen "En borrador"
+                var tabs = document.querySelectorAll(
+                    '.masterstudy-tabs__item, .masterstudy-instructor-courses__tab, ' +
+                    '.masterstudy-courses-tabs__item, [role="tab"]'
+                );
+
+                tabs.forEach(function(tab) {
+                    var originalText = tab.textContent.trim();
+                    // Coincidencia exacta (ignorando mayúsculas/minúsculas y espacios)
+                    if (originalText.toLowerCase() === TARGET_TEXT.toLowerCase()) {
+                        tab.textContent = REPLACEMENT;
+                        // Mantener el atributo data-id si existe (suele ser "draft")
+                        if (tab.getAttribute('data-id') === 'draft') {
+                            // Opcional: no es necesario cambiar el data-id
+                        }
+                    }
+                });
+
+                // También buscar específicamente por data-id="draft"
+                var draftTabs = document.querySelectorAll('[data-id="draft"]');
+                draftTabs.forEach(function(tab) {
+                    if (tab.textContent.trim().toLowerCase() === TARGET_TEXT.toLowerCase()) {
+                        tab.textContent = REPLACEMENT;
+                    }
+                });
+            }
+
+            // Ejecutar inmediatamente si el DOM ya está listo
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', replaceTabText);
+            } else {
+                replaceTabText();
+            }
+
+            // Observer para detectar cambios dinámicos (Vue re-renderiza el panel)
+            var observer = null;
+            var debounceTimer = null;
+
+            function startObserver() {
+                if (observer) return;
+                
+                observer = new MutationObserver(function() {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(replaceTabText, 80);
+                });
+                
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['class', 'style']
+                });
+            }
+
+            startObserver();
+            
+            // Limpiar observer después de 30 segundos
+            setTimeout(function() {
+                if (observer) {
+                    observer.disconnect();
+                    observer = null;
+                }
+            }, 30000);
+        })();
+        </script>
+        <?php
+    }
+
+    /**
+     * Reemplaza el texto "Modo instructor" por "Modo tutor" en el selector de modo
+     * del panel de usuario (versión robusta con observer persistente).
+     */
+    public function inject_instructor_mode_translation_script(): void {
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        if ( false === strpos( $request_uri, '/user-account' ) ) {
+            return;
+        }
+
+        ?>
+        <script id="fplms-instructor-mode-translation">
+        (function() {
+            'use strict';
+
+            var TARGET_TEXT = 'Modo instructor';
+            var REPLACEMENT = 'Modo tutor';
+            var replaced = false;
+
+            function replaceModeText() {
+                var modeContainer = document.querySelector('.masterstudy-account-menu__mode');
+                
+                if (!modeContainer) {
+                    replaced = false;
+                    return;
+                }
+
+                // Evitar reemplazar múltiples veces si ya está correcto
+                var currentText = modeContainer.innerText || modeContainer.textContent;
+                if (currentText && currentText.indexOf(REPLACEMENT) !== -1 && currentText.indexOf(TARGET_TEXT) === -1) {
+                    replaced = true;
+                    return;
+                }
+
+                // Método 1: Reemplazar nodos de texto
+                var childNodes = modeContainer.childNodes;
+                var found = false;
+                
+                for (var i = 0; i < childNodes.length; i++) {
+                    var node = childNodes[i];
+                    if (node.nodeType === 3) { // Text node
+                        var text = node.textContent;
+                        var trimmed = text.trim();
+                        if (trimmed === TARGET_TEXT || trimmed.toLowerCase() === TARGET_TEXT.toLowerCase()) {
+                            node.textContent = text.replace(TARGET_TEXT, REPLACEMENT).replace(TARGET_TEXT.toLowerCase(), REPLACEMENT);
+                            found = true;
+                            break;
+                        } else if (text.indexOf(TARGET_TEXT) !== -1) {
+                            node.textContent = text.replace(new RegExp(TARGET_TEXT, 'gi'), REPLACEMENT);
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Método 2: Si no se encontró nodo de texto, reconstruir el HTML interno
+                if (!found) {
+                    var label = modeContainer.querySelector('.masterstudy-switcher');
+                    if (label) {
+                        modeContainer.innerHTML = '';
+                        modeContainer.appendChild(label.cloneNode(true));
+                        modeContainer.appendChild(document.createTextNode(' ' + REPLACEMENT));
+                    } else {
+                        // Fallback directo
+                        modeContainer.innerHTML = modeContainer.innerHTML.replace(/Modo instructor/gi, REPLACEMENT);
+                    }
+                }
+
+                replaced = true;
+            }
+
+            // Ejecutar inicialmente
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', replaceModeText);
+            } else {
+                replaceModeText();
+            }
+
+            // Observer persistente
+            var observer = new MutationObserver(function(mutations) {
+                var shouldCheck = false;
+                
+                for (var i = 0; i < mutations.length; i++) {
+                    var mutation = mutations[i];
+                    if (mutation.type === 'childList' && mutation.addedNodes.length) {
+                        for (var j = 0; j < mutation.addedNodes.length; j++) {
+                            var node = mutation.addedNodes[j];
+                            if (node.nodeType === 1 && (
+                                node.classList?.contains('masterstudy-account-menu__mode') ||
+                                node.querySelector?.('.masterstudy-account-menu__mode')
+                            )) {
+                                shouldCheck = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (mutation.type === 'characterData' || mutation.type === 'attributes') {
+                        shouldCheck = true;
+                    }
+                    if (shouldCheck) break;
+                }
+                
+                if (shouldCheck) {
+                    setTimeout(replaceModeText, 50);
+                }
+            });
+            
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true,
+                characterData: true,
+                attributes: true
+            });
+            
+            // No desconectamos el observer para mantener la traducción durante toda la sesión
+        })();
+        </script>
+        <style id="fplms-instructor-mode-style">
+            /* Asegurar que el switcher mantenga su estilo después de la modificación */
+            .masterstudy-account-menu__mode {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+        </style>
+        <?php
+    }
+
+    /**
+     * Reemplaza el enlace "Lista de deseos" por "Mi Calendario" en el menú móvil
+     * y activa la función de calendario correspondiente (estudiante o instructor).
+     */
+    public function inject_mobile_menu_wishlist_to_calendar_script(): void {
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        // Solo ejecutar en páginas del panel de usuario
+        if ( false === strpos( $request_uri, '/user-account' ) && false === strpos( $request_uri, '/visar-account' ) ) {
+            return;
+        }
+
+        ?>
+        <script id="fplms-mobile-menu-wishlist-to-calendar">
+        (function() {
+            'use strict';
+
+            var CALENDAR_URL = '/user-account/chat/';
+            
+            // Intentar obtener la URL base correcta
+            function getBaseUrl() {
+                var origin = window.location.origin;
+                var pathname = window.location.pathname;
+                
+                // Si estamos en /visar-account/ o similar, usar esa base
+                if (pathname.indexOf('/visar-account') !== -1) {
+                    return origin + '/visar-account/chat/';
+                }
+                
+                return origin + CALENDAR_URL;
+            }
+
+            function replaceWishlistWithCalendar() {
+                // Buscar el enlace de "Lista de deseos" en el menú móvil
+                var wishlistLink = document.querySelector(
+                    '.masterstudy-account-mobile-menu__link[data-id="wishlist"], ' +
+                    '.masterstudy-account-mobile-menu a[data-id="wishlist"], ' +
+                    '.masterstudy-account-mobile-menu__link:has(.stmlms-mobile-menu-wishlist)'
+                );
+                
+                if (!wishlistLink) {
+                    // Buscar por el texto "Lista de deseos" como fallback
+                    var allLinks = document.querySelectorAll('.masterstudy-account-mobile-menu__link, .masterstudy-account-mobile-menu a');
+                    for (var i = 0; i < allLinks.length; i++) {
+                        var link = allLinks[i];
+                        var text = link.innerText || link.textContent || '';
+                        if (text.indexOf('Lista de deseos') !== -1 || text.indexOf('Wishlist') !== -1) {
+                            wishlistLink = link;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!wishlistLink) {
+                    return false;
+                }
+                
+                // Cambiar el href al calendario
+                var newUrl = getBaseUrl();
+                wishlistLink.href = newUrl;
+                
+                // Cambiar el ícono (de corazón/favorito a calendario)
+                var icon = wishlistLink.querySelector('i');
+                if (icon) {
+                    icon.className = 'stmlms-menu-messages';
+                    // También podemos cambiar el estilo si es necesario
+                    icon.style.fontSize = '20px';
+                }
+                
+                // Cambiar el texto
+                var textDiv = wishlistLink.querySelector('.masterstudy-account-mobile-menu__item');
+                if (textDiv) {
+                    textDiv.textContent = 'Mis Mensajes';
+                } else {
+                    // Si no tiene la estructura esperada, cambiar el texto directamente
+                    wishlistLink.innerHTML = wishlistLink.innerHTML.replace(/Lista de deseos/g, 'Mis Mensajes');
+                }
+                
+                // Cambiar el atributo data-id
+                wishlistLink.setAttribute('data-id', 'calendar');
+                
+                // Añadir una clase personalizada para identificación
+                wishlistLink.classList.add('fplms-calendar-link');
+                
+                return true;
+            }
+
+            // Ejecutar cuando el DOM esté listo
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', replaceWishlistWithCalendar);
+            } else {
+                replaceWishlistWithCalendar();
+            }
+
+            // Observer para detectar si el menú se re-renderiza (Vue)
+            var observer = null;
+            var debounceTimer = null;
+
+            function startObserver() {
+                if (observer) return;
+                
+                observer = new MutationObserver(function() {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(replaceWishlistWithCalendar, 80);
+                });
+                
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['href', 'class', 'data-id']
+                });
+            }
+
+            startObserver();
+            
+            // Limpiar observer después de 30 segundos
+            setTimeout(function() {
+                if (observer) {
+                    observer.disconnect();
+                    observer = null;
+                }
+            }, 30000);
+        })();
+        </script>
+        <style id="fplms-mobile-menu-calendar-style">
+            /* Estilo opcional para el enlace del calendario en menú móvil */
+            .masterstudy-account-mobile-menu__link.fplms-calendar-link i {
+                /* Asegurar que el ícono se vea bien */
+                display: inline-block;
+            }
+            .masterstudy-account-mobile-menu__link.fplms-calendar-link {
+                /* Mantener consistencia visual */
+                transition: all 0.2s ease;
+            }
+        </style>
+        <?php
+    }
     /**
      * Filtra cursos por estructura del usuario vía pre_get_posts.
      * - Frontend: aplica a todos los usuarios no administradores.
@@ -1502,6 +1968,8 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
             var AJAX_URL      = <?php echo wp_json_encode( $ajax_url ); ?>;
             var NONCE         = <?php echo wp_json_encode( $nonce ); ?>;
             var STRUCT_NONCE  = <?php echo wp_json_encode( $struct_nonce ); ?>;
+            var fplmsUserRoles = <?php echo wp_json_encode( wp_get_current_user()->roles ); ?>;
+            window.fplmsUserRoles = fplmsUserRoles;
             var renderedStudent       = false;
             var renderedInstructor    = false;
             var searchInjected        = false;
@@ -1521,6 +1989,15 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
             var studentVisibleUrlToId      = {};    // URL canónica -> course_id
             var studentVisibilityReady     = false;
             var studentSearchQuery         = '';    // texto de búsqueda activo en cursos estudiante
+
+            var style = document.createElement('style');
+                        style.textContent = `
+                            /* Ocultar paginación nativa de MasterStudy */
+                            .masterstudy-enrolled-courses__pagination {
+                                display: none !important;
+                            }
+                        `;
+                        document.head.appendChild(style);
 
             /* ── Helpers de filtrado por ID de curso ────────────────────────── */
 
@@ -3820,6 +4297,26 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                 if ( nav ) nav.classList.remove( 'masterstudy-account-menu__list-item_active' );
             }
 
+            // Exponer funciones globalmente para el menú móvil
+            window.showStudentCalendarPage = showStudentCalendarPage;
+            window.showInstructorCalendarPage = showInstructorCalendarPage;
+            // Exponer buildCalendarPanel globalmente para el menú móvil
+                window.buildCalendarPanel = buildCalendarPanel;
+                // Exponer datos auxiliares
+                window.fplmsRefreshStudentData = function() {
+                    if (typeof fetchStats === 'function') {
+                        fetchStats('student', function(data) {
+                            if (data && window.renderStudent) {
+                                window.renderStudent(document.querySelector('.masterstudy-enrolled-courses-sorting'), data);
+                            }
+                        });
+                    }
+                };
+                window.fplmsFetchDashboardData = function() {
+                    if (typeof tryRender === 'function') {
+                        tryRender();
+                    }
+                };
             /**
              * Inyecta el botón "Mi Calendario" en el sidebar del estudiante.
              * Usa un observer persistente para re-inyectarlo cada vez que Vue
@@ -4017,6 +4514,7 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                          + mkStudentBlock( 'groups',       'Horas de Formación', hrs                    );
                 el.innerHTML = html;
                 studentCalData  = data;
+                window.studentCalData = data;
                 renderedStudent = true;
                 if ( ! searchInjected ) {
                     searchInjected = true;
@@ -4131,10 +4629,51 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                 }());
             }
 
+            // Exponer renderStudent globalmente
+            window.renderStudent = renderStudent;
+
+            /**
+             * Oculta la paginación nativa de MasterStudy y fuerza mostrar todos los cursos
+             */
+            function hideNativePaginationAndForceAllCourses() {
+                // Ocultar la paginación nativa
+                var nativePagination = document.querySelector('.masterstudy-enrolled-courses__pagination');
+                if (nativePagination) {
+                    nativePagination.style.display = 'none';
+                }
+                
+                // Asegurar que se muestran TODOS los cursos (sin paginación del servidor)
+                // Forzamos una recarga con per_page alto si es necesario
+                if (studentVisibleIds && studentVisibleIds.length > 0) {
+                    var totalCards = document.querySelectorAll('.masterstudy-course-card').length;
+                    var visibleCount = studentVisibleIds.length;
+                    
+                    // Si el número de tarjetas en el DOM es menor que los cursos visibles,
+                    // es porque MasterStudy está paginando y debemos forzar una recarga
+                    if (totalCards < visibleCount && totalCards > 0) {
+                        // Disparar una petición con per_page alto
+                        var event = new CustomEvent('fplms-force-full-load', { detail: { per_page: 500 } });
+                        document.dispatchEvent(event);
+                    }
+                }
+            }
+
+            // Ejecutar después de renderizar
+            setTimeout(hideNativePaginationAndForceAllCourses, 100);
+
+            // Observer para mantener oculta la paginación si Vue la re-renderiza
+            var paginationObserver = new MutationObserver(function() {
+                var pag = document.querySelector('.masterstudy-enrolled-courses__pagination');
+                if (pag && pag.style.display !== 'none') {
+                    pag.style.display = 'none';
+                }
+            });
+            paginationObserver.observe(document.body, { childList: true, subtree: true });
             /* ── Render instructor ───────────────────────────────────────────── */
 
             function renderInstructor( el, data ) {
                 instrCoursesData = data;
+                window.instrCoursesData = data;
                 var avgP = (data.avg_student_progress || 0) + '%';
                 var html = mkInstructorBlock( 'courses',              'Cursos Creados',       data.created_courses    || 0 )
                          + mkInstructorBlock( 'orders',               'Cursos por Vencer',    data.expiring_courses   || 0 )
@@ -4174,6 +4713,7 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                     .then( function ( res ) { if ( res && res.success ) callback( res.data ); } )
                     .catch( function () {} );
             }
+              window.fplmsFetchStats = fetchStats;
 
             function tryRender() {
                 var studentEl    = document.querySelector( '.masterstudy-enrolled-courses-sorting' );
