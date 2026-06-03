@@ -109,10 +109,10 @@ class FairPlay_LMS_Courses_Controller {
 
             $instructor_id = isset( $_POST['fplms_instructor_id'] ) ? absint( $_POST['fplms_instructor_id'] ) : 0;
 
-            // Capturar docente anterior ANTES de actualizar (para la bitácora)
+            // Capturar tutor anterior ANTES de actualizar (para la bitácora)
             $old_teacher_id   = (int) get_post_meta( $course_id, FairPlay_LMS_Config::MS_META_COURSE_TEACHER, true );
             $old_teacher_user = $old_teacher_id ? get_user_by( 'id', $old_teacher_id ) : null;
-            $old_teacher_name = $old_teacher_user ? $old_teacher_user->display_name : 'Sin docente';
+            $old_teacher_name = $old_teacher_user ? $this->get_user_full_name( $old_teacher_user ) : 'Sin tutor';
 
             if ( $instructor_id > 0 ) {
 
@@ -128,11 +128,11 @@ class FairPlay_LMS_Courses_Controller {
                     $user->add_role( FairPlay_LMS_Config::MS_ROLE_INSTRUCTOR );
                 }
 
-                $new_teacher_name = $user ? $user->display_name : 'Sin docente';
+                $new_teacher_name = $user ? $this->get_user_full_name( $user ) : 'Sin tutor';
             } else {
                 delete_post_meta( $course_id, FairPlay_LMS_Config::MS_META_COURSE_TEACHER );
-                // Sin docente: dejar post_author como admin (ID 1) o sin cambios
-                $new_teacher_name = 'Sin docente';
+                // Sin tutor: dejar post_author como admin (ID 1) o sin cambios
+                $new_teacher_name = 'Sin tutor';
             }
 
             // Registrar en la bitácora de auditoría
@@ -568,7 +568,7 @@ class FairPlay_LMS_Courses_Controller {
         $users    = (array) $user_query->get_results();
         $user_ids = array_map( function( $u ) { return (int) $u->ID; }, $users );
 
-        // 2. Incluir también los usuarios ya asignados como docentes en cursos existentes
+        // 2. Incluir también los usuarios ya asignados como tutores en cursos existentes
         //    (ya sea via stm_lms_course_teacher meta o como post_author del curso).
         //    Esto garantiza que la lista coincida con lo que muestra MasterStudy en su
         //    propia vista de edición de curso.
@@ -603,16 +603,40 @@ class FairPlay_LMS_Courses_Controller {
             );
             $extra_users = (array) $extra_query->get_results();
             $users       = array_merge( $users, $extra_users );
-
-            usort(
-                $users,
-                function( $a, $b ) {
-                    return strcmp( $a->display_name, $b->display_name );
-                }
-            );
         }
 
+        usort(
+            $users,
+            function( $a, $b ) {
+                return strcmp( $this->get_user_full_name( $a ), $this->get_user_full_name( $b ) );
+            }
+        );
+
         return $users;
+    }
+
+    /**
+     * Obtiene nombre completo (nombre + apellido) de un usuario.
+     * Si no hay nombre/apellido, usa display_name como fallback.
+     */
+    private function get_user_full_name( $user ): string {
+        if ( ! $user instanceof WP_User ) {
+            return '';
+        }
+
+        $first_name = trim( (string) get_user_meta( $user->ID, 'first_name', true ) );
+        $last_name  = trim( (string) get_user_meta( $user->ID, 'last_name', true ) );
+        $full_name  = trim( $first_name . ' ' . $last_name );
+
+        if ( '' !== $full_name ) {
+            return $full_name;
+        }
+
+        if ( ! empty( $user->display_name ) ) {
+            return (string) $user->display_name;
+        }
+
+        return (string) $user->user_login;
     }
 
     /**
@@ -922,7 +946,7 @@ class FairPlay_LMS_Courses_Controller {
             <?php if ( 'instructor_assigned' === $notice ) : ?>
             <div class="fplms-cl-toast fplms-cl-toast-blue fplms-cl-toast-auto">
                 <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-                <span><strong>Docente asignado correctamente.</strong> El cambio fue registrado en la bitácora de auditoría.</span>
+                <span><strong>Tutor asignado correctamente.</strong> El cambio fue registrado en la bitácora de auditoría.</span>
                 <button type="button" class="fplms-cl-toast-close" onclick="this.parentElement.remove()">&#x2715;</button>
             </div>
             <?php endif; ?>
@@ -989,7 +1013,7 @@ class FairPlay_LMS_Courses_Controller {
                             <option value="draft">⦸ Inactivos</option>
                         </select>
                         <div class="fplms-cl-search-wrap">
-                            <input type="text" id="fplms-cl-search" class="fplms-cl-search-input" placeholder="Buscar por título, ID, docente...">
+                            <input type="text" id="fplms-cl-search" class="fplms-cl-search-input" placeholder="Buscar por título, ID, tutor...">
                             <button type="button" class="fplms-cl-search-clear" id="fplms-cl-search-clear" title="Limpiar búsqueda">&#x2715;</button>
                         </div>
                         <div id="fplms-cl-active-filters" class="fplms-cl-active-filters" style="display:none;">
@@ -1040,12 +1064,12 @@ class FairPlay_LMS_Courses_Controller {
                                 <tr>
                                     <th style="width:36px;padding-left:18px;"><input type="checkbox" id="fplms-cl-select-all"></th>
                                     <th>Curso</th>
-                                    <th>Docente</th>
+                                    <th>Tutor</th>
                                     <th>Fecha de Creación</th>
                                     <th>Modificación</th>
                                     <th>Estructuras</th>
                                     <th style="text-align:center;width:80px;">Encuesta</th>
-                                    <th style="width:215px;">Asignar Docente</th>
+                                    <th style="width:215px;">Asignar Tutor</th>
                                     <th style="text-align:center;width:145px;">Acciones</th>
                                 </tr>
                             </thead>
@@ -1069,7 +1093,8 @@ class FairPlay_LMS_Courses_Controller {
                                     if ( ! $teacher_id ) {
                                         $teacher_id = (int) get_post_meta( $course->ID, 'instructor_id', true );
                                     }
-                                    $teacher_name = $teacher_id ? get_the_author_meta( 'display_name', $teacher_id ) : '';
+                                    $teacher_user = $teacher_id ? get_user_by( 'id', $teacher_id ) : null;
+                                    $teacher_name = $teacher_user ? $this->get_user_full_name( $teacher_user ) : '';
 
                                     $course_structures = $this->get_course_structures( $course->ID );
                                     $fecha             = date_i18n( 'd/m/Y', strtotime( $course->post_date ) );
@@ -1131,14 +1156,14 @@ class FairPlay_LMS_Courses_Controller {
                                             <input type="hidden" name="fplms_courses_action" value="assign_instructor">
                                             <input type="hidden" name="fplms_course_id" value="<?php echo esc_attr( $course->ID ); ?>">
                                             <select name="fplms_instructor_id">
-                                                <option value="0">— Sin docente —</option>
+                                                <option value="0">— Sin tutor —</option>
                                                 <?php foreach ( $instructors as $inst ) : ?>
                                                     <option value="<?php echo esc_attr( $inst->ID ); ?>" <?php selected( $teacher_id, $inst->ID ); ?>>
-                                                        <?php echo esc_html( $inst->display_name ); ?>
+                                                        <?php echo esc_html( $this->get_user_full_name( $inst ) ); ?>
                                                     </option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <button type="button" class="fplms-ct-save-btn" title="Guardar docente"
+                                            <button type="button" class="fplms-ct-save-btn" title="Guardar tutor"
                                                     onclick="fplmsClShowInstructorModal(this)">
                                                 <svg viewBox="0 0 24 24"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
                                             </button>
@@ -1263,13 +1288,13 @@ class FairPlay_LMS_Courses_Controller {
             <div class="fplms-cl-modal">
                 <div class="fplms-cl-inst-modal-header">
                     <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-                    <h3>Confirmar asignación de docente</h3>
+                    <h3>Confirmar asignación de tutor</h3>
                 </div>
                 <div class="fplms-cl-modal-body">
-                    <p>¿Deseas asignar el siguiente docente al curso?</p>
+                    <p>¿Deseas asignar el siguiente tutor al curso?</p>
                     <div class="fplms-cl-inst-modal-course" id="fplms-cl-inst-course-name"></div>
                     <p style="color:#4b5563;margin-top:8px;">
-                        <strong>Nuevo docente:</strong> <span id="fplms-cl-inst-teacher-name" style="color:#1d4ed8;font-weight:600;"></span>
+                        <strong>Nuevo tutor:</strong> <span id="fplms-cl-inst-teacher-name" style="color:#1d4ed8;font-weight:600;"></span>
                     </p>
                     <p style="color:#6b7280;font-size:13px;">Este cambio quedará registrado en la bitácora de auditoría.</p>
                 </div>
@@ -1470,7 +1495,7 @@ class FairPlay_LMS_Courses_Controller {
                 title:      (cells[1].querySelector('.fplms-ct-title')  || { textContent: '' }).textContent.trim(),
                 id:         (cells[1].querySelector('.fplms-ct-meta')   || { textContent: '' }).textContent.trim().replace(/^ID:\s*/i, ''),
                 status:     (cells[1].querySelector('.fplms-cs-badge')  || { textContent: '' }).textContent.trim(),
-                docente:    cells[2].textContent.trim(),
+                tutor:      cells[2].textContent.trim(),
                 fecha:      cells[3].textContent.trim(),
                 modificado: cells[4].textContent.trim(),
                 structs:    cells[5].getAttribute('data-export') || cells[5].textContent.trim().replace(/\s+/g, ' ')
@@ -1479,7 +1504,7 @@ class FairPlay_LMS_Courses_Controller {
 
         window.fplmsClExportXLS = function() {
             var rows = fplmsClGetExportRows();
-            var hdrs = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha de Creación', 'Última modificación', 'Estructuras'];
+            var hdrs = ['Curso', 'ID', 'Estado', 'Tutor', 'Fecha de Creación', 'Última modificación', 'Estructuras'];
             var t = '<table border="1" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;">';
             t += '<thead><tr>' + hdrs.map(function(h) {
                 return '<th style="background:#667eea;color:#fff;padding:8px 12px;font-weight:bold;">' + h + '</th>';
@@ -1487,7 +1512,7 @@ class FairPlay_LMS_Courses_Controller {
             rows.forEach(function(row) {
                 var d = fplmsClExtractRow(row);
                 if (!d) return;
-                var vals = [d.title, d.id, d.status, d.docente, d.fecha, d.modificado, d.structs];
+                var vals = [d.title, d.id, d.status, d.tutor, d.fecha, d.modificado, d.structs];
                 t += '<tr>' + vals.map(function(v) {
                     return '<td style="padding:6px 10px;">' + v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td>';
                 }).join('') + '</tr>';
@@ -1504,14 +1529,14 @@ class FairPlay_LMS_Courses_Controller {
 
         window.fplmsClExportPDF = function() {
             var rows    = fplmsClGetExportRows();
-            var hdrs    = ['Curso', 'ID', 'Estado', 'Docente', 'Fecha de Creación', 'Última modificación', 'Estructuras'];
+            var hdrs    = ['Curso', 'ID', 'Estado', 'Tutor', 'Fecha de Creación', 'Última modificación', 'Estructuras'];
             var checked = document.querySelectorAll('.fplms-cl-cb:checked').length;
             var label   = checked > 0 ? checked + ' seleccionados' : rows.length + ' cursos';
             var t = '<table><thead><tr>' + hdrs.map(function(h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>';
             rows.forEach(function(row) {
                 var d = fplmsClExtractRow(row);
                 if (!d) return;
-                var vals = [d.title, d.id, d.status, d.docente, d.fecha, d.modificado, d.structs];
+                var vals = [d.title, d.id, d.status, d.tutor, d.fecha, d.modificado, d.structs];
                 t += '<tr>' + vals.map(function(v) {
                     return '<td>' + v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td>';
                 }).join('') + '</tr>';
@@ -1694,7 +1719,7 @@ class FairPlay_LMS_Courses_Controller {
             _fplmsClInstForm = form;
             var select = form.querySelector('select[name="fplms_instructor_id"]');
             var selectedOpt = select ? select.options[select.selectedIndex] : null;
-            var teacherName = selectedOpt ? selectedOpt.text.trim() : '— Sin docente —';
+            var teacherName = selectedOpt ? selectedOpt.text.trim() : '— Sin tutor —';
             // Get course title from the row
             var row = form.closest('tr');
             var titleEl = row ? row.querySelector('.fplms-ct-title a') : null;

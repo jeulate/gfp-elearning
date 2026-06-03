@@ -197,6 +197,9 @@ class FairPlay_LMS_Plugin {
         // Reemplazar Información Adicional por estructuras del usuario en /user-account/settings/
         add_action( 'wp_footer', [ $this, 'inject_settings_structures_script' ] );
 
+        // Personalizar modal "¿Tienes alguna pregunta?" en /user-account/
+        add_action( 'wp_footer', [ $this, 'inject_admin_message_modal_customization_script' ] );
+
         // Forzar duration_measure = minutes en cada guardado de quiz (server-side)
         add_action( 'save_post_stm-quizzes', [ $this, 'enforce_quiz_duration_minutes' ], 20, 1 );
 
@@ -1517,6 +1520,7 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
             var studentVisibleUrlMap       = {};    // fallback por URL -> true
             var studentVisibleUrlToId      = {};    // URL canónica -> course_id
             var studentVisibilityReady     = false;
+            var studentSearchQuery         = '';    // texto de búsqueda activo en cursos estudiante
 
             /* ── Helpers de filtrado por ID de curso ────────────────────────── */
 
@@ -1617,6 +1621,15 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                 return false;
             }
 
+            function cardMatchesSearchQuery( card, q ) {
+                if ( ! q ) {
+                    return true;
+                }
+                var titleEl = card.querySelector( '.masterstudy-course-card__title, .masterstudy-course-card__name, h3, h4' );
+                var title = titleEl ? titleEl.textContent.toLowerCase() : card.textContent.toLowerCase();
+                return title.indexOf( q ) !== -1;
+            }
+
             function applyStudentBaseVisibility() {
                 var scope = document.querySelector( '.masterstudy-enrolled-courses' ) || document;
                 var cards = scope.querySelectorAll(
@@ -1626,14 +1639,19 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                     // Paso 1: identificación por ID (fplmsCid, data-id, path, query-param).
                     var cid = extractCourseIdFromCard( card );
                     if ( cid ) {
-                        card.style.display = ( studentVisibilityReady && studentVisibleIds.indexOf( cid ) !== -1 ) ? '' : 'none';
+                        var _allowedById = studentVisibilityReady && studentVisibleIds.indexOf( cid ) !== -1;
+                        var _visibleBySearch = cardMatchesSearchQuery( card, studentSearchQuery );
+                        card.style.display = ( _allowedById && _visibleBySearch ) ? '' : 'none';
                         return;
                     }
                     // Paso 2: fallback por URL exacta.
                     var _links2 = card.querySelectorAll( 'a[href]' );
                     for ( var _i2 = 0; _i2 < _links2.length; _i2++ ) {
                         var _k2 = normalizeUrl( _links2[_i2].href );
-                        if ( _k2 && studentVisibleUrlMap[ _k2 ] ) { card.style.display = ''; return; }
+                        if ( _k2 && studentVisibleUrlMap[ _k2 ] ) {
+                            card.style.display = cardMatchesSearchQuery( card, studentSearchQuery ) ? '' : 'none';
+                            return;
+                        }
                     }
                     // Paso 3: tarjeta no identificable → modo conservador: NO ocultar.
                     // Vue ya filtró los cursos en el servidor (hook PHP activo).
@@ -1641,6 +1659,9 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                     // renderizado por Vue. Los cursos borrador del render PHP inicial
                     // tienen data-id o sus URLs no aparecen en studentVisibleUrlMap
                     // (Pasos 1 y 2 los capturan correctamente).
+                    if ( studentSearchQuery ) {
+                        card.style.display = cardMatchesSearchQuery( card, studentSearchQuery ) ? '' : 'none';
+                    }
                 } );
             }
 
@@ -1722,7 +1743,7 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                         // Si no se logró identificar el curso, modo conservador.
                         visible = cid ? ( ids.indexOf( cid ) !== -1 ) : true;
                     }
-                    card.style.display = visible ? '' : 'none';
+                    card.style.display = ( visible && cardMatchesSearchQuery( card, studentSearchQuery ) ) ? '' : 'none';
                 } );
                 // Re-marcar tab como activo (Vue lo resetó al clickar "all")
                 var tabEl  = studentCustomFilter.tabEl;
@@ -1809,6 +1830,21 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                     var scope = cfg.scopeSelector ? ( statsEl.closest( cfg.scopeSelector ) || document ) : document;
                     var cards = scope.querySelectorAll( cfg.cardSelectors );
                     var found = 0;
+
+                    // Búsqueda del alumno: delegar el display al sistema de visibilidad
+                    // para evitar que un observer o re-render de Vue revierta el filtro.
+                    if ( cfg.inputId === 'fplms-course-search' ) {
+                        studentSearchQuery = q;
+                        reapplyStudentVisibility();
+                        cards.forEach( function ( card ) {
+                            if ( cfg.excludeSelector && card.closest( cfg.excludeSelector ) ) return;
+                            if ( card.style.display !== 'none' ) found++;
+                        } );
+                        var _nr = document.getElementById( cfg.noResultsId );
+                        if ( _nr ) _nr.style.display = ( q && found === 0 && cards.length > 0 ) ? 'block' : 'none';
+                        return;
+                    }
+
                     cards.forEach( function ( card ) {
                         // Omitir tarjetas dentro de paneles excluidos (ej: #fplms-mis-cursos-page)
                         if ( cfg.excludeSelector && card.closest( cfg.excludeSelector ) ) return;
@@ -2107,7 +2143,7 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                                 childList: true,
                                 subtree: true,
                                 attributes: true,
-                                attributeFilter: [ 'class', 'style' ]
+                                attributeFilter: [ 'class' ]
                             } );
                         }
                     }
@@ -4506,6 +4542,11 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
             color: #6b7280;
             font-style: italic;
         }
+        .fplms-locked-field {
+            pointer-events: none;
+            opacity: .75;
+            background: #f3f4f6 !important;
+        }
         </style>
         <script id="fplms-settings-structures-script">
         (function () {
@@ -4567,6 +4608,61 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                 return true;
             }
 
+            function lockIdentityFields() {
+                var firstNameInputs = document.querySelectorAll(
+                    '#first_name, input[name="first_name"], .masterstudy-account-settings-first-name-input'
+                );
+                var lastNameInputs = document.querySelectorAll(
+                    '#last_name, input[name="last_name"], .masterstudy-account-settings-last-name-input'
+                );
+                var displayNameSelect = document.querySelector('#display_name');
+                var firstNameInput = firstNameInputs.length ? firstNameInputs[0] : null;
+                var lastNameInput = lastNameInputs.length ? lastNameInputs[0] : null;
+
+                firstNameInputs.forEach(function (input) {
+                    input.readOnly = true;
+                    input.disabled = true;
+                    input.classList.add('fplms-locked-field');
+                    input.setAttribute('aria-readonly', 'true');
+                    input.setAttribute('aria-disabled', 'true');
+                });
+
+                lastNameInputs.forEach(function (input) {
+                    input.readOnly = true;
+                    input.disabled = true;
+                    input.classList.add('fplms-locked-field');
+                    input.setAttribute('aria-readonly', 'true');
+                    input.setAttribute('aria-disabled', 'true');
+                });
+
+                if (!displayNameSelect) {
+                    return;
+                }
+
+                var first = (firstNameInput && firstNameInput.value) ? String(firstNameInput.value).trim() : '';
+                var last = (lastNameInput && lastNameInput.value) ? String(lastNameInput.value).trim() : '';
+                var fullName = (first + ' ' + last).replace(/\s+/g, ' ').trim();
+
+                if (fullName) {
+                    var normalizedTarget = fullName.toLowerCase();
+                    var options = Array.prototype.slice.call(displayNameSelect.options || []);
+                    var match = options.find(function (opt) {
+                        var text = String(opt.text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                        var val = String(opt.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                        return text === normalizedTarget || val === normalizedTarget;
+                    });
+
+                    if (match) {
+                        displayNameSelect.value = match.value;
+                        displayNameSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
+
+                displayNameSelect.disabled = true;
+                displayNameSelect.classList.add('fplms-locked-field');
+                displayNameSelect.setAttribute('aria-disabled', 'true');
+            }
+
             function startObserver() {
                 if (observer) {
                     return;
@@ -4575,7 +4671,10 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
                 var debounceTimer = null;
                 observer = new MutationObserver(function () {
                     clearTimeout(debounceTimer);
-                    debounceTimer = setTimeout(replaceBillingFields, 80);
+                    debounceTimer = setTimeout(function () {
+                        replaceBillingFields();
+                        lockIdentityFields();
+                    }, 80);
                 });
 
                 observer.observe(document.body, { childList: true, subtree: true });
@@ -4584,10 +4683,146 @@ add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', function () {
                     replaceBillingFields();
+                    lockIdentityFields();
                     startObserver();
                 });
             } else {
                 replaceBillingFields();
+                lockIdentityFields();
+                startObserver();
+            }
+        }());
+        </script>
+        <?php
+    }
+
+    /**
+     * Personaliza el modal de contacto al administrador en /user-account/
+     * para ocultar nombre/email, autocompletar datos del usuario y ajustar textos.
+     */
+    public function inject_admin_message_modal_customization_script(): void {
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        if ( false === strpos( $request_uri, '/user-account/' ) ) {
+            return;
+        }
+
+        $current_user = wp_get_current_user();
+        $user_name    = $current_user->display_name ?: $current_user->user_login;
+        $user_email   = $current_user->user_email;
+        ?>
+        <script id="fplms-admin-message-modal-customization">
+        (function () {
+            'use strict';
+
+            var USER_NAME  = <?php echo wp_json_encode( $user_name ); ?>;
+            var USER_EMAIL = <?php echo wp_json_encode( $user_email ); ?>;
+            var observer = null;
+
+            function inAdminMessageModal(node) {
+                if (!node || !node.closest) {
+                    return null;
+                }
+                return node.closest('#masterstudy-enterprise-modal, .masterstudy-enterprise-modal');
+            }
+
+            function hideField(input) {
+                if (!input) {
+                    return;
+                }
+                var field = input.closest('.masterstudy-enterprise-modal__form-field');
+                if (field) {
+                    field.style.setProperty('display', 'none', 'important');
+                }
+            }
+
+            function customizeAdminMessageModal() {
+                var modals = document.querySelectorAll('#masterstudy-enterprise-modal, .masterstudy-enterprise-modal');
+                if (!modals.length) {
+                    return false;
+                }
+
+                modals.forEach(function (modal) {
+                    modal.querySelectorAll('.masterstudy-enterprise-modal__title, h2, h3').forEach(function (el) {
+                        var text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+                        if (text.indexOf('¿Tienes alguna pregunta?') !== -1 || text.indexOf('Tienes alguna pregunta?') !== -1) {
+                            el.textContent = 'Enviar mensaje al administrador';
+                        }
+                    });
+
+                    modal.querySelectorAll('input[name="enterprise_name"]').forEach(function (el) {
+                        el.value = USER_NAME;
+                        hideField(el);
+                    });
+
+                    modal.querySelectorAll('input[name="enterprise_email"]').forEach(function (el) {
+                        el.value = USER_EMAIL;
+                        hideField(el);
+                    });
+
+                    modal.querySelectorAll('textarea[name="enterprise_text"]').forEach(function (el) {
+                        el.placeholder = 'Escribe tu mensaje para el administrador';
+                    });
+
+                    modal.querySelectorAll('.masterstudy-enterprise-modal__actions button, button').forEach(function (btn) {
+                        var text = String(btn.textContent || '').replace(/\s+/g, ' ').trim();
+                        if (text === 'Enviar La Consulta' || text === 'Send Request' || text === 'Enviar consulta') {
+                            btn.textContent = 'Enviar mensaje';
+                        }
+                    });
+                });
+
+                return true;
+            }
+
+            function startObserver() {
+                if (observer) {
+                    return;
+                }
+
+                var debounceTimer = null;
+                observer = new MutationObserver(function (mutations) {
+                    var shouldRun = false;
+
+                    mutations.forEach(function (mutation) {
+                        if (shouldRun) {
+                            return;
+                        }
+
+                        Array.prototype.forEach.call(mutation.addedNodes || [], function (node) {
+                            if (shouldRun || !node || node.nodeType !== 1) {
+                                return;
+                            }
+                            if (inAdminMessageModal(node) || node.querySelector && node.querySelector('#masterstudy-enterprise-modal, .masterstudy-enterprise-modal')) {
+                                shouldRun = true;
+                            }
+                        });
+                    });
+
+                    if (!shouldRun) {
+                        return;
+                    }
+
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(customizeAdminMessageModal, 60);
+                });
+
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', function () {
+                    customizeAdminMessageModal();
+                    startObserver();
+                });
+            } else {
+                customizeAdminMessageModal();
                 startObserver();
             }
         }());
