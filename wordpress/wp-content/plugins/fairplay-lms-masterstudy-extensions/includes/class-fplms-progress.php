@@ -131,9 +131,9 @@ class FairPlay_LMS_Progress_Service {
         global $wpdb;
 
         // Forzar limpieza de caché para debugging (eliminar en producción)
-        // delete_transient( 'fplms_sdash_v12_' . $user_id );
+        // delete_transient( 'fplms_sdash_v14_' . $user_id );
 
-        $cache_key = 'fplms_sdash_v12_' . $user_id;
+        $cache_key = 'fplms_sdash_v14_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
@@ -153,13 +153,19 @@ class FairPlay_LMS_Progress_Service {
             'courses_list'      => [],
         ];
 
-        // 1. Matrículas desde la tabla MasterStudy
-        $enrolled_raw = [];
+        // 1. Matrículas desde la tabla MasterStudy (solo cursos publish)
+        $enrolled_ids = [];
         $ms_table     = $wpdb->prefix . 'stm_lms_user_courses';
 
         $rows = $wpdb->get_results(
             $wpdb->prepare(
-                "SELECT course_id, progress_percent, status FROM {$ms_table} WHERE user_id = %d",
+                "SELECT uc.course_id, uc.progress_percent, uc.status
+                 FROM {$ms_table} uc
+                 INNER JOIN {$wpdb->posts} p
+                    ON p.ID = uc.course_id
+                   AND p.post_type = 'stm-courses'
+                   AND p.post_status = 'publish'
+                 WHERE uc.user_id = %d",
                 $user_id
             )
         );
@@ -167,85 +173,21 @@ class FairPlay_LMS_Progress_Service {
         foreach ( $rows as $row ) {
             $cid = (int) $row->course_id;
             if ( $cid > 0 ) {
-                $enrolled_raw[ $cid ] = [
+                $enrolled_ids[ $cid ] = [
                     'progress' => (float) $row->progress_percent,
                     'status'   => (string) $row->status,
                 ];
             }
         }
 
-        // 🔍 DEPURACIÓN: Ver cursos crudos antes de filtrar
-        if ( $user_id === 5 ) {
-            error_log( '=== FPLMS DEBUG: Cursos crudos del usuario 5 ===' );
-            error_log( 'IDs: ' . print_r( array_keys( $enrolled_raw ), true ) );
-        }
-
         /**
-         * FILTRO 1: Solo cursos publicados
+         * NOTA: no re-filtrar por estructuras aquí.
+         *
+         * Esta fuente ya representa cursos publish en los que el usuario
+         * está matriculado (tabla stm_lms_user_courses). Reaplicar filtros de
+         * visibilidad en esta capa puede descontar cursos válidos y desalinear
+         * el total del panel respecto a las matrículas reales.
          */
-        $enrolled_ids = array_filter(
-            $enrolled_raw,
-            static function ( $course_data, $course_id ) use ( $user_id ): bool {
-                $cid = (int) $course_id;
-                if ( $cid <= 0 ) {
-                    return false;
-                }
-
-                if ( current_user_can( 'manage_options' ) ) {
-                    return true;
-                }
-
-                $status = get_post_status( $cid );
-                if ( false === $status ) {
-                    return false;
-                }
-
-                if ( 'publish' === $status ) {
-                    return true;
-                }
-
-                $author_id = (int) get_post_field( 'post_author', $cid );
-                return $author_id > 0 && $author_id === (int) $user_id;
-            },
-            ARRAY_FILTER_USE_BOTH
-        );
-
-        // 🔍 DEPURACIÓN: Después de filtrar por estado
-        if ( $user_id === 5 ) {
-            error_log( '=== FPLMS DEBUG: Después de filtrar por publish ===' );
-            error_log( 'IDs: ' . print_r( array_keys( $enrolled_ids ), true ) );
-        }
-
-        /**
-         * FILTRO 2: Visibilidad por estructuras
-         */
-        if ( ! empty( $enrolled_ids ) && class_exists( 'FairPlay_LMS_Course_Visibility_Service' ) ) {
-            $visibility_service = new FairPlay_LMS_Course_Visibility_Service();
-            $enrolled_ids = array_filter(
-                $enrolled_ids,
-                static function ( $course_data, $course_id ) use ( $visibility_service, $user_id ): bool {
-                    $cid = (int) $course_id;
-                    if ( $cid <= 0 ) {
-                        return false;
-                    }
-                    $can_see = $visibility_service->can_user_see_course( (int) $user_id, $cid );
-                    
-                    // 🔍 DEPURACIÓN: Ver cada curso
-                    if ( $user_id === 5 && $cid === 53818 ) {
-                        error_log( "FPLMS DEBUG: Curso 53818 - can_user_see_course = " . ($can_see ? 'TRUE' : 'FALSE') );
-                    }
-                    
-                    return $can_see;
-                },
-                ARRAY_FILTER_USE_BOTH
-            );
-        }
-
-        // 🔍 DEPURACIÓN: Después de filtrar por estructuras
-        if ( $user_id === 5 ) {
-            error_log( '=== FPLMS DEBUG: Después de filtrar por estructuras ===' );
-            error_log( 'IDs: ' . print_r( array_keys( $enrolled_ids ), true ) );
-        }
 
         /**
          * FILTRO 3: Eliminar cursos huérfanos
@@ -263,14 +205,8 @@ class FairPlay_LMS_Progress_Service {
             ARRAY_FILTER_USE_BOTH
         );
 
-        // 🔧 Recalcular enrolled DESPUÉS de TODOS los filtros
+        // Recalcular enrolled DESPUÉS de todos los filtros.
         $stats['enrolled'] = count( $enrolled_ids );
-
-        // 🔍 DEPURACIÓN: Resultado final
-        if ( $user_id === 5 ) {
-            error_log( '=== FPLMS DEBUG: enrolled FINAL = ' . $stats['enrolled'] );
-            error_log( 'IDs FINALES: ' . print_r( array_keys( $enrolled_ids ), true ) );
-        }
 
         if ( $stats['enrolled'] > 0 ) {
             $total_progress = 0.0;

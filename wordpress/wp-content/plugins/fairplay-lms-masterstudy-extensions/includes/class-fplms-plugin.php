@@ -226,15 +226,32 @@ class FairPlay_LMS_Plugin {
         // Forzar per_page alto en el AJAX de cursos matriculados ANTES de que MasterStudy
         // ejecute su query, para que el hook stm_lms_get_user_courses_filter reciba TODOS
         // los cursos y pueda filtrar por visibilidad correctamente (sin truncar por paginación).
-        add_action( 'wp_ajax_stm_lms_get_user_courses',    [ $this, 'intercept_enrolled_courses_per_page' ], 1 );
-        add_action( 'wp_ajax_stm_lms_user_courses',        [ $this, 'intercept_enrolled_courses_per_page' ], 1 );
-        add_action( 'wp_ajax_stm_lms_student_courses',     [ $this, 'intercept_enrolled_courses_per_page' ], 1 );
-        add_action( 'wp_ajax_stm_lms_enrolled_courses',    [ $this, 'intercept_enrolled_courses_per_page' ], 1 );
-        add_action( 'wp_ajax_stm_lms_account_courses',     [ $this, 'intercept_enrolled_courses_per_page' ], 1 );
+        /**add_action( 'wp_ajax_stm_lms_get_user_courses',    [ $this, 'intercept_enrolled_courses_per_page' ], 0 );
+        add_action( 'wp_ajax_stm_lms_user_courses',        [ $this, 'intercept_enrolled_courses_per_page' ], 0 );
+        add_action( 'wp_ajax_stm_lms_student_courses',     [ $this, 'intercept_enrolled_courses_per_page' ], 0 );
+        add_action( 'wp_ajax_stm_lms_enrolled_courses',    [ $this, 'intercept_enrolled_courses_per_page' ], 0 );
+        add_action( 'wp_ajax_stm_lms_account_courses',     [ $this, 'intercept_enrolled_courses_per_page' ], 0 );*/
+
+        // OVERRIDE COMPLETO del endpoint de cursos - Prioridad 0 para ejecutarse ANTES que MasterStudy
+        add_action( 'wp_ajax_stm_lms_get_user_courses',    [ $this, 'override_courses_endpoint' ], 0 );
+        add_action( 'wp_ajax_stm_lms_user_courses',        [ $this, 'override_courses_endpoint' ], 0 );
+        add_action( 'wp_ajax_stm_lms_student_courses',     [ $this, 'override_courses_endpoint' ], 0 );
+        add_action( 'wp_ajax_stm_lms_enrolled_courses',    [ $this, 'override_courses_endpoint' ], 0 );
+        add_action( 'wp_ajax_stm_lms_account_courses',     [ $this, 'override_courses_endpoint' ], 0 );
 
         // Filtrado de cursos matriculados por visibilidad de estructura (respuesta AJAX)
         // Filtro para modificar la consulta de cursos ANTES de que MasterStudy los renderice
         add_filter( 'stm_lms_user_courses_query_args', [ $this->visibility, 'filter_user_courses_query' ], 10, 2 );
+        add_filter( 'stm_lms_get_user_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
+        add_filter( 'stm_lms_user_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
+        add_filter( 'stm_lms_student_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
+        add_filter( 'stm_lms_enrolled_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
+        add_filter( 'stm_lms_account_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
+        add_filter( 'stm_lms_get_user_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
+        add_filter( 'stm_lms_user_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
+        add_filter( 'stm_lms_student_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
+        add_filter( 'stm_lms_enrolled_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
+        add_filter( 'stm_lms_account_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
         add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
 
         // Invalidar caché de estadísticas del estudiante cuando un curso cambia de estado.
@@ -842,6 +859,10 @@ class FairPlay_LMS_Plugin {
 
         if ( ! empty( $visible_course_ids ) ) {
             $query_args['post__in'] = $visible_course_ids;
+            $query_args['posts_per_page'] = -1;
+            $query_args['nopaging'] = true;
+            $query_args['per_page'] = 500;
+            $query_args['page'] = 1;
         } else {
             // Si no hay cursos visibles, retornar query que no devuelva resultados
             $query_args['post__in'] = [ 0 ];
@@ -1314,12 +1335,33 @@ class FairPlay_LMS_Plugin {
      */
     public function filter_courses_pre_get_posts( WP_Query $query ): void {
 
-        if ( ! $query->is_main_query() ) {
+        $ajax_action = isset( $_REQUEST['action'] ) ? sanitize_key( (string) wp_unslash( $_REQUEST['action'] ) ) : '';
+        $is_enrolled_courses_ajax = wp_doing_ajax() && in_array(
+            $ajax_action,
+            [
+                'stm_lms_get_user_courses',
+                'stm_lms_user_courses',
+                'stm_lms_student_courses',
+                'stm_lms_enrolled_courses',
+                'stm_lms_account_courses',
+            ],
+            true
+        );
+
+        if ( ! $query->is_main_query() && ! $is_enrolled_courses_ajax ) {
             return;
         }
 
-        if ( $query->get( 'post_type' ) !== FairPlay_LMS_Config::MS_PT_COURSE ) {
+        $post_type = $query->get( 'post_type' );
+        $is_course_query = ( $post_type === FairPlay_LMS_Config::MS_PT_COURSE )
+            || ( is_array( $post_type ) && in_array( FairPlay_LMS_Config::MS_PT_COURSE, $post_type, true ) );
+
+        if ( ! $is_course_query && ! $is_enrolled_courses_ajax ) {
             return;
+        }
+
+        if ( ! $is_course_query && $is_enrolled_courses_ajax ) {
+            $query->set( 'post_type', FairPlay_LMS_Config::MS_PT_COURSE );
         }
 
         $user_id = get_current_user_id();
@@ -1346,6 +1388,13 @@ class FairPlay_LMS_Plugin {
         }
 
         $query->set( 'post__in', ! empty( $visible ) ? $visible : [ 0 ] );
+
+        if ( $is_enrolled_courses_ajax ) {
+            $query->set( 'posts_per_page', -1 );
+            $query->set( 'nopaging', true );
+            $query->set( 'paged', 1 );
+            $query->set( 'offset', 0 );
+        }
     }
 
     /**
@@ -1571,25 +1620,73 @@ class FairPlay_LMS_Plugin {
     }
 
     /**
-     * Intercepta el AJAX 'stm_lms_get_user_courses' en prioridad 1 (antes del handler nativo)
-     * para forzar per_page=500, de modo que el filtro stm_lms_get_user_courses_filter
-     * reciba TODOS los cursos matriculados y pueda aplicar el filtro de visibilidad sobre
-     * el conjunto completo — sin que MasterStudy haya truncado por paginación del servidor.
+     * Intercepta el AJAX y fuerza per_page=500, además de modificar la respuesta
      */
-   public function intercept_enrolled_courses_per_page(): void {
-    if ( current_user_can( 'manage_options' ) ) {
-        return;
+    public function intercept_enrolled_courses_per_page(): void {
+        if ( current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        // Forzar per_page=500 en la petición entrante
+        foreach ( [ 'per_page', 'posts_per_page', 'limit' ] as $k ) {
+            if ( isset( $_REQUEST[ $k ] ) || true ) {
+                $_REQUEST[ $k ] = 500;
+                $_POST[ $k ]    = 500;
+                $_GET[ $k ]     = 500;
+            }
+        }
+
+        // Forzar página 1
+        foreach ( [ 'page', 'paged', 'offset' ] as $k ) {
+            $val = ( 'offset' === $k ) ? 0 : 1;
+            $_REQUEST[ $k ] = $val;
+            $_POST[ $k ]    = $val;
+            $_GET[ $k ]     = $val;
+        }
+
+        // 🔥 NUEVO: Filtrar la consulta de MasterStudy para forzar per_page
+        add_filter( 'stm_lms_get_user_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
+        add_filter( 'stm_lms_user_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
+        add_filter( 'stm_lms_student_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
+        add_filter( 'stm_lms_enrolled_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
+        add_filter( 'stm_lms_account_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
     }
-    // Forzar per_page a 500 para obtener TODOS los cursos en una sola página
-    $_REQUEST['per_page'] = 500;
-    $_POST['per_page']    = 500;
-    $_GET['per_page']     = 500;
-    
-    // También forzar page=1 para asegurar que obtenemos la primera página
-    $_REQUEST['page'] = 1;
-    $_POST['page']    = 1;
-    $_GET['page']     = 1;
-}
+
+    /**
+     * Fuerza los argumentos de consulta para que devuelvan todos los cursos
+     */
+    public function force_query_per_page( $args ) {
+        if ( is_array( $args ) ) {
+            $args['per_page'] = 500;
+            $args['posts_per_page'] = 500;
+            $args['limit'] = 500;
+            $args['page'] = 1;
+            $args['offset'] = 0;
+            $args['nopaging'] = true;
+        }
+        return $args;
+    }
+
+    /**
+     * Modifica la respuesta para eliminar la paginación
+     */
+    public function modify_courses_pagination_response( $response ) {
+        if ( ! is_array( $response ) ) {
+            return $response;
+        }
+
+        // Si tenemos cursos, forzar total = cantidad de cursos
+        if ( isset( $response['courses'] ) && is_array( $response['courses'] ) ) {
+            $total_courses = count( $response['courses'] );
+            $response['total'] = $total_courses;
+            $response['per_page'] = $total_courses;
+            $response['page'] = 1;
+            $response['total_pages'] = 1;
+            $response['pagination'] = '';
+        }
+
+        return $response;
+    }
 
     /**
      * Invalida la caché del dashboard de estudiante cuando MasterStudy dispara un hook
@@ -1598,7 +1695,7 @@ class FairPlay_LMS_Plugin {
     public function bust_student_dashboard_cache( $user_id = 0, $course_id = 0 ): void {
         $uid = (int) $user_id;
         if ( $uid > 0 ) {
-            delete_transient( 'fplms_sdash_v9_' . $uid );
+            delete_transient( 'fplms_sdash_v14_' . $uid );
         }
     }
 
@@ -1646,7 +1743,7 @@ class FairPlay_LMS_Plugin {
         );
 
         foreach ( $enrolled_users as $uid ) {
-            delete_transient( 'fplms_sdash_v9_' . (int) $uid );
+            delete_transient( 'fplms_sdash_v14_' . (int) $uid );
         }
     }
 
@@ -1656,7 +1753,7 @@ class FairPlay_LMS_Plugin {
      */
     public function bust_student_cache_on_meta( $meta_id, $user_id, $meta_key ): void {
         if ( preg_match( '/^stm_lms_course(?:_progress)?_\d+$/', (string) $meta_key ) ) {
-            delete_transient( 'fplms_sdash_v9_' . (int) $user_id );
+            delete_transient( 'fplms_sdash_v14_' . (int) $user_id );
         }
     }
 
@@ -1680,7 +1777,7 @@ class FairPlay_LMS_Plugin {
             global $wpdb;
             $stats   = $this->progress->get_student_dashboard_stats( $user_id );
             // Forzar recálculo limpio sin transient
-            delete_transient( 'fplms_sdash_v9_' . $user_id );
+            delete_transient( 'fplms_sdash_v14_' . $user_id );
             $stats2  = $this->progress->get_student_dashboard_stats( $user_id );
             // Obtener IDs de cursos completados directamente
             $ms_table = null;
@@ -1990,15 +2087,6 @@ class FairPlay_LMS_Plugin {
             var studentVisibilityReady     = false;
             var studentSearchQuery         = '';    // texto de búsqueda activo en cursos estudiante
 
-            var style = document.createElement('style');
-                        style.textContent = `
-                            /* Ocultar paginación nativa de MasterStudy */
-                            .masterstudy-enrolled-courses__pagination {
-                                display: none !important;
-                            }
-                        `;
-                        document.head.appendChild(style);
-
             /* ── Helpers de filtrado por ID de curso ────────────────────────── */
 
             function extractCourseIdFromCard( card ) {
@@ -2145,9 +2233,51 @@ class FairPlay_LMS_Plugin {
             function reapplyStudentVisibility() {
                 if ( studentCustomFilter ) {
                     applyStudentCustomFilter();
+                    syncStudentPaginationVisibility();
                     return;
                 }
                 applyStudentBaseVisibility();
+                syncStudentPaginationVisibility();
+            }
+
+            // Oculta la paginación solo cuando todos los cursos visibles ya están cargados.
+            // Si hay menos tarjetas en DOM que cursos visibles esperados, la mostramos.
+            function syncStudentPaginationVisibility() {
+                var pag = document.querySelector( '.masterstudy-enrolled-courses__pagination' );
+                if ( ! pag ) {
+                    return;
+                }
+
+                var scope = document.querySelector( '.masterstudy-enrolled-courses' ) || document;
+                var cards = scope.querySelectorAll(
+                    '.masterstudy-course-card, .masterstudy-enrolled-courses-list__item, .masterstudy-enrolled-courses__item'
+                );
+
+                var loadedCards = cards.length;
+                var visibleCards = 0;
+                cards.forEach( function ( card ) {
+                    if ( card.style.display !== 'none' ) {
+                        visibleCards++;
+                    }
+                } );
+
+                var paginationRoot = pag.querySelector( '.masterstudy-pagination' ) || pag;
+                var totalPagesAttr = parseInt(
+                    ( paginationRoot.getAttribute( 'data-total-pages' ) || paginationRoot.dataset.totalPages || '0' ),
+                    10
+                );
+                var totalPagesByItems = pag.querySelectorAll( '.masterstudy-pagination__item-block' ).length;
+                var totalPages = Math.max(
+                    isNaN( totalPagesAttr ) ? 0 : totalPagesAttr,
+                    totalPagesByItems
+                );
+
+                var expectedVisible = studentVisibleIds && studentVisibleIds.length ? studentVisibleIds.length : 0;
+                var shouldShowPagination = totalPages > 1
+                    || ( expectedVisible > 0 && loadedCards > 0 && visibleCards < expectedVisible );
+
+                pag.style.display = shouldShowPagination ? '' : 'none';
+                pag.setAttribute( 'aria-hidden', shouldShowPagination ? 'false' : 'true' );
             }
 
             // Extrae el % de progreso de una tarjeta desde la barra o texto de progreso.
@@ -4508,14 +4638,14 @@ class FairPlay_LMS_Plugin {
                 var avg  = (data.avg_progress || 0) + '%';
                 var hrs  = (data.hours || 0) + ' h';
                 var html = mkStudentBlock( 'courses',      'Cursos Inscritos',   data.enrolled      || 0 )
-                         + mkStudentBlock( 'groups',       'Avance Promedio',    avg                    )
-                         + mkStudentBlock( 'courses',      'Cursos Completados', data.completed     || 0 )
-                         + mkStudentBlock( 'certificates', 'Certificados',       data.certificates  || 0 )
-                         + mkStudentBlock( 'groups',       'Horas de Formación', hrs                    );
+                        + mkStudentBlock( 'groups',       'Avance Promedio',    avg                    )
+                        + mkStudentBlock( 'courses',      'Cursos Completados', data.completed     || 0 )
+                        + mkStudentBlock( 'certificates', 'Certificados',       data.certificates  || 0 )
+                        + mkStudentBlock( 'groups',       'Horas de Formación', hrs                    );
                 el.innerHTML = html;
                 studentCalData  = data;
-                window.studentCalData = data;
                 renderedStudent = true;
+
                 if ( ! searchInjected ) {
                     searchInjected = true;
                     injectSearchBar( el, {
@@ -4533,9 +4663,7 @@ class FairPlay_LMS_Plugin {
                 injectStudentTabs( data );
                 injectStudentCalendarSidebarLink();
 
-                // Patrón de quiz-type-translation.js: polling para cubrir
-                // re-renders de Vue que sobreescriben la visibilidad aplicada.
-                // 40 iteraciones × 250 ms = 10 s de cobertura post-carga.
+                // Re-aplicar visibilidad tras re-renders de Vue durante la carga inicial.
                 var _visibilityTries = 0;
                 var _visibilityTimer = setInterval( function () {
                     reapplyStudentVisibility();
@@ -4546,17 +4674,12 @@ class FairPlay_LMS_Plugin {
                 }, 250 );
 
                 // ── Recarga automática si el DOM no tiene todos los cursos visibles ──
-                // Situación: Vue tarda en hacer su AJAX inicial, o los cursos vienen en
-                // páginas 2+ y el interceptor no modificó el per_page correctamente.
-                // Solo se dispara si __empty sigue visible (MasterStudy muestra "sin cursos").
                 (function () {
                     var _rDone = false;
 
-                    // Cuenta tarjetas VISIBLES (no ocultadas por display:none) en la lista.
-                    // No usa isAllowedStudentCourse() para evitar falsos 0 por timing.
                     function _countVisibleCards() {
                         var _s = document.querySelector( '.masterstudy-enrolled-courses__list' ) ||
-                                 document.querySelector( '.masterstudy-enrolled-courses' ) || document;
+                                document.querySelector( '.masterstudy-enrolled-courses' ) || document;
                         var _n = 0;
                         _s.querySelectorAll(
                             '.masterstudy-course-card, .masterstudy-enrolled-courses-list__item, .masterstudy-enrolled-courses__item'
@@ -4566,7 +4689,6 @@ class FairPlay_LMS_Plugin {
                         return _n;
                     }
 
-                    // Verdadero si Vue terminó de cargar y muestra "sin cursos".
                     function _emptyBlockVisible() {
                         var _e = document.querySelector( '.masterstudy-enrolled-courses__empty' );
                         return !! _e && _e.style.display !== 'none' && _e.offsetParent !== null;
@@ -4575,30 +4697,20 @@ class FairPlay_LMS_Plugin {
                     function _doFullReload() {
                         if ( _rDone ) return;
                         if ( ! studentVisibleIds || ! studentVisibleIds.length ) return;
-                        // Solo recargar cuando Vue muestra el estado vacío Y no hay ninguna
-                        // tarjeta visible. Si hay al menos UN curso en pantalla NO interferimos:
-                        // el usuario ya está viendo cursos y el auto-reload solo empeoraría
-                        // la experiencia (causaría que todo desaparezca momentáneamente).
                         if ( _countVisibleCards() > 0 ) { _rDone = true; return; }
                         if ( ! _emptyBlockVisible() ) { _rDone = true; return; }
                         _rDone = true;
 
-                        // Estrategia 1: click en botón "siguiente página" (hay paginación)
                         var _btnNext = document.querySelector(
                             '.masterstudy-enrolled-courses__pagination .masterstudy-pagination__button-next'
                         );
                         if ( _btnNext && ! _btnNext.disabled ) { _btnNext.click(); return; }
 
-                        // Estrategia 2: click en cualquier ítem de paginación
                         var _btnAny = document.querySelector(
                             '.masterstudy-enrolled-courses__pagination .masterstudy-pagination__item-block'
                         );
                         if ( _btnAny ) { _btnAny.click(); return; }
 
-                        // Estrategia 3: truco de dos tabs para forzar recarga completa.
-                        // Hacemos click en un tab NO-activo (ej. "in_progress") y luego
-                        // en "all"; Vue dispara dos AJAX y finalmente carga todos los cursos.
-                        // El interceptor convierte ambas peticiones a per_page=500.
                         var _tabs = document.querySelector( '.masterstudy-enrolled-courses-tabs__blocks' );
                         var _aTab = _tabs && _tabs.querySelector( '[data-status="all"]' );
                         var _otherTab = _tabs && _tabs.querySelector(
@@ -4616,10 +4728,7 @@ class FairPlay_LMS_Plugin {
                         }
                     }
 
-                    // Primer intento: 1.5 s (Vue suele completar su AJAX inicial en ~1 s)
                     setTimeout( _doFullReload, 1500 );
-
-                    // Segundo intento: solo si Vue sigue en estado vacío (0 cursos) a los 7 s.
                     setTimeout( function () {
                         if ( _emptyBlockVisible() && _countVisibleCards() === 0 ) {
                             _rDone = false;
@@ -4627,48 +4736,250 @@ class FairPlay_LMS_Plugin {
                         }
                     }, 7000 );
                 }());
+
+                // ── Hidratación inicial: solicitar per_page=500 y fusionar nodos
+                // HTML nativos devueltos por MasterStudy, sin plantillas custom.
+                (function () {
+                    if ( window.__fplmsStudentHydratorRunning ) {
+                        return;
+                    }
+
+                    function _getScope() {
+                        return document.querySelector( '.masterstudy-enrolled-courses' ) || document;
+                    }
+
+                    function _getListContainer() {
+                        return document.querySelector( '.masterstudy-enrolled-courses__list' )
+                            || document.querySelector( '.masterstudy-enrolled-courses-list' )
+                            || _getScope();
+                    }
+
+                    function _countVisibleCards() {
+                        var n = 0;
+                        _getScope().querySelectorAll(
+                            '.masterstudy-course-card, .masterstudy-enrolled-courses-list__item, .masterstudy-enrolled-courses__item'
+                        ).forEach( function ( card ) {
+                            if ( card.style.display !== 'none' ) {
+                                n++;
+                            }
+                        } );
+                        return n;
+                    }
+
+                    function _extractNodeKey( node ) {
+                        var card = node.classList && node.classList.contains( 'masterstudy-course-card' )
+                            ? node
+                            : node.querySelector( '.masterstudy-course-card' );
+
+                        if ( card ) {
+                            var cid = extractCourseIdFromCard( card );
+                            if ( cid > 0 ) {
+                                return 'id:' + cid;
+                            }
+                        }
+
+                        var firstLink = node.querySelector ? node.querySelector( 'a[href]' ) : null;
+                        if ( firstLink ) {
+                            return 'url:' + normalizeUrl( firstLink.href );
+                        }
+
+                        return '';
+                    }
+
+                    function _hasCompleteCardStructure( node ) {
+                        var card = node.classList && node.classList.contains( 'masterstudy-course-card' )
+                            ? node
+                            : node.querySelector( '.masterstudy-course-card' );
+
+                        if ( ! card ) {
+                            return false;
+                        }
+
+                        // Estructura completa de MasterStudy (tarjetas modernas).
+                        if ( card.querySelector( '.masterstudy-course-card__wrapper' ) ) {
+                            return true;
+                        }
+
+                        // Fallback: variantes completas sin wrapper explícito.
+                        return !! (
+                            card.querySelector( '.masterstudy-course-card__info-title' )
+                            && card.querySelector( '.masterstudy-course-card__meta' )
+                            && card.querySelector( '.masterstudy-course-card__bottom' )
+                        );
+                    }
+
+                    function _mergeNodeByKey( map, orderedKeys, key, node ) {
+                        if ( ! key || ! node ) {
+                            return;
+                        }
+
+                        var candidate = node.cloneNode( true );
+                        if ( ! map[ key ] ) {
+                            map[ key ] = candidate;
+                            orderedKeys.push( key );
+                            return;
+                        }
+
+                        var currentIsComplete = _hasCompleteCardStructure( map[ key ] );
+                        var nextIsComplete = _hasCompleteCardStructure( candidate );
+
+                        // Si el nuevo nodo tiene estructura más completa, reemplazar.
+                        if ( nextIsComplete && ! currentIsComplete ) {
+                            map[ key ] = candidate;
+                        }
+                    }
+
+                    function _parseNativeCourseNodes( courses ) {
+                        var out = [];
+                        if ( ! courses || ! courses.length ) {
+                            return out;
+                        }
+
+                        courses.forEach( function ( chunk ) {
+                            var html = '';
+                            if ( typeof chunk === 'string' ) {
+                                html = chunk;
+                            } else if ( chunk && typeof chunk.html === 'string' ) {
+                                html = chunk.html;
+                            }
+
+                            if ( ! html ) {
+                                return;
+                            }
+
+                            var temp = document.createElement( 'div' );
+                            temp.innerHTML = html;
+
+                            Array.prototype.slice.call( temp.children ).forEach( function ( child ) {
+                                out.push( child );
+                            } );
+                        } );
+
+                        return out;
+                    }
+
+                    function _resolveCoursesNonceAndAction() {
+                        var nonces = window.stm_lms_nonces || {};
+                        var candidates = [
+                            { action: 'stm_lms_get_user_courses', nonceKey: 'stm_lms_get_user_courses' },
+                            { action: 'stm_lms_user_courses',     nonceKey: 'stm_lms_user_courses' },
+                            { action: 'stm_lms_student_courses',  nonceKey: 'stm_lms_student_courses' },
+                            { action: 'stm_lms_enrolled_courses', nonceKey: 'stm_lms_enrolled_courses' },
+                            { action: 'stm_lms_account_courses',  nonceKey: 'stm_lms_account_courses' }
+                        ];
+
+                        for ( var i = 0; i < candidates.length; i++ ) {
+                            var nonce = nonces[ candidates[ i ].nonceKey ];
+                            if ( nonce ) {
+                                return { action: candidates[ i ].action, nonce: nonce };
+                            }
+                        }
+
+                        return null;
+                    }
+
+                    function _runHydrator() {
+                        var expected = studentVisibleIds && studentVisibleIds.length ? studentVisibleIds.length : 0;
+                        if ( expected <= 0 ) {
+                            return;
+                        }
+
+                        if ( _countVisibleCards() >= expected ) {
+                            return;
+                        }
+
+                        var list = _getListContainer();
+                        if ( ! list ) {
+                            return;
+                        }
+
+                        var req = _resolveCoursesNonceAndAction();
+                        if ( ! req ) {
+                            return;
+                        }
+
+                        window.__fplmsStudentHydratorRunning = true;
+
+                        var formData = new FormData();
+                        formData.append( 'action', req.action );
+                        formData.append( 'nonce', req.nonce );
+                        formData.append( 'status', 'all' );
+                        formData.append( 'page', '1' );
+                        formData.append( 'per_page', '500' );
+
+                        fetch( AJAX_URL, { method: 'POST', body: formData } )
+                            .then( function ( response ) {
+                                return response.json();
+                            } )
+                            .then( function ( res ) {
+                                if ( ! res || ! res.success || ! res.data || ! res.data.courses ) {
+                                    return;
+                                }
+
+                                var incomingNodes = _parseNativeCourseNodes( res.data.courses );
+                                if ( ! incomingNodes.length ) {
+                                    return;
+                                }
+
+                                var byKey = {};
+                                var orderedKeys = [];
+
+                                // Priorizar nodos nativos de AJAX (per_page=500),
+                                // porque suelen traer la estructura completa.
+                                incomingNodes.forEach( function ( node ) {
+                                    var key = _extractNodeKey( node );
+                                    _mergeNodeByKey( byKey, orderedKeys, key, node );
+                                } );
+
+                                // Fallback: completar con DOM actual y conservar cualquier
+                                // estado que no venga en la respuesta.
+                                Array.prototype.slice.call( list.children ).forEach( function ( child ) {
+                                    var key = _extractNodeKey( child );
+                                    _mergeNodeByKey( byKey, orderedKeys, key, child );
+                                } );
+
+                                if ( ! orderedKeys.length ) {
+                                    return;
+                                }
+
+                                // Ordenar según cursos esperados de dashboard cuando hay ID.
+                                orderedKeys.sort( function ( a, b ) {
+                                    var aId = a.indexOf( 'id:' ) === 0 ? parseInt( a.replace( 'id:', '' ), 10 ) : 0;
+                                    var bId = b.indexOf( 'id:' ) === 0 ? parseInt( b.replace( 'id:', '' ), 10 ) : 0;
+                                    var ai = aId ? studentVisibleIds.indexOf( aId ) : -1;
+                                    var bi = bId ? studentVisibleIds.indexOf( bId ) : -1;
+
+                                    if ( ai === -1 && bi === -1 ) return 0;
+                                    if ( ai === -1 ) return 1;
+                                    if ( bi === -1 ) return -1;
+                                    return ai - bi;
+                                } );
+
+                                list.innerHTML = '';
+                                var frag = document.createDocumentFragment();
+                                orderedKeys.forEach( function ( key ) {
+                                    frag.appendChild( byKey[ key ] );
+                                } );
+                                list.appendChild( frag );
+
+                                reapplyStudentVisibility();
+                                syncStudentPaginationVisibility();
+                            } )
+                            .catch( function () {} )
+                            .finally( function () {
+                                window.__fplmsStudentHydratorRunning = false;
+                            } );
+                    }
+
+                    setTimeout( _runHydrator, 900 );
+                    setTimeout( _runHydrator, 2500 );
+                    setTimeout( _runHydrator, 5000 );
+                }());
             }
 
             // Exponer renderStudent globalmente
             window.renderStudent = renderStudent;
 
-            /**
-             * Oculta la paginación nativa de MasterStudy y fuerza mostrar todos los cursos
-             */
-            function hideNativePaginationAndForceAllCourses() {
-                // Ocultar la paginación nativa
-                var nativePagination = document.querySelector('.masterstudy-enrolled-courses__pagination');
-                if (nativePagination) {
-                    nativePagination.style.display = 'none';
-                }
-                
-                // Asegurar que se muestran TODOS los cursos (sin paginación del servidor)
-                // Forzamos una recarga con per_page alto si es necesario
-                if (studentVisibleIds && studentVisibleIds.length > 0) {
-                    var totalCards = document.querySelectorAll('.masterstudy-course-card').length;
-                    var visibleCount = studentVisibleIds.length;
-                    
-                    // Si el número de tarjetas en el DOM es menor que los cursos visibles,
-                    // es porque MasterStudy está paginando y debemos forzar una recarga
-                    if (totalCards < visibleCount && totalCards > 0) {
-                        // Disparar una petición con per_page alto
-                        var event = new CustomEvent('fplms-force-full-load', { detail: { per_page: 500 } });
-                        document.dispatchEvent(event);
-                    }
-                }
-            }
-
-            // Ejecutar después de renderizar
-            setTimeout(hideNativePaginationAndForceAllCourses, 100);
-
-            // Observer para mantener oculta la paginación si Vue la re-renderiza
-            var paginationObserver = new MutationObserver(function() {
-                var pag = document.querySelector('.masterstudy-enrolled-courses__pagination');
-                if (pag && pag.style.display !== 'none') {
-                    pag.style.display = 'none';
-                }
-            });
-            paginationObserver.observe(document.body, { childList: true, subtree: true });
             /* ── Render instructor ───────────────────────────────────────────── */
 
             function renderInstructor( el, data ) {
@@ -4870,6 +5181,29 @@ class FairPlay_LMS_Plugin {
                     return false;
                 }
 
+                // Agrega per_page=500 a admin-ajax.php?action=stm_lms_* en GET.
+                function patchAdminAjaxUrl( url ) {
+                    if ( ! url ) return url;
+                    try {
+                        var base = ( window.location && window.location.origin ) ? window.location.origin : '';
+                        var u = new URL( String( url ), base );
+                        if ( u.pathname.indexOf( 'admin-ajax.php' ) === -1 ) return url;
+
+                        var action = u.searchParams.get( 'action' ) || '';
+                        if ( ! isMsAjaxAction( action ) ) return url;
+
+                        u.searchParams.set( 'per_page', '500' );
+                        u.searchParams.set( 'posts_per_page', '500' );
+                        u.searchParams.set( 'limit', '500' );
+                        u.searchParams.set( 'page', '1' );
+                        u.searchParams.set( 'paged', '1' );
+                        u.searchParams.set( 'offset', '0' );
+                        return u.toString();
+                    } catch ( e ) {
+                        return url;
+                    }
+                }
+
                 // Agrega per_page=500 a una URL (REST GET)
                 function patchRestUrl( url ) {
                     if ( ! url || ! isMsRestUrl( url ) ) return url;
@@ -4909,8 +5243,10 @@ class FairPlay_LMS_Plugin {
                         // REST GET: parchear URL
                         if ( typeof resource === 'string' ) {
                             resource = patchRestUrl( resource );
+                            resource = patchAdminAjaxUrl( resource );
                         } else if ( resource && typeof resource === 'object' && resource.url ) {
                             var _patched = patchRestUrl( resource.url );
+                            _patched = patchAdminAjaxUrl( _patched );
                             if ( _patched !== resource.url ) {
                                 resource = new Request( _patched, resource );
                             }
@@ -4934,6 +5270,7 @@ class FairPlay_LMS_Plugin {
                     try {
                         if ( String( method ).toUpperCase() === 'GET' ) {
                             url = patchRestUrl( url );
+                            url = patchAdminAjaxUrl( url );
                         }
                     } catch ( e ) {}
                     var args = Array.prototype.slice.call( arguments );
@@ -4962,6 +5299,8 @@ class FairPlay_LMS_Plugin {
             }
         })();
         </script>
+    
+
         <?php
     }
 
@@ -5046,6 +5385,7 @@ class FairPlay_LMS_Plugin {
         })();
         </script>
         <?php
+        
     }
 
     /**
@@ -5369,5 +5709,118 @@ class FairPlay_LMS_Plugin {
         </script>
         <?php
     }
+  
+    /**
+     * Obtener progreso de un curso para un usuario
+     */
+    private function get_course_progress( $user_id, $course_id ) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'stm_lms_user_courses';
+        $progress = $wpdb->get_var( $wpdb->prepare(
+            "SELECT progress_percent FROM $table WHERE user_id = %d AND course_id = %d",
+            $user_id, $course_id
+        ) );
+        return $progress ? floatval( $progress ) : 0;
+    }
+  
+    /**
+     * OVERRIDE COMPLETO DEL ENDPOINT DE CURSOS
+     * Esto bypassea React y devuelve directamente los cursos desde FairPlay
+     * Soluciona el problema de que solo se muestran 6 cursos en lugar de todos
+     */
+    public function override_courses_endpoint() {
+        // Verificar acción
+        $action = $_REQUEST['action'] ?? '';
+        $actions = ['stm_lms_get_user_courses', 'stm_lms_user_courses', 'stm_lms_student_courses', 'stm_lms_enrolled_courses', 'stm_lms_account_courses'];
+        
+        if ( ! in_array( $action, $actions ) ) {
+            return;
+        }
+        
+        // Remover cualquier otro handler para esta acción
+        remove_all_actions( 'wp_ajax_' . $action );
+        remove_all_actions( 'wp_ajax_nopriv_' . $action );
+        
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) {
+            wp_send_json_error( 'Usuario no autenticado', 401 );
+            return;
+        }
+        
+        // Obtener cursos visibles desde el servicio de visibilidad
+        $visible_courses = $this->visibility->get_visible_courses_for_user( $user_id );
+        
+        if ( empty( $visible_courses ) ) {
+            wp_send_json_success([
+                'courses' => [],
+                'total' => 0,
+                'per_page' => 10,
+                'total_pages' => 0,
+                'current_page' => 1,
+                'pagination' => ''
+            ]);
+            return;
+        }
+        
+        // Generar HTML para cada curso
+        $courses_html = [];
+        foreach ( $visible_courses as $course_id ) {
+            $course = get_post( $course_id );
+            if ( ! $course || $course->post_status !== 'publish' ) {
+                continue;
+            }
+            
+            $progress = $this->get_course_progress( $user_id, $course_id );
+            $completed = ( $progress >= 100 );
+            
+            // Generar HTML de la tarjeta del curso
+            ob_start();
+            ?>
+            <div class="masterstudy-course-card" data-id="<?php echo esc_attr( $course_id ); ?>">
+                <div class="masterstudy-course-card__image">
+                    <a href="<?php echo esc_url( get_permalink( $course_id ) ); ?>">
+                        <?php echo get_the_post_thumbnail( $course_id, 'medium', ['class' => 'masterstudy-course-card__image-element'] ); ?>
+                    </a>
+                </div>
+                <div class="masterstudy-course-card__info">
+                    <h3 class="masterstudy-course-card__title">
+                        <a href="<?php echo esc_url( get_permalink( $course_id ) ); ?>">
+                            <?php echo esc_html( $course->post_title ); ?>
+                        </a>
+                    </h3>
+                    <div class="masterstudy-course-card__progress">
+                        <div class="masterstudy-course-card__progress-bar">
+                            <div class="masterstudy-course-card__progress-bar_filled" style="width: <?php echo esc_attr( $progress ); ?>%;"></div>
+                        </div>
+                        <span class="masterstudy-course-card__progress-text">
+                            <?php echo $completed ? 'Completado' : 'Progreso: ' . $progress . '%'; ?>
+                        </span>
+                    </div>
+                    <a href="<?php echo esc_url( get_permalink( $course_id ) ); ?>" class="masterstudy-button masterstudy-button_style-primary masterstudy-button_size-sm">
+                        <span class="masterstudy-button__title"><?php echo $completed ? 'Ver curso' : 'Continuar'; ?></span>
+                    </a>
+                </div>
+            </div>
+            <?php
+            $courses_html[] = ob_get_clean();
+        }
+        
+        // Enviar respuesta exitosa
+        wp_send_json_success([
+            'courses' => $courses_html,
+            'total' => count($courses_html),
+            'per_page' => count($courses_html),
+            'total_pages' => 1,
+            'current_page' => 1,
+            'pagination' => '',
+            'tab_counts' => [
+                'all' => count($courses_html),
+                'in_progress' => 0,
+                'completed' => 0,
+                'failed' => 0
+            ]
+        ]);
+    }
+
 }
 

@@ -12,6 +12,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 class FairPlay_LMS_Course_Visibility_Service {
 
     /**
+     * Caché local de cursos publish matriculados por usuario.
+     *
+     * @var array<int, array<int>>
+     */
+    private static $enrolled_publish_cache = [];
+
+    /**
      * Regla de estado para visibilidad de cursos.
      * - publish: visible para todos según restricciones de estructura.
      * - inactivo (draft/private/pending): solo creador o administrador.
@@ -74,55 +81,136 @@ class FairPlay_LMS_Course_Visibility_Service {
      * @return bool True si el usuario puede ver el curso, false en caso contrario.
      */
     public function can_user_see_course( int $user_id, int $course_id, array $user_structures = [] ): bool {
-    // Depuración temporal para curso 53818
-    if ( $course_id === 53818 && $user_id === 5 ) {
-        error_log( "=== FPLMS DEBUG: can_user_see_course para curso 53818 ===" );
-    }
-    
     if ( ! $this->can_user_view_course_status( $user_id, $course_id ) ) {
-        if ( $course_id === 53818 && $user_id === 5 ) {
-            error_log( "FPLMS: Curso 53818 - FALLÓ por can_user_view_course_status" );
-        }
         return false;
+    }
+
+    // Regla de prioridad: si el usuario ya está matriculado en un curso publish,
+    // ese curso debe ser visible aunque no haga match de estructuras.
+    if ( in_array( $course_id, $this->get_user_enrolled_published_course_ids( $user_id ), true ) ) {
+        return true;
     }
 
     // Si no se pasan estructuras, obtenerlas
     if ( empty( $user_structures ) ) {
         $user_structures = $this->get_user_structures( $user_id );
-        if ( $course_id === 53818 && $user_id === 5 ) {
-            error_log( "FPLMS: Estructuras del usuario: " . print_r($user_structures, true) );
-        }
     }
 
     // Si el usuario no tiene estructura asignada, puede ver todos los cursos
     if ( empty( $user_structures ) ) {
-        if ( $course_id === 53818 && $user_id === 5 ) {
-            error_log( "FPLMS: Curso 53818 - visible porque usuario no tiene estructuras" );
-        }
         return true;
     }
 
     // Obtener estructuras asignadas al curso
     $course_structures = $this->get_course_structures( $course_id );
-    if ( $course_id === 53818 && $user_id === 5 ) {
-        error_log( "FPLMS: Estructuras del curso: " . print_r($course_structures, true) );
-    }
 
     // Si el curso no tiene restricciones de estructura, es visible para todos
     if ( $this->course_has_no_restrictions( $course_structures ) ) {
-        if ( $course_id === 53818 && $user_id === 5 ) {
-            error_log( "FPLMS: Curso 53818 - visible porque curso no tiene restricciones" );
-        }
         return true;
     }
 
-    $result = $this->structures_match( $user_structures, $course_structures );
-    if ( $course_id === 53818 && $user_id === 5 ) {
-        error_log( "FPLMS: Curso 53818 - structures_match = " . ($result ? 'TRUE' : 'FALSE') );
-    }
-    
-    return $result;
+    return $this->structures_match( $user_structures, $course_structures );
 }
+
+    /**
+     * Devuelve IDs de cursos publish en los que el usuario está matriculado.
+     *
+     * @param int $user_id ID de usuario.
+     * @return array<int>
+     */
+    private function get_user_enrolled_published_course_ids( int $user_id ): array {
+        if ( $user_id <= 0 ) {
+            return [];
+        }
+
+        if ( isset( self::$enrolled_publish_cache[ $user_id ] ) ) {
+            return self::$enrolled_publish_cache[ $user_id ];
+        }
+
+        global $wpdb;
+
+        $ms_table = $wpdb->prefix . 'stm_lms_user_courses';
+        $ids = array_map( 'intval', (array) $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT DISTINCT uc.course_id
+                 FROM {$ms_table} uc
+                 INNER JOIN {$wpdb->posts} p
+                    ON p.ID = uc.course_id
+                   AND p.post_type = %s
+                   AND p.post_status = 'publish'
+                 WHERE uc.user_id = %d",
+                FairPlay_LMS_Config::MS_PT_COURSE,
+                $user_id
+            )
+        ) );
+
+        self::$enrolled_publish_cache[ $user_id ] = $ids;
+        return $ids;
+    }
+
+    /**
+     * Normaliza meta de estructura a un ID entero (> 0) en formato tolerante.
+     * Acepta scalar, arrays serializados y objetos con claves comunes.
+     *
+     * @param mixed $raw Valor raw desde user_meta.
+     * @return int
+     */
+    private function normalize_structure_meta_id( $raw ): int {
+        if ( is_numeric( $raw ) ) {
+            $n = (int) $raw;
+            return $n > 0 ? $n : 0;
+        }
+
+        if ( is_string( $raw ) ) {
+            $maybe = maybe_unserialize( $raw );
+            if ( $maybe !== $raw ) {
+                return $this->normalize_structure_meta_id( $maybe );
+            }
+            return 0;
+        }
+
+        if ( is_object( $raw ) ) {
+            $raw = (array) $raw;
+        }
+
+        if ( is_array( $raw ) ) {
+            foreach ( [ 'term_id', 'id', 'value' ] as $k ) {
+                if ( isset( $raw[ $k ] ) ) {
+                    $n = $this->normalize_structure_meta_id( $raw[ $k ] );
+                    if ( $n > 0 ) {
+                        return $n;
+                    }
+                }
+            }
+
+            foreach ( $raw as $item ) {
+                $n = $this->normalize_structure_meta_id( $item );
+                if ( $n > 0 ) {
+                    return $n;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    /**
+     * Lee un ID de estructura desde múltiples meta keys (compatibilidad).
+     *
+     * @param int   $user_id ID de usuario.
+     * @param array $meta_keys Lista de meta keys candidatas.
+     * @return int
+     */
+    private function read_user_structure_id( int $user_id, array $meta_keys ): int {
+        foreach ( $meta_keys as $meta_key ) {
+            $raw = get_user_meta( $user_id, (string) $meta_key, true );
+            $id  = $this->normalize_structure_meta_id( $raw );
+            if ( $id > 0 ) {
+                return $id;
+            }
+        }
+        return 0;
+    }
 
     /**
      * Obtiene las estructuras asignadas a un usuario.
@@ -133,13 +221,13 @@ class FairPlay_LMS_Course_Visibility_Service {
      */
     private function get_user_structures( int $user_id ): array {
 
-        // Las meta keys REALES en la base de datos
+        // Compatibilidad: priorizar constantes y aceptar llaves legacy.
         $structures = [
-            'city'    => (int) get_user_meta( $user_id, 'fplms_city', true ),
-            'company' => (int) get_user_meta( $user_id, 'fplms_company', true ),
-            'channel' => (int) get_user_meta( $user_id, 'fplms_channel', true ),
-            'branch'  => (int) get_user_meta( $user_id, 'fplms_branch', true ),
-            'role'    => (int) get_user_meta( $user_id, 'fplms_job_role', true ),
+            'city'    => $this->read_user_structure_id( $user_id, [ FairPlay_LMS_Config::USER_META_CITY, 'fplms_cities' ] ),
+            'company' => $this->read_user_structure_id( $user_id, [ FairPlay_LMS_Config::USER_META_COMPANY, 'fplms_companies' ] ),
+            'channel' => $this->read_user_structure_id( $user_id, [ FairPlay_LMS_Config::USER_META_CHANNEL, 'fplms_channels' ] ),
+            'branch'  => $this->read_user_structure_id( $user_id, [ FairPlay_LMS_Config::USER_META_BRANCH, 'fplms_branches' ] ),
+            'role'    => $this->read_user_structure_id( $user_id, [ FairPlay_LMS_Config::USER_META_ROLE, 'fplms_role', 'fplms_roles' ] ),
         ];
 
         // Remover estructura vacía (0 significa no asignada)
@@ -298,9 +386,6 @@ class FairPlay_LMS_Course_Visibility_Service {
         return $response;
     }
 
-    // Log para depuración
-    error_log( "FPLMS: filter_user_courses_response - Inicio. Claves de respuesta: " . print_r(array_keys($response), true) );
-    
     // Intentar encontrar los cursos en diferentes estructuras posibles
     $courses = null;
     $courses_key = null;
@@ -309,13 +394,11 @@ class FairPlay_LMS_Course_Visibility_Service {
     if ( isset( $response['courses'] ) && is_array( $response['courses'] ) ) {
         $courses = $response['courses'];
         $courses_key = 'courses';
-        error_log( "FPLMS: Cursos encontrados en 'courses', count=" . count($courses) );
     }
     // Formato 2: $response['data']['courses']
     elseif ( isset( $response['data']['courses'] ) && is_array( $response['data']['courses'] ) ) {
         $courses = $response['data']['courses'];
         $courses_key = 'data.courses';
-        error_log( "FPLMS: Cursos encontrados en 'data.courses', count=" . count($courses) );
     }
     // Formato 3: $response directo es un array indexado
     elseif ( is_array( $response ) && ! isset( $response['courses'] ) && ! isset( $response['data'] ) ) {
@@ -324,18 +407,14 @@ class FairPlay_LMS_Course_Visibility_Service {
         if ( is_array( $first ) && ( isset( $first['course_id'] ) || isset( $first['id'] ) ) ) {
             $courses = $response;
             $courses_key = 'direct';
-            error_log( "FPLMS: Cursos encontrados en array directo, count=" . count($courses) );
         }
     }
     
     if ( empty( $courses ) ) {
-        error_log( "FPLMS: No se encontraron cursos en la respuesta. Retornando original." );
         return $response;
     }
     
     $user_id = get_current_user_id();
-    $original_count = count( $courses );
-    error_log( "FPLMS: Procesando {$original_count} cursos para usuario {$user_id}" );
     
     // Filtrar cursos
     $filtered_courses = array_values(
@@ -362,23 +441,15 @@ class FairPlay_LMS_Course_Visibility_Service {
                     }
                     
                     if ( $course_id <= 0 ) {
-                        error_log( "FPLMS: No se pudo extraer course_id del curso: " . print_r($course, true) );
                         return false;
                     }
                     
-                    $visible = $this->can_user_see_course( $user_id, $course_id );
-                    
-                    if ( $course_id === 53818 ) {
-                        error_log( "FPLMS: Curso 53818 - can_user_see_course = " . ($visible ? 'TRUE' : 'FALSE') );
-                    }
-                    
-                    return $visible;
+                    return $this->can_user_see_course( $user_id, $course_id );
                 }
             )
         );
-        
+
         $filtered_count = count( $filtered_courses );
-        error_log( "FPLMS: Cursos después de filtrar: {$filtered_count}" );
         
         // Actualizar la respuesta con los cursos filtrados
         if ( $courses_key === 'courses' ) {
@@ -390,11 +461,11 @@ class FairPlay_LMS_Course_Visibility_Service {
         }
         
         // Recalcular totales
-        $per_page = isset( $_POST['per_page'] ) ? (int) $_POST['per_page'] : 10;
+        $per_page = isset( $_REQUEST['per_page'] ) ? (int) $_REQUEST['per_page'] : 10;
         if ( $per_page <= 0 ) $per_page = 10;
         
         $total_pages = max( 1, (int) ceil( $filtered_count / $per_page ) );
-        $current_page = isset( $_POST['page'] ) ? (int) $_POST['page'] : 1;
+        $current_page = isset( $_REQUEST['page'] ) ? (int) $_REQUEST['page'] : 1;
         if ( $current_page < 1 ) $current_page = 1;
         
         // Actualizar totales en la respuesta
@@ -419,8 +490,6 @@ class FairPlay_LMS_Course_Visibility_Service {
             $response['pagination']['current_page'] = $current_page;
         }
         
-        error_log( "FPLMS: Resultado final - Total visible: {$filtered_count}, Per page: {$per_page}, Total pages: {$total_pages}, Current page: {$current_page}" );
-        
         return $response;
     }
 
@@ -434,22 +503,29 @@ class FairPlay_LMS_Course_Visibility_Service {
      * @return array Argumentos modificados.
      */
     public function filter_user_courses_query( array $args, int $user_id ): array {
+        $user_id = $user_id > 0 ? $user_id : get_current_user_id();
+        if ( $user_id <= 0 ) {
+            return $args;
+        }
+
         // Administrador: ver todo sin restricción
         if ( current_user_can( 'manage_options' ) ) {
             return $args;
         }
         
-        error_log( "FPLMS: filter_user_courses_query para usuario {$user_id}" );
-        
         // Obtener cursos visibles para este usuario
         $visible_courses = $this->get_visible_courses_for_user( $user_id );
         
-        error_log( "FPLMS: Cursos visibles para usuario {$user_id}: " . count($visible_courses) );
-        
         if ( ! empty( $visible_courses ) ) {
             $args['post__in'] = $visible_courses;
+            $args['orderby'] = 'post__in';
             $args['posts_per_page'] = -1; // Obtener todos los cursos visibles
             $args['nopaging'] = true;
+            $args['per_page'] = 500;
+            $args['limit'] = 500;
+            $args['page'] = 1;
+            $args['paged'] = 1;
+            $args['offset'] = 0;
         } else {
             $args['post__in'] = [ 0 ]; // No mostrar ningún curso
         }
