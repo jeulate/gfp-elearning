@@ -282,16 +282,23 @@ class FairPlay_LMS_Progress_Service {
             }
         }
 
-        // Certificados
+        // Certificados - CORREGIDO
+        // Los certificados de MasterStudy se almacenan como metadatos de usuario
+        // con la clave 'stm_lms_certificate_code_XXX' donde XXX es el ID del curso
         $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
-            "SELECT COUNT(DISTINCT p.ID)
-             FROM {$wpdb->posts} p
-             INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-             WHERE p.post_type  IN ('stm-certificates','stm-certificate')
-               AND p.post_status != 'trash'
-               AND pm.meta_key   IN ('user_id','stm_user_id')
-               AND pm.meta_value = %s",
-            (string) $user_id
+            "SELECT COUNT(um.umeta_id)
+            FROM {$wpdb->usermeta} um
+            INNER JOIN {$wpdb->prefix}stm_lms_user_courses uc 
+                ON uc.user_id = %d 
+                AND uc.course_id = REPLACE(um.meta_key, 'stm_lms_certificate_code_', '')
+            INNER JOIN {$wpdb->posts} p 
+                ON p.ID = uc.course_id 
+                AND p.post_type = 'stm-courses'
+                AND p.post_status = 'publish'
+            WHERE um.user_id = %d
+            AND um.meta_key LIKE 'stm_lms_certificate_code_%'
+            AND uc.progress_percent >= 100",
+            $user_id, $user_id
         ) );
 
         if ( 0 === $cert_count ) {

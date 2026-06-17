@@ -4829,6 +4829,206 @@ class FairPlay_LMS_Plugin {
                         }
                     }
 
+                    function _isCompletedCard( card ) {
+                        if ( ! card ) {
+                            return false;
+                        }
+
+                        var textNodes = card.querySelectorAll(
+                            '.masterstudy-course-card__progress-text, .masterstudy-course-card__progress-title, .masterstudy-button__title'
+                        );
+                        for ( var i = 0; i < textNodes.length; i++ ) {
+                            var t = String( textNodes[ i ].textContent || '' ).toLowerCase();
+                            if ( t.indexOf( 'completado' ) !== -1 || t.indexOf( 'completed' ) !== -1 ) {
+                                return true;
+                            }
+                            if ( t.indexOf( '100%' ) !== -1 ) {
+                                return true;
+                            }
+                        }
+
+                        var filled = card.querySelector( '.masterstudy-course-card__progress-bar_filled' );
+                        if ( filled ) {
+                            var w = parseFloat( String( filled.style.width || '' ).replace( '%', '' ) );
+                            if ( ! isNaN( w ) && w >= 99 ) {
+                                return true;
+                            }
+                        }
+
+                        return false;
+                    }
+
+                    
+                   function _normalizeLegacyCardNode( node ) {
+                    var card = node.classList && node.classList.contains( 'masterstudy-course-card' )
+                        ? node
+                        : node.querySelector( '.masterstudy-course-card' );
+
+                    if ( !card ) {
+                        return;
+                    }
+
+                    // Si ya tiene estructura completa, solo verificar el botón
+                    if ( _hasCompleteCardStructure( card ) ) {
+                        _forceCompletedButtonText( card );
+                        return;
+                    }
+
+                    // Extraer datos de la tarjeta legacy
+                    var courseId = card.dataset.fplmsCid || card.dataset.id || '';
+                    
+                    // Obtener imagen
+                    var imageLink = card.querySelector( '.masterstudy-course-card__image a' );
+                    var imageImg = card.querySelector( '.masterstudy-course-card__image img' );
+                    var imageSrc = imageImg ? imageImg.src : '';
+                    var imageHref = imageLink ? imageLink.href : '#';
+                    
+                    // Si no hay imagen en el enlace, buscar en el contenedor de imagen
+                    if ( !imageSrc ) {
+                        var imgContainer = card.querySelector( '.masterstudy-course-card__image' );
+                        if ( imgContainer ) {
+                            var img = imgContainer.querySelector( 'img' );
+                            if ( img ) {
+                                imageSrc = img.src;
+                                var imgParent = img.closest( 'a' );
+                                if ( imgParent ) {
+                                    imageHref = imgParent.href;
+                                }
+                            }
+                        }
+                    }
+
+                    // Obtener título
+                    var titleEl = card.querySelector( '.masterstudy-course-card__title a' );
+                    var title = titleEl ? titleEl.textContent.trim() : 'Curso';
+                    var titleLink = titleEl ? titleEl.href : '#';
+
+                    // Obtener progreso
+                    var progressFilled = card.querySelector( '.masterstudy-course-card__progress-bar_filled' );
+                    var progressWidth = progressFilled ? progressFilled.style.width || '0%' : '0%';
+                    var progressTextEl = card.querySelector( '.masterstudy-course-card__progress-text' );
+                    var progressText = progressTextEl ? progressTextEl.textContent.trim() : 'Progreso: 0%';
+                    var isCompleted = progressText.includes( 'Completado' ) || progressWidth === '100%' || progressWidth === '100';
+
+                    // Obtener botón
+                    var button = card.querySelector( '.masterstudy-button' );
+                    var buttonText = button ? button.querySelector( '.masterstudy-button__title' )?.textContent?.trim() || 'Continuar' : 'Continuar';
+                    var buttonHref = button ? button.href : titleLink;
+
+                    // Determinar categoría (intentar extraer del contexto)
+                    var category = 'Fair Play';
+                    var categoryLink = '#';
+                    var categoryEl = document.querySelector( '.masterstudy-course-card__info-category a' );
+                    if ( categoryEl ) {
+                        category = categoryEl.textContent.trim();
+                        categoryLink = categoryEl.href;
+                    }
+
+                    // Determinar fecha de inicio
+                    var startDate = new Date().toLocaleDateString( 'es-ES' );
+                    var dateEl = card.querySelector( '.masterstudy-course-card__start-time' );
+                    if ( dateEl ) {
+                        var dateText = dateEl.textContent.trim().replace( 'Iniciado ', '' );
+                        if ( dateText && dateText !== 'Completado' ) {
+                            startDate = dateText;
+                        }
+                    }
+
+                    // Construir la estructura completa
+                    var newHTML = `
+                        <div class="masterstudy-course-card" data-fplms-cid="${courseId}">
+                            <div class="masterstudy-course-card__wrapper">
+                                <a href="${imageHref}" class="masterstudy-course-card__image-link">
+                                    ${imageSrc ? `<img src="${imageSrc}" class="masterstudy-course-card__image">` : '<div style="width:100%;padding-top:56.25%;background:#f5f7fa;"></div>'}
+                                </a>
+                                <div class="masterstudy-course-card__info">
+                                    <span class="masterstudy-course-card__info-category">
+                                        <a href="${categoryLink}">${category}</a>
+                                    </span>
+                                    <a href="${titleLink}" class="masterstudy-course-card__info-title">
+                                        <h3>${title}</h3>
+                                    </a>
+                                    <div class="masterstudy-course-card__progress">
+                                        <div class="masterstudy-course-card__progress-bars">
+                                            <span class="masterstudy-course-card__progress-bar_empty"></span>
+                                            <span class="masterstudy-course-card__progress-bar_filled" style="width:${progressWidth}"></span>
+                                        </div>
+                                        <div class="masterstudy-course-card__progress-title">
+                                            ${progressText}
+                                        </div>
+                                    </div>
+                                    <div class="masterstudy-course-card__meta">
+                                        <div class="masterstudy-course-card__meta-block">
+                                            <i class="stmlms-cats"></i>
+                                            <span>1 Lección</span>
+                                        </div>
+                                        <div class="masterstudy-course-card__meta-block">
+                                            <i class="stmlms-lms-clocks"></i>
+                                            <span>1 hora</span>
+                                        </div>
+                                    </div>
+                                    <div class="masterstudy-course-card__bottom">
+                                        <a href="${buttonHref}" class="masterstudy-button masterstudy-button_style-primary masterstudy-button_size-sm">
+                                            <span class="masterstudy-button__title">${isCompleted ? 'Completado' : 'Continuar'}</span>
+                                        </a>
+                                        <div class="masterstudy-course-card__start-time">
+                                            ${isCompleted ? 'Completado' : 'Iniciado ' + startDate}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+
+                    // Reemplazar completamente la tarjeta
+                    card.outerHTML = newHTML;
+                }
+                   
+
+
+                    // Agrega esta función después de _normalizeLegacyCardNode
+                    function _forceCompletedButtonText(card) {
+                        if (!card) return;
+                        
+                        // Verificar si el curso está completado
+                        var isCompleted = false;
+                        
+                        // 1. Verificar por barra de progreso al 100%
+                        var progressBar = card.querySelector('.masterstudy-course-card__progress-bar_filled');
+                        if (progressBar) {
+                            var width = progressBar.style.width || '';
+                            if (width === '100%' || width === '100' || parseFloat(width) >= 99) {
+                                isCompleted = true;
+                            }
+                        }
+                        
+                        // 2. Verificar por texto de progreso
+                        var progressText = card.querySelector('.masterstudy-course-card__progress-title, .masterstudy-course-card__progress-text');
+                        if (progressText && !isCompleted) {
+                            var text = progressText.textContent.trim();
+                            if (text.indexOf('100%') !== -1 || text.indexOf('Completado') !== -1 || text.indexOf('Completed') !== -1) {
+                                isCompleted = true;
+                            }
+                        }
+                        
+                        // 3. Verificar si el botón ya dice "Completado"
+                        var button = card.querySelector('.masterstudy-button .masterstudy-button__title');
+                        if (button && !isCompleted) {
+                            var btnText = button.textContent.trim();
+                            if (btnText === 'Completado' || btnText === 'Completed') {
+                                isCompleted = true;
+                            }
+                        }
+                        
+                        // Si está completado y el botón no dice "Completado", cambiarlo
+                        if (isCompleted && button) {
+                            var currentText = button.textContent.trim();
+                            if (currentText !== 'Completado' && currentText !== 'Completed') {
+                                button.textContent = 'Completado';
+                            }
+                        }
+                    }
+ 
                     function _parseNativeCourseNodes( courses ) {
                         var out = [];
                         if ( ! courses || ! courses.length ) {
@@ -4851,6 +5051,18 @@ class FairPlay_LMS_Plugin {
                             temp.innerHTML = html;
 
                             Array.prototype.slice.call( temp.children ).forEach( function ( child ) {
+                                // 🔥 CORRECCIÓN: Siempre normalizar estructura completa
+                                _normalizeLegacyCardNode( child );
+                                
+                                // 🔥 NUEVO: Forzar el texto del botón "Completado" en TODAS las tarjetas completadas
+                                var card = child.classList && child.classList.contains( 'masterstudy-course-card' )
+                                    ? child
+                                    : child.querySelector( '.masterstudy-course-card' );
+                                
+                                if ( card ) {
+                                    _forceCompletedButtonText( card );
+                                }
+                                
                                 out.push( child );
                             } );
                         } );
@@ -4858,24 +5070,86 @@ class FairPlay_LMS_Plugin {
                         return out;
                     }
 
-                    function _resolveCoursesNonceAndAction() {
+                    function _resolveCoursesNonceCandidates() {
                         var nonces = window.stm_lms_nonces || {};
-                        var candidates = [
+                        var defs = [
                             { action: 'stm_lms_get_user_courses', nonceKey: 'stm_lms_get_user_courses' },
                             { action: 'stm_lms_user_courses',     nonceKey: 'stm_lms_user_courses' },
                             { action: 'stm_lms_student_courses',  nonceKey: 'stm_lms_student_courses' },
                             { action: 'stm_lms_enrolled_courses', nonceKey: 'stm_lms_enrolled_courses' },
                             { action: 'stm_lms_account_courses',  nonceKey: 'stm_lms_account_courses' }
                         ];
+                        var candidates = [];
 
-                        for ( var i = 0; i < candidates.length; i++ ) {
-                            var nonce = nonces[ candidates[ i ].nonceKey ];
+                        for ( var i = 0; i < defs.length; i++ ) {
+                            var nonce = nonces[ defs[ i ].nonceKey ];
                             if ( nonce ) {
-                                return { action: candidates[ i ].action, nonce: nonce };
+                                candidates.push( { action: defs[ i ].action, nonce: nonce } );
                             }
                         }
 
-                        return null;
+                        return candidates;
+                    }
+
+                    function _scoreIncomingNodes( nodes ) {
+                        var complete = 0;
+                        var total = nodes ? nodes.length : 0;
+                        if ( ! total ) {
+                            return -1;
+                        }
+
+                        nodes.forEach( function ( n ) {
+                            if ( _hasCompleteCardStructure( n ) ) {
+                                complete++;
+                            }
+                        } );
+
+                        return ( complete * 1000 ) + total;
+                    }
+
+                    function _requestCoursesByCandidate( candidate ) {
+                        var formData = new FormData();
+                        formData.append( 'action', candidate.action );
+                        formData.append( 'nonce', candidate.nonce );
+                        formData.append( 'status', 'all' );
+                        formData.append( 'page', '1' );
+                        formData.append( 'per_page', '500' );
+
+                        return fetch( AJAX_URL, { method: 'POST', body: formData } )
+                            .then( function ( response ) {
+                                return response.json();
+                            } )
+                            .then( function ( res ) {
+                                if ( ! res || ! res.success || ! res.data || ! res.data.courses ) {
+                                    return { nodes: [], score: -1 };
+                                }
+                                var nodes = _parseNativeCourseNodes( res.data.courses );
+                                return { nodes: nodes, score: _scoreIncomingNodes( nodes ) };
+                            } )
+                            .catch( function () {
+                                return { nodes: [], score: -1 };
+                            } );
+                    }
+
+                    function _fetchBestIncomingNodes( candidates ) {
+                        if ( ! candidates || ! candidates.length ) {
+                            return Promise.resolve( [] );
+                        }
+
+                        var chain = Promise.resolve( [] );
+                        candidates.forEach( function ( candidate ) {
+                            chain = chain.then( function ( best ) {
+                                return _requestCoursesByCandidate( candidate ).then( function ( current ) {
+                                    var bestScore = _scoreIncomingNodes( best );
+                                    if ( current.score > bestScore ) {
+                                        return current.nodes;
+                                    }
+                                    return best;
+                                } );
+                            } );
+                        } );
+
+                        return chain;
                     }
 
                     function _runHydrator() {
@@ -4893,30 +5167,15 @@ class FairPlay_LMS_Plugin {
                             return;
                         }
 
-                        var req = _resolveCoursesNonceAndAction();
-                        if ( ! req ) {
+                        var reqCandidates = _resolveCoursesNonceCandidates();
+                        if ( ! reqCandidates.length ) {
                             return;
                         }
 
                         window.__fplmsStudentHydratorRunning = true;
 
-                        var formData = new FormData();
-                        formData.append( 'action', req.action );
-                        formData.append( 'nonce', req.nonce );
-                        formData.append( 'status', 'all' );
-                        formData.append( 'page', '1' );
-                        formData.append( 'per_page', '500' );
-
-                        fetch( AJAX_URL, { method: 'POST', body: formData } )
-                            .then( function ( response ) {
-                                return response.json();
-                            } )
-                            .then( function ( res ) {
-                                if ( ! res || ! res.success || ! res.data || ! res.data.courses ) {
-                                    return;
-                                }
-
-                                var incomingNodes = _parseNativeCourseNodes( res.data.courses );
+                        _fetchBestIncomingNodes( reqCandidates )
+                            .then( function ( incomingNodes ) {
                                 if ( ! incomingNodes.length ) {
                                     return;
                                 }
@@ -5296,6 +5555,189 @@ class FairPlay_LMS_Plugin {
                 document.addEventListener( 'DOMContentLoaded', init );
             } else {
                 init();
+            }
+        })();
+        
+        // 🔥 FORZAR NORMALIZACIÓN DE TARJETAS LEGACY - VERSIÓN MEJORADA
+        (function() {
+            'use strict';
+            
+            console.log('[FPLMS] Iniciando monitor de tarjetas legacy');
+            
+            var maxAttempts = 30;
+            var attempts = 0;
+            var intervalId = null;
+            var normalized = false;
+            
+            function hasCompleteStructure(card) {
+                return !!card.querySelector('.masterstudy-course-card__wrapper');
+            }
+            
+            function normalizeLegacyCards() {
+                if (normalized) return;
+                
+                attempts++;
+                console.log('[FPLMS] Intento ' + attempts + '/' + maxAttempts + ' - Buscando tarjetas legacy...');
+                
+                var cards = document.querySelectorAll('.masterstudy-course-card');
+                var legacyCards = [];
+                cards.forEach(function(card) {
+                    if (!hasCompleteStructure(card)) {
+                        legacyCards.push(card);
+                    }
+                });
+                
+                if (legacyCards.length === 0) {
+                    if (attempts > 3) {
+                        console.log('[FPLMS] ✅ No hay tarjetas legacy');
+                        normalized = true;
+                        if (intervalId) {
+                            clearInterval(intervalId);
+                            intervalId = null;
+                        }
+                    }
+                    return;
+                }
+                
+                console.log('[FPLMS] 🔄 Encontradas ' + legacyCards.length + ' tarjetas legacy, normalizando...');
+                
+                legacyCards.forEach(function(card, index) {
+                    console.log('[FPLMS] Normalizando tarjeta ' + (index + 1) + ' de ' + legacyCards.length);
+                    
+                    var courseId = card.dataset.fplmsCid || card.dataset.id || '';
+                    var titleEl = card.querySelector('.masterstudy-course-card__title a');
+                    var title = titleEl ? titleEl.textContent.trim() : 'Curso';
+                    var titleLink = titleEl ? titleEl.href : '#';
+                    
+                    var imgEl = card.querySelector('.masterstudy-course-card__image img');
+                    var imageSrc = imgEl ? imgEl.src : '';
+                    var imageLink = card.querySelector('.masterstudy-course-card__image a');
+                    var imageHref = imageLink ? imageLink.href : titleLink;
+                    
+                    var progressFilled = card.querySelector('.masterstudy-course-card__progress-bar_filled');
+                    var progressWidth = progressFilled ? progressFilled.style.width || '0%' : '0%';
+                    var progressTextEl = card.querySelector('.masterstudy-course-card__progress-text');
+                    var progressText = progressTextEl ? progressTextEl.textContent.trim() : 'Progreso: 0%';
+                    var isCompleted = progressText.includes('Completado') || progressWidth === '100%';
+                    
+                    var button = card.querySelector('.masterstudy-button');
+                    var buttonHref = button ? button.href : titleLink;
+                    
+                    var category = 'Fair Play';
+                    var categoryLink = '#';
+                    
+                    var startDate = new Date().toLocaleDateString('es-ES');
+                    var dateEl = card.querySelector('.masterstudy-course-card__start-time');
+                    if (dateEl) {
+                        var dateText = dateEl.textContent.trim().replace('Iniciado ', '');
+                        if (dateText && dateText !== 'Completado') {
+                            startDate = dateText;
+                        }
+                    }
+                    
+                    var newHTML = `
+                        <div class="masterstudy-course-card" data-fplms-cid="${courseId}">
+                            <div class="masterstudy-course-card__wrapper">
+                                <a href="${imageHref}" class="masterstudy-course-card__image-link">
+                                    ${imageSrc ? `<img src="${imageSrc}" class="masterstudy-course-card__image">` : '<div style="width:100%;padding-top:56.25%;background:#f5f7fa;"></div>'}
+                                </a>
+                                <div class="masterstudy-course-card__info">
+                                    <span class="masterstudy-course-card__info-category">
+                                        <a href="${categoryLink}">${category}</a>
+                                    </span>
+                                    <a href="${titleLink}" class="masterstudy-course-card__info-title">
+                                        <h3>${title}</h3>
+                                    </a>
+                                    <div class="masterstudy-course-card__progress">
+                                        <div class="masterstudy-course-card__progress-bars">
+                                            <span class="masterstudy-course-card__progress-bar_empty"></span>
+                                            <span class="masterstudy-course-card__progress-bar_filled" style="width:${progressWidth}"></span>
+                                        </div>
+                                        <div class="masterstudy-course-card__progress-title">
+                                            ${progressText}
+                                        </div>
+                                    </div>
+                                    <div class="masterstudy-course-card__meta">
+                                        <div class="masterstudy-course-card__meta-block">
+                                            <i class="stmlms-cats"></i>
+                                            <span>1 Lección</span>
+                                        </div>
+                                        <div class="masterstudy-course-card__meta-block">
+                                            <i class="stmlms-lms-clocks"></i>
+                                            <span>1 hora</span>
+                                        </div>
+                                    </div>
+                                    <div class="masterstudy-course-card__bottom">
+                                        <a href="${buttonHref}" class="masterstudy-button masterstudy-button_style-primary masterstudy-button_size-sm">
+                                            <span class="masterstudy-button__title">${isCompleted ? 'Completado' : 'Continuar'}</span>
+                                        </a>
+                                        <div class="masterstudy-course-card__start-time">
+                                            ${isCompleted ? 'Completado' : 'Iniciado ' + startDate}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    card.outerHTML = newHTML;
+                });
+                
+                console.log('[FPLMS] ✅ ' + legacyCards.length + ' tarjetas normalizadas');
+                normalized = true;
+                if (intervalId) {
+                    clearInterval(intervalId);
+                    intervalId = null;
+                }
+            }
+            
+            // Iniciar el monitoreo
+            function startMonitoring() {
+                // Ejecutar inmediatamente
+                setTimeout(normalizeLegacyCards, 500);
+                
+                // Ejecutar cada segundo
+                intervalId = setInterval(normalizeLegacyCards, 1000);
+                
+                // También escuchar cambios en el DOM
+                var observer = new MutationObserver(function() {
+                    if (!normalized) {
+                        // Verificar si hay nuevas tarjetas
+                        var cards = document.querySelectorAll('.masterstudy-course-card');
+                        var hasLegacy = false;
+                        cards.forEach(function(card) {
+                            if (!hasCompleteStructure(card)) {
+                                hasLegacy = true;
+                            }
+                        });
+                        if (hasLegacy) {
+                            normalizeLegacyCards();
+                        }
+                    }
+                });
+                
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['style', 'class']
+                });
+                
+                // Desconectar después de 30 segundos
+                setTimeout(function() {
+                    observer.disconnect();
+                    if (intervalId) {
+                        clearInterval(intervalId);
+                        intervalId = null;
+                    }
+                }, 30000);
+            }
+            
+            // Iniciar cuando el DOM esté listo
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', startMonitoring);
+            } else {
+                startMonitoring();
             }
         })();
         </script>
