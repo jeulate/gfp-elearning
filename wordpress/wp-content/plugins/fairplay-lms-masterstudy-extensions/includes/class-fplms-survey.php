@@ -500,118 +500,370 @@ class FairPlay_LMS_Survey {
         ] );
         ?>
         <style>
-        /* ── Encuesta de satisfacción – inline dentro del modal de MasterStudy ── */
-        @keyframes fplmsSvFadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+            /* ── Encuesta de satisfacción – adaptable a modo claro/oscuro ── */
+            @keyframes fplmsSvFadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
 
-        .fplms-sv-inline {
-            margin: 16px 0 16px; width: 100%;
-            animation: fplmsSvFadeIn .35s ease;
-        }
-        .fplms-sv-inline__divider {
-            display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
-        }
-        .fplms-sv-inline__divider::before,
-        .fplms-sv-inline__divider::after {
-            content: ''; flex: 1; height: 1px; background: rgba(255,255,255,.15);
-        }
-        .fplms-sv-inline__divider-label {
-            font-size: 11px; font-weight: 600; color: rgba(255,255,255,.5);
-            text-transform: uppercase; letter-spacing: .6px; white-space: nowrap;
-        }
-        .fplms-sv-inline__message {
-            font-family: var(--e-global-typography-text-font-family, "Roboto"), sans-serif;
-            font-weight: var(--e-global-typography-text-font-weight, 400);
-            font-size: 13px; color: rgba(255,255,255,.7); line-height: 1.6;
-            text-align: center; margin-bottom: 14px;
-        }
-        .fplms-sv-question {
-            background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12);
-            border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
-        }
-        .fplms-sv-question__text {
-            font-size: 13px; font-weight: 500; color: rgba(255,255,255,.9);
-            margin-bottom: 10px; line-height: 1.5;
-        }
-        .fplms-sv-scale { display: flex; gap: 5px; flex-wrap: wrap; }
-        .fplms-sv-opt { flex: 1; min-width: 42px; }
-        .fplms-sv-opt input[type=radio] { display: none; }
-        .fplms-sv-opt label {
-            cursor: pointer; display: flex; flex-direction: column; align-items: center;
-            gap: 3px; padding: 7px 4px; border-radius: 8px;
-            border: 1.5px solid rgba(255,255,255,.18); width: 100%; text-align: center;
-            transition: border-color .15s, background .15s; background: rgba(255,255,255,.05);
-            box-sizing: border-box;
-        }
-        .fplms-sv-opt label .sv-num { font-size: 14px; font-weight: 700; color: rgba(255,255,255,.8); }
-        .fplms-sv-opt label .sv-lbl { font-size: 9px; color: rgba(255,255,255,.45); line-height: 1.2; }
-        .fplms-sv-opt input:checked + label { border-color: #f5a623; background: rgba(245,166,35,.2); }
-        .fplms-sv-opt input:checked + label .sv-num { color: #f5a623; }
-        .fplms-sv-opt label:hover { border-color: rgba(245,166,35,.5); background: rgba(245,166,35,.1); }
-        .fplms-sv-inline__actions {
-            display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px;
-        }
-        .fplms-sv-comment {
-            margin-top: 12px;
-            background: rgba(255,255,255,.05);
-            border: 1px solid rgba(255,255,255,.12);
-            border-radius: 10px;
-            padding: 12px 14px;
-        }
-        .fplms-sv-comment__label {
-            display: flex; align-items: center; justify-content: space-between; gap: 8px;
-            margin-bottom: 8px; font-size: 12px; font-weight: 600; color: rgba(255,255,255,.82);
-        }
-        .fplms-sv-comment__hint { font-size: 10px; color: rgba(255,255,255,.5); }
-        .fplms-sv-comment textarea {
-            width: 100%; min-height: 92px; resize: vertical; box-sizing: border-box;
-            border-radius: 8px; border: 1.5px solid rgba(255,255,255,.16);
-            background: rgba(17,24,39,.32); color: #fff; padding: 10px 12px;
-            font-size: 13px; line-height: 1.45;
-        }
-        .fplms-sv-comment textarea::placeholder { color: rgba(255,255,255,.42); }
-        .fplms-sv-comment textarea:focus {
-            outline: none; border-color: rgba(245,166,35,.8); box-shadow: 0 0 0 2px rgba(245,166,35,.16);
-        }
-        .fplms-sv-comment__footer {
-            margin-top: 7px; display: flex; justify-content: space-between; gap: 8px;
-            font-size: 11px; color: rgba(255,255,255,.5);
-        }
-        .fplms-sv-comment__count.is-limit { color: #fca5a5; }
-        .fplms-sv-submit {
-            flex: 1; display: inline-flex; align-items: center; justify-content: center;
-            gap: 7px; background: linear-gradient(135deg,#f5a623,#e8941a);
-            color: #fff; border: none; border-radius: 8px; padding: 10px 20px;
-            font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .2s;
-        }
-        .fplms-sv-submit:hover { opacity: .88; }
-        .fplms-sv-submit:disabled { opacity: .5; cursor: not-allowed; }
-        .fplms-sv-error { color: #ffb3b3; font-size: 12px; margin-top: 8px; text-align: center; }
-        .fplms-sv-success-inline {
-            text-align: center; padding: 16px 0;
-            animation: fplmsSvFadeIn .3s ease;
-        }
-        .fplms-sv-success-inline__icon {
-            width: 48px; height: 48px; border-radius: 50%;
-            background: rgba(16,185,129,.2); border: 2px solid rgba(16,185,129,.5);
-            margin: 0 auto 10px; display: flex; align-items: center; justify-content: center;
-        }
-        .fplms-sv-success-inline__title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 4px; }
-        .fplms-sv-success-inline__msg { font-size: 12px; color: rgba(255,255,255,.6); }
-        .fplms-sv-done-badge {
-            display: inline-flex; align-items: center; gap: 7px;
-            background: rgba(16,185,129,.15); border: 1px solid rgba(16,185,129,.4);
-            border-radius: 20px; padding: 7px 14px; margin: 16px auto;
-            font-family: var(--e-global-typography-text-font-family, "Roboto"), sans-serif;
-            font-size: 12px; font-weight: 500; color: #6ee7b7;
-            animation: fplmsSvFadeIn .35s ease;
-        }
-        .fplms-sv-done-badge svg { flex-shrink: 0; }
-        .fplms-sv-done-wrap { text-align: center; width: 100%; }
-        </style>
+            .fplms-sv-inline {
+                margin: 16px 0 16px; width: 100%;
+                animation: fplmsSvFadeIn .35s ease;
+            }
+
+            .fplms-sv-inline__divider {
+                display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+            }
+            .fplms-sv-inline__divider::before,
+            .fplms-sv-inline__divider::after {
+                content: ''; flex: 1; height: 1px; 
+                background: #e5e7eb;
+            }
+            .fplms-sv-inline__divider-label {
+                font-size: 11px; font-weight: 600; 
+                color: #6b7280;
+                text-transform: uppercase; letter-spacing: .6px; white-space: nowrap;
+            }
+
+            .fplms-sv-inline__message {
+                font-family: var(--e-global-typography-text-font-family, "Roboto"), sans-serif;
+                font-weight: var(--e-global-typography-text-font-weight, 400);
+                font-size: 13px; 
+                color: #4b5563;
+                line-height: 1.6; text-align: center; margin-bottom: 14px;
+            }
+
+            .fplms-sv-question {
+                background: #f8fafc;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
+            }
+            .fplms-sv-question__text {
+                font-size: 13px; font-weight: 500; 
+                color: #1f2937;
+                margin-bottom: 10px; line-height: 1.5;
+            }
+
+            .fplms-sv-scale { display: flex; gap: 5px; flex-wrap: wrap; }
+            .fplms-sv-opt { flex: 1; min-width: 42px; }
+            .fplms-sv-opt input[type=radio] { display: none; }
+            .fplms-sv-opt label {
+                cursor: pointer; display: flex; flex-direction: column; align-items: center;
+                gap: 3px; padding: 7px 4px; border-radius: 8px;
+                border: 1.5px solid #d1d5db;
+                width: 100%; text-align: center; transition: border-color .15s, background .15s;
+                background: #ffffff;
+                box-sizing: border-box;
+            }
+            .fplms-sv-opt label .sv-num { 
+                font-size: 14px; font-weight: 700; 
+                color: #374151; 
+            }
+            .fplms-sv-opt label .sv-lbl { 
+                font-size: 9px; 
+                color: #6b7280; 
+                line-height: 1.2; 
+            }
+            .fplms-sv-opt input:checked + label { 
+                border-color: #f5a623; 
+                background: #fffbeb; 
+            }
+            .fplms-sv-opt input:checked + label .sv-num { 
+                color: #f5a623; 
+            }
+            .fplms-sv-opt label:hover { 
+                border-color: #f5a623; 
+                background: #fffbeb; 
+            }
+
+            .fplms-sv-inline__actions {
+                display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px;
+            }
+            .fplms-sv-comment {
+                margin-top: 12px;
+                background: #f8fafc;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px; padding: 12px 14px;
+            }
+            .fplms-sv-comment__label {
+                display: flex; align-items: center; justify-content: space-between; gap: 8px;
+                margin-bottom: 8px; font-size: 12px; font-weight: 600; 
+                color: #374151;
+            }
+            .fplms-sv-comment__hint { 
+                font-size: 10px; 
+                color: #6b7280; 
+            }
+            .fplms-sv-comment textarea {
+                width: 100%; min-height: 92px; resize: vertical; box-sizing: border-box;
+                border-radius: 8px; 
+                border: 1.5px solid #d1d5db;
+                background: #ffffff;
+                color: #1f2937;
+                padding: 10px 12px; font-size: 13px; line-height: 1.45;
+            }
+            .fplms-sv-comment textarea::placeholder { 
+                color: #9ca3af; 
+            }
+            .fplms-sv-comment textarea:focus {
+                outline: none; border-color: #f5a623; 
+                box-shadow: 0 0 0 2px rgba(245,166,35,.16);
+            }
+            .fplms-sv-comment__footer {
+                margin-top: 7px; display: flex; justify-content: space-between; gap: 8px;
+                font-size: 11px; 
+                color: #6b7280;
+            }
+            .fplms-sv-comment__count.is-limit { 
+                color: #dc2626; 
+            }
+
+            .fplms-sv-submit {
+                flex: 1; display: inline-flex; align-items: center; justify-content: center;
+                gap: 7px; background: #f5a623;
+                color: #ffffff; border: none; border-radius: 8px; padding: 10px 20px;
+                font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .2s;
+            }
+            .fplms-sv-submit:hover { 
+                background: #e8941a; 
+            }
+            .fplms-sv-submit:disabled { opacity: .5; cursor: not-allowed; }
+
+            .fplms-sv-error { 
+                color: #dc2626; 
+                font-size: 12px; margin-top: 8px; text-align: center; 
+            }
+
+            .fplms-sv-success-inline {
+                text-align: center; padding: 16px 0;
+                animation: fplmsSvFadeIn .3s ease;
+            }
+            .fplms-sv-success-inline__icon {
+                width: 48px; height: 48px; border-radius: 50%;
+                background: rgba(16,185,129,.15); 
+                border: 2px solid rgba(16,185,129,.4);
+                margin: 0 auto 10px; display: flex; align-items: center; justify-content: center;
+            }
+            .fplms-sv-success-inline__title { 
+                font-size: 15px; font-weight: 700; 
+                color: #1f2937; 
+                margin-bottom: 4px; 
+            }
+            .fplms-sv-success-inline__msg { 
+                font-size: 12px; 
+                color: #6b7280; 
+            }
+
+            .fplms-sv-done-badge {
+                display: inline-flex; align-items: center; gap: 7px;
+                background: rgba(16,185,129,.12); 
+                border: 1px solid rgba(16,185,129,.3);
+                border-radius: 20px; padding: 7px 14px; margin: 16px auto;
+                font-family: var(--e-global-typography-text-font-family, "Roboto"), sans-serif;
+                font-size: 12px; font-weight: 500; 
+                color: #065f46;
+                animation: fplmsSvFadeIn .35s ease;
+            }
+            .fplms-sv-done-badge svg { flex-shrink: 0; }
+            .fplms-sv-done-wrap { text-align: center; width: 100%; }
+
+            /* ============================================================
+            🌙 MODO OSCURO - Detectado por clase en el body
+            ============================================================ */
+            /* Estilos oscuros para la encuesta cuando el course player está en modo oscuro */
+            .masterstudy-course-player-content_dark-mode .fplms-sv-inline__divider::before,
+            .masterstudy-course-player-content_dark-mode .fplms-sv-inline__divider::after {
+                background: rgba(255,255,255,.12);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-inline__divider-label {
+                color: rgba(255,255,255,.5);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-inline__message {
+                color: rgba(255,255,255,.7);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-question {
+                background: rgba(255,255,255,.07);
+                border-color: rgba(255,255,255,.12);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-question__text {
+                color: rgba(255,255,255,.9);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-opt label {
+                border-color: rgba(255,255,255,.18);
+                background: rgba(255,255,255,.05);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-opt label .sv-num {
+                color: rgba(255,255,255,.8);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-opt label .sv-lbl {
+                color: rgba(255,255,255,.45);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-opt input:checked + label {
+                background: rgba(245,166,35,.2);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-opt label:hover {
+                background: rgba(245,166,35,.1);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-comment {
+                background: rgba(255,255,255,.07);
+                border-color: rgba(255,255,255,.12);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-comment__label {
+                color: rgba(255,255,255,.82);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-comment__hint {
+                color: rgba(255,255,255,.5);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-comment textarea {
+                background: rgba(17,24,39,.32);
+                color: #ffffff;
+                border-color: rgba(255,255,255,.16);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-comment textarea::placeholder {
+                color: rgba(255,255,255,.42);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-comment__footer {
+                color: rgba(255,255,255,.5);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-comment__count.is-limit {
+                color: #fca5a5;
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-error {
+                color: #ffb3b3;
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-success-inline__title {
+                color: #ffffff;
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-success-inline__msg {
+                color: rgba(255,255,255,.6);
+            }
+            .masterstudy-course-player-content_dark-mode .fplms-sv-done-badge {
+                color: #6ee7b7;
+                border-color: rgba(16,185,129,.4);
+                background: rgba(16,185,129,.15);
+            }
+            </style>
         <script>
         (function(){
             var D = <?php echo $data_js; // phpcs:ignore WordPress.Security.EscapeOutput -- json_encoded ?>;
+     
+           function detectTheme() {
+            var root = document.documentElement;
+            var isDark = false;
+            
+            // 1. Verificar clase en el body
+            if (document.body.classList.contains('dark-mode') || 
+                document.body.classList.contains('dark') ||
+                document.body.classList.contains('ms-theme-dark')) {
+                isDark = true;
+            }
+            
+            // 2. Verificar data attribute
+            if (document.body.dataset.theme === 'dark') {
+                isDark = true;
+            }
+            
+            // 3. Verificar el overlay del modal de completado (MÁS IMPORTANTE)
+            var completeModal = document.getElementById('masterstudy-single-course-complete');
+            if (completeModal) {
+                var modalBg = window.getComputedStyle(completeModal).background;
+                // Si el modal tiene fondo oscuro (rgba con alpha), es modo oscuro
+                if (modalBg.indexOf('rgba') !== -1) {
+                    var match = modalBg.match(/\d+/g);
+                    if (match && parseInt(match[0]) < 50) {
+                        isDark = true;
+                    }
+                }
+                // Verificar si el modal está activo y tiene fondo oscuro
+                if (completeModal.classList.contains('masterstudy-single-course-complete_active')) {
+                    var overlay = completeModal.querySelector('.masterstudy-single-course-complete__wrapper') || completeModal;
+                    var overlayBg = window.getComputedStyle(overlay).backgroundColor;
+                    if (overlayBg && overlayBg !== 'rgba(0, 0, 0, 0)') {
+                        var rgb = overlayBg.match(/\d+/g);
+                        if (rgb && (parseInt(rgb[0]) + parseInt(rgb[1]) + parseInt(rgb[2])) < 300) {
+                            isDark = true;
+                        }
+                    }
+                }
+            }
+            
+            // 4. Verificar el fondo del .masterstudy-single-course-complete__success
+            var success = document.querySelector('.masterstudy-single-course-complete__success');
+            if (success && !isDark) {
+                var successBg = window.getComputedStyle(success).backgroundColor;
+                if (successBg && successBg !== 'rgba(0, 0, 0, 0)') {
+                    var rgb = successBg.match(/\d+/g);
+                    if (rgb && (parseInt(rgb[0]) + parseInt(rgb[1]) + parseInt(rgb[2])) < 300) {
+                        isDark = true;
+                    }
+                }
+            }
+            
+            // 5. Verificar color de fondo del body (solo si no se detectó antes)
+            if (!isDark) {
+                var bgColor = window.getComputedStyle(document.body).backgroundColor;
+                var rgb = bgColor.match(/\d+/g);
+                if (rgb) {
+                    var brightness = (parseInt(rgb[0]) * 299 + parseInt(rgb[1]) * 587 + parseInt(rgb[2]) * 114) / 1000;
+                    if (brightness < 128) {
+                        isDark = true;
+                    }
+                }
+            }
+            
+            // 6. Verificar variable CSS de MasterStudy (si existe)
+            if (!isDark) {
+                var themeVar = getComputedStyle(document.documentElement).getPropertyValue('--ms-theme-mode');
+                if (themeVar && themeVar.trim() === 'dark') {
+                    isDark = true;
+                }
+            }
+            
+            // 7. Último recurso: verificar preferencia del sistema
+            if (!isDark && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                isDark = true;
+            }
+            return isDark;
+        }
 
+            // Aplicar variables CSS según el tema
+            function applyThemeVariables(isDark) {
+                var root = document.documentElement;
+                if (isDark) {
+                    root.style.setProperty('--fplms-sv-text-primary', 'rgba(255,255,255,.9)');
+                    root.style.setProperty('--fplms-sv-text-secondary', 'rgba(255,255,255,.5)');
+                    root.style.setProperty('--fplms-sv-border-color', 'rgba(255,255,255,.12)');
+                    root.style.setProperty('--fplms-sv-card-bg', 'rgba(255,255,255,.07)');
+                    root.style.setProperty('--fplms-sv-radio-bg', 'rgba(255,255,255,.05)');
+                    root.style.setProperty('--fplms-sv-input-bg', 'rgba(17,24,39,.32)');
+                    root.style.setProperty('--fplms-sv-error-color', '#ffb3b3');
+                    root.style.setProperty('--fplms-sv-success-color', '#6ee7b7');
+                } else {
+                    root.style.setProperty('--fplms-sv-text-primary', 'rgba(0,0,0,.85)');
+                    root.style.setProperty('--fplms-sv-text-secondary', 'rgba(0,0,0,.45)');
+                    root.style.setProperty('--fplms-sv-border-color', 'rgba(0,0,0,.12)');
+                    root.style.setProperty('--fplms-sv-card-bg', 'rgba(0,0,0,.04)');
+                    root.style.setProperty('--fplms-sv-radio-bg', 'rgba(0,0,0,.03)');
+                    root.style.setProperty('--fplms-sv-input-bg', '#f9fafb');
+                    root.style.setProperty('--fplms-sv-error-color', '#dc2626');
+                    root.style.setProperty('--fplms-sv-success-color', '#065f46');
+                }
+            }
+
+            // Detectar y aplicar tema
+            var isDark = detectTheme();
+            applyThemeVariables(isDark);
+
+            // Observar cambios de tema (si el usuario cambia el tema dinámicamente)
+            var themeObserver = new MutationObserver(function() {
+                var newIsDark = detectTheme();
+                if (newIsDark !== isDark) {
+                    isDark = newIsDark;
+                    applyThemeVariables(isDark);
+                }
+            });
+            themeObserver.observe(document.body, {
+                attributes: true,
+                attributeFilter: ['class', 'data-theme']
+            }); 
+            
             function esc(s) {
                 return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
             }

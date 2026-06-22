@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
@@ -411,6 +411,13 @@ class FairPlay_LMS_Plugin {
         // resultado para escribir start_time/end_time reales antes de que se borren.
         add_action( 'wp_ajax_stm_lms_start_quiz',       [ $this, 'capture_quiz_start_time' ], 1 );
         add_action( 'masterstudy_lms_user_quiz_added',  [ $this, 'capture_quiz_end_time'   ], 5 );
+
+        add_action( 'masterstudy_lms_user_quiz_added', [ $this, 'fplms_complete_quiz_progress_when_attempts_exhausted' ], 20, 1 );
+
+        add_action( 'stm_lms_assignment_passed', [ $this, 'fplms_complete_assignment_progress_when_attempts_exhausted' ], 20, 3 );
+        add_action( 'stm_lms_assignment_failed', [ $this, 'fplms_complete_assignment_progress_when_attempts_exhausted' ], 20, 3 );
+        add_action( 'stm_lms_assignment_not_passed', [ $this, 'fplms_complete_assignment_progress_when_attempts_exhausted' ], 20, 3 );
+        add_action( 'stm_lms_assignment_graded', [ $this, 'fplms_complete_assignment_progress_when_attempts_exhausted' ], 20, 3 );
     }
 
     /**
@@ -510,6 +517,217 @@ class FairPlay_LMS_Plugin {
         self::$pending_quiz_times = [];
     }
 
+    /**
+     * Funcion para las tareas
+     * tomar en cuenta los cambios que se hacen
+     */
+    public function fplms_complete_assignment_progress_when_attempts_exhausted($student_id = 0,$assignment_id = 0,$course_id = 0 ): void {
+        error_log('[FPLMS] Entró a fplms_complete_assignment_progress_when_attempts_exhausted');    
+        global $wpdb;
+
+            $student_id = (int) $student_id;
+            $assignment_id = (int) $assignment_id;
+            $course_id = (int) $course_id;
+
+            if ( ! $student_id || ! $assignment_id || ! $course_id ) {
+                return;
+            }
+
+            $table = $wpdb->prefix . 'stm_lms_user_assignments';
+
+            $attempts_made = (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT COUNT(*)
+                    FROM {$table}
+                    WHERE user_id=%d
+                    AND assignment_id=%d
+                    AND course_id=%d",
+                    $student_id,
+                    $assignment_id,
+                    $course_id
+                )
+            );
+
+            $max_attempts = (int) get_post_meta( $assignment_id, 'max_attempts', true );
+
+            if ( $max_attempts <= 0 ) {
+                return;
+            }
+
+            if ( $attempts_made < $max_attempts ) {
+                return;
+            }
+
+            $this->fplms_mark_material_completed(
+                $student_id,
+                $course_id,
+                $assignment_id
+            );
+
+            $this->fplms_recalculate_course_progress(
+                $student_id,
+                $course_id
+            );
+    }
+    /**
+     * Funcion para los Quiz
+     */
+    public function fplms_complete_quiz_progress_when_attempts_exhausted(array $user_quiz): void {
+        error_log('[FPLMS] Entró a fplms_complete_quiz_progress_when_attempts_exhausted');    
+        global $wpdb;
+
+        $user_id   = (int) ( $user_quiz['user_id'] ?? 0 );
+        $course_id = (int) ( $user_quiz['course_id'] ?? 0 );
+        $quiz_id   = (int) ( $user_quiz['quiz_id'] ?? 0 );
+
+        if ( ! $user_id || ! $course_id || ! $quiz_id ) {
+            return;
+        }
+
+        $attempts_made = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*)
+                FROM {$wpdb->prefix}stm_lms_user_quizzes
+                WHERE user_id=%d
+                AND course_id=%d
+                AND quiz_id=%d",
+                $user_id,
+                $course_id,
+                $quiz_id
+            )
+        );
+
+        $max_attempts = (int) get_post_meta( $quiz_id, 'attempts', true );
+
+        if ( $max_attempts <= 0 ) {
+            return;
+        }
+
+        if ( $attempts_made < $max_attempts ) {
+            return;
+        }
+
+        $this->fplms_mark_material_completed(
+            $user_id,
+            $course_id,
+            $quiz_id
+        );
+
+        $this->fplms_recalculate_course_progress(
+            $user_id,
+            $course_id
+        );
+    }
+    /**
+     * Función para marcar material completado
+     *
+     */
+    private function fplms_mark_material_completed(int $user_id,int $course_id,int $material_id): void {
+        global $wpdb;
+
+        $table = $wpdb->prefix . 'stm_lms_user_lessons';
+
+        $exists = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT user_lesson_id
+                FROM {$table}
+                WHERE user_id=%d
+                AND course_id=%d
+                AND lesson_id=%d",
+                $user_id,
+                $course_id,
+                $material_id
+            )
+        );
+
+        if ( $exists ) {
+            return;
+        }
+
+        $wpdb->insert(
+            $table,
+            [
+                'user_id' => $user_id,
+                'course_id' => $course_id,
+                'lesson_id' => $material_id,
+                'progress' => null,
+                'start_time' => time(),
+                'end_time' => time()
+            ]
+        );
+    }
+    /**
+     * Recalcular el progreso si en caso el estudiante reprobo en tarea y examen
+     */
+    private function fplms_recalculate_course_progress(int $user_id,int $course_id): void {
+        global $wpdb;
+
+        $completed_items = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*)
+                FROM {$wpdb->prefix}stm_lms_user_lessons
+                WHERE user_id=%d
+                AND course_id=%d",
+                $user_id,
+                $course_id
+            )
+        );
+
+        $total_items = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "
+                SELECT COUNT(*)
+                FROM {$wpdb->prefix}stm_lms_curriculum_materials cm
+                INNER JOIN {$wpdb->prefix}stm_lms_curriculum_sections cs
+                    ON cs.id = cm.section_id
+                WHERE cs.course_id=%d
+                ",
+                $course_id
+            )
+        );
+
+        if ( ! $total_items ) {
+            return;
+        }
+
+        $progress = round(
+            ( $completed_items / $total_items ) * 100
+        );
+
+        $wpdb->update(
+            $wpdb->prefix . 'stm_lms_user_courses',
+            [
+                'progress_percent' => $progress
+            ],
+            [
+                'user_id' => $user_id,
+                'course_id' => $course_id
+            ]
+        );
+
+        if ( $progress >= 100 ) {
+
+            $wpdb->update(
+                $wpdb->prefix . 'stm_lms_user_courses',
+                [
+                    'status' => 'completed'
+                ],
+                [
+                    'user_id' => $user_id,
+                    'course_id' => $course_id
+                ]
+            );
+
+            do_action(
+                'stm_lms_course_passed',
+                $user_id,
+                $course_id
+            );
+        }
+
+        delete_transient( 'fplms_sdash_v14_' . $user_id );
+        delete_transient( 'fplms_sdash_v15_' . $user_id );
+    }
     /**
      * Permite a usuarios con rol administrator editar/eliminar/publicar cualquier
      * curso de MasterStudy aunque no sean el autor del post.
@@ -6452,6 +6670,6 @@ class FairPlay_LMS_Plugin {
             ]
         ]);
     }
-
+    
 }
 
