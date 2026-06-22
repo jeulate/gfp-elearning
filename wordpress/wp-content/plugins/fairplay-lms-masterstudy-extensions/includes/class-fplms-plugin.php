@@ -5575,7 +5575,148 @@ class FairPlay_LMS_Plugin {
             
             function normalizeLegacyCards() {
                 if (normalized) return;
+
+                function buildCourseActionUrl(baseUrl, cid) {
+                    var cleanId = String(cid || '').trim();
+                    var url = String(baseUrl || '').trim();
+
+                    if (!cleanId || !url || url === '#') {
+                        return url || '#';
+                    }
+
+                    // Mantener la URL si ya termina con un segmento numérico.
+                    if (/\/\d+\/?(?:[?#].*)?$/i.test(url)) {
+                        return url;
+                    }
+
+                    // No alterar mailto:, tel:, javascript:, etc.
+                    if (!/^https?:\/\//i.test(url)) {
+                        return url;
+                    }
+
+                    var hash = '';
+                    var query = '';
+
+                    var hashIndex = url.indexOf('#');
+                    if (hashIndex !== -1) {
+                        hash = url.substring(hashIndex);
+                        url = url.substring(0, hashIndex);
+                    }
+
+                    var queryIndex = url.indexOf('?');
+                    if (queryIndex !== -1) {
+                        query = url.substring(queryIndex);
+                        url = url.substring(0, queryIndex);
+                    }
+
+                    url = url.replace(/\/+$/, '');
+
+                    return url + '/' + encodeURIComponent(cleanId) + query + hash;
+                }
                 
+                function getCourseCategory(card) {
+                    console.log('[FPLMS] 🔍 Buscando categoría para tarjeta:', card.dataset.fplmsCid || card.dataset.id || 'sin ID');
+                    
+                     // 🔥 NUEVO: Buscar en estructura legacy (tarjetas sin wrapper)
+                    // Buscar cualquier span o div con texto que parezca categoría
+                    var legacyCategory = card.querySelector('.masterstudy-course-card__info-category a, .masterstudy-course-card__info .masterstudy-course-card__info-category a');
+                    if (legacyCategory) {
+                        var legacyText = legacyCategory.textContent.trim();
+                        if (legacyText && legacyText !== '-') {
+                            console.log('[FPLMS] ✅ Categoría encontrada en estructura legacy:', legacyText);
+                            return {
+                                name: legacyText,
+                                link: legacyCategory.href || '#'
+                            };
+                        }
+                    }
+                    
+                    // 1. Intentar obtener la categoría del DOM existente
+                    var categoryEl = card.querySelector('.masterstudy-course-card__info-category a');
+                    if (categoryEl) {
+                        var categoryText = categoryEl.textContent.trim();
+                        if (categoryText && categoryText !== '-') {
+                            console.log('[FPLMS] ✅ Categoría encontrada en .info-category:', categoryText);
+                            return {
+                                name: categoryText,
+                                link: categoryEl.href || '#'
+                            };
+                        }
+                    }
+                    
+                    // 2. Intentar obtener la categoría desde el enlace de categoría en el meta
+                    var metaCategory = card.querySelector('.masterstudy-course-card__meta a[href*="terms"], .masterstudy-course-card__meta-block a');
+                    if (metaCategory) {
+                        var metaText = metaCategory.textContent.trim();
+                        if (metaText && metaText !== '-') {
+                            console.log('[FPLMS] ✅ Categoría encontrada en .meta:', metaText);
+                            return {
+                                name: metaText,
+                                link: metaCategory.href || '#'
+                            };
+                        }
+                    }
+                    
+                    // 3. Intentar obtener desde el data attribute (si existe)
+                    if (card.dataset.category) {
+                        console.log('[FPLMS] ✅ Categoría encontrada en data-category:', card.dataset.category);
+                        return {
+                            name: card.dataset.category,
+                            link: card.dataset.categoryLink || '#'
+                        };
+                    }
+                    
+                    // 4. Intentar extraer de la URL de la categoría
+                    var categoryLinks = card.querySelectorAll('a[href*="terms"], a[href*="category"]');
+                    for (var i = 0; i < categoryLinks.length; i++) {
+                        var link = categoryLinks[i];
+                        var text = link.textContent.trim();
+                        if (text && text !== '#' && text !== '-') {
+                            console.log('[FPLMS] ✅ Categoría encontrada en enlace con "terms":', text);
+                            return {
+                                name: text,
+                                link: link.href || '#'
+                            };
+                        }
+                    }
+                    
+                    // 5. Buscar la categoría en elementos relacionados
+                    var categoryElements = card.querySelectorAll('[class*="category"], [class*="categoria"]');
+                    for (var i = 0; i < categoryElements.length; i++) {
+                        var el = categoryElements[i];
+                        var text = el.textContent.trim();
+                        if (text && text !== '-' && text.length < 50) {
+                            console.log('[FPLMS] ✅ Categoría encontrada en elemento con clase "category":', text);
+                            return {
+                                name: text,
+                                link: el.querySelector('a')?.href || '#'
+                            };
+                        }
+                    }
+                    
+                    // 6. Intentar extraer de la URL del curso (slug)
+                    var courseLink = card.querySelector('a[href*="pagina-de-cursos"]');
+                    if (courseLink) {
+                        var urlParts = courseLink.href.split('/');
+                        var lastPart = urlParts[urlParts.length - 2] || '';
+                        if (lastPart && lastPart.includes('-')) {
+                            var possibleCategory = lastPart.replace(/-/g, ' ').replace(/\b\w/g, function(l) { return l.toUpperCase(); });
+                            console.log('[FPLMS] ⚠️ Categoría inferida de URL:', possibleCategory);
+                            return {
+                                name: possibleCategory,
+                                link: '#'
+                            };
+                        }
+                    }
+                    
+                    // 7. Valor por defecto
+                    console.log('[FPLMS] ⚠️ No se encontró categoría, usando "Fair Play" por defecto');
+                    return {
+                        name: 'Fair Play',
+                        link: '#'
+                    };
+                }
+
                 attempts++;
                 console.log('[FPLMS] Intento ' + attempts + '/' + maxAttempts + ' - Buscando tarjetas legacy...');
                 
@@ -5622,9 +5763,12 @@ class FairPlay_LMS_Plugin {
                     
                     var button = card.querySelector('.masterstudy-button');
                     var buttonHref = button ? button.href : titleLink;
+                    var resolvedButtonHref = buildCourseActionUrl(buttonHref, courseId);
                     
-                    var category = 'Fair Play';
-                    var categoryLink = '#';
+                     // 🔥 OBTENER CATEGORÍA
+                    var categoryData = getCourseCategory(card);
+                    var category = categoryData.name;
+                    var categoryLink = categoryData.link;
                     
                     var startDate = new Date().toLocaleDateString('es-ES');
                     var dateEl = card.querySelector('.masterstudy-course-card__start-time');
@@ -5668,7 +5812,7 @@ class FairPlay_LMS_Plugin {
                                         </div>
                                     </div>
                                     <div class="masterstudy-course-card__bottom">
-                                        <a href="${buttonHref}" class="masterstudy-button masterstudy-button_style-primary masterstudy-button_size-sm">
+                                        <a href="${resolvedButtonHref}" class="masterstudy-button masterstudy-button_style-primary masterstudy-button_size-sm">
                                             <span class="masterstudy-button__title">${isCompleted ? 'Completado' : 'Continuar'}</span>
                                         </a>
                                         <div class="masterstudy-course-card__start-time">
@@ -6214,11 +6358,56 @@ class FairPlay_LMS_Plugin {
             
             $progress = $this->get_course_progress( $user_id, $course_id );
             $completed = ( $progress >= 100 );
+            // 🔥 OBTENER LA CATEGORÍA DESDE LA BASE DE DATOS
+                $category = 'Fair Play';
+                $category_link = '#';
+                
+                $terms = wp_get_post_terms( $course_id, 'stm_lms_course_taxonomy' );
+                if ( ! empty( $terms ) && ! is_wp_error( $terms ) ) {
+                    $category = $terms[0]->name;
+                    $category_link = get_term_link( $terms[0] );
+                    if ( is_wp_error( $category_link ) ) {
+                        $category_link = '#';
+                    }
+                }
+                
+                // 🔥 OBTENER LECCIONES Y HORAS
+                $lessons_count = 1;
+                $hours_count = 1;
+                
+                // Intentar obtener el número de lecciones del curso
+                $curriculum = get_post_meta( $course_id, 'curriculum', true );
+                if ( ! empty( $curriculum ) && is_array( $curriculum ) ) {
+                    $lesson_ids = $this->extract_lesson_ids( $curriculum );
+                    $lessons_count = count( $lesson_ids ) > 0 ? count( $lesson_ids ) : 1;
+                    $hours_count = round( $lessons_count * 0.5, 1 );
+                }
+                
+                // 🔥 OBTENER FECHA DE INICIO
+                $start_date = get_the_date( 'd/m/Y', $course_id );
+                
+                // 🔥 DETERMINAR TEXTO DEL BOTÓN
+                $button_text = $completed ? 'Completado' : 'Continuar';
+                $button_link = get_permalink( $course_id );
+                if ( $completed ) {
+                    $button_link = get_permalink( $course_id );
+                } else {
+                    $button_link = get_permalink( $course_id );
+                }
+                
+                // 🔥 DETERMINAR TEXTO DE FECHA
+                $start_time_text = $completed ? 'Completado' : 'Iniciado ' . $start_date;
+                
+                // 🔥 OBTENER IMAGEN
+                $image_url = get_the_post_thumbnail_url( $course_id, 'medium' );
+                $image_html = $image_url 
+                    ? '<img src="' . esc_url( $image_url ) . '" class="masterstudy-course-card__image">' 
+                    : '<div style="width:100%;padding-top:56.25%;background:#f5f7fa;"></div>';
             
             // Generar HTML de la tarjeta del curso
             ob_start();
             ?>
-            <div class="masterstudy-course-card" data-id="<?php echo esc_attr( $course_id ); ?>">
+            <div class="masterstudy-course-card" data-fplms-cid="<?php echo esc_attr( $course_id ); ?>">
                 <div class="masterstudy-course-card__image">
                     <a href="<?php echo esc_url( get_permalink( $course_id ) ); ?>">
                         <?php echo get_the_post_thumbnail( $course_id, 'medium', ['class' => 'masterstudy-course-card__image-element'] ); ?>
