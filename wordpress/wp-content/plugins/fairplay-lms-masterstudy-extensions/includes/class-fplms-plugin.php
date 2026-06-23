@@ -418,6 +418,9 @@ class FairPlay_LMS_Plugin {
         add_action( 'stm_lms_assignment_failed', [ $this, 'fplms_complete_assignment_progress_when_attempts_exhausted' ], 20, 3 );
         add_action( 'stm_lms_assignment_not_passed', [ $this, 'fplms_complete_assignment_progress_when_attempts_exhausted' ], 20, 3 );
         add_action( 'stm_lms_assignment_graded', [ $this, 'fplms_complete_assignment_progress_when_attempts_exhausted' ], 20, 3 );
+
+        //ajustando la nota que se muestra en el panel de los estudiantes
+        add_action( 'wp_ajax_stm_lms_get_enrolled_assignments', [ $this, 'fplms_fix_enrolled_assignments_real_grade' ], 1 );
     }
 
     /**
@@ -728,6 +731,178 @@ class FairPlay_LMS_Plugin {
         delete_transient( 'fplms_sdash_v14_' . $user_id );
         delete_transient( 'fplms_sdash_v15_' . $user_id );
     }
+
+    /**
+     * Función para ajustar la nota que se muestra en el panel de los estudiantes
+    */
+    public function fplms_fix_enrolled_assignments_real_grade(): void {
+        ob_start(
+            function ( string $buffer ): string {
+                $data = json_decode( $buffer, true );
+
+                if ( ! is_array( $data ) || empty( $data['assignments'] ) || ! is_array( $data['assignments'] ) ) {
+                    return $buffer;
+                }
+
+                global $wpdb;
+
+                $user = STM_LMS_User::get_current_user();
+                $user_id = (int) ( $user['id'] ?? get_current_user_id() );
+
+                foreach ( $data['assignments'] as &$assignment ) {
+                    $assignment_title = $assignment['assignment_title'] ?? '';
+                    $course_title     = $assignment['course_title'] ?? '';
+
+                    if ( '' === $assignment_title || '' === $course_title ) {
+                        continue;
+                    }
+
+                    $assignment_id = (int) $wpdb->get_var(
+                        $wpdb->prepare(
+                            "SELECT ID FROM {$wpdb->posts}
+                            WHERE post_title = %s
+                            AND post_type = 'stm-assignments'
+                            LIMIT 1",
+                            $assignment_title
+                        )
+                    );
+
+                    $course_id = (int) $wpdb->get_var(
+                        $wpdb->prepare(
+                            "SELECT ID FROM {$wpdb->posts}
+                            WHERE post_title = %s
+                            AND post_type = 'stm-courses'
+                            LIMIT 1",
+                            $course_title
+                        )
+                    );
+
+                    if ( ! $assignment_id || ! $course_id ) {
+                        continue;
+                    }
+
+                    $real = $wpdb->get_row(
+                        $wpdb->prepare(
+                            "SELECT grade, status
+                            FROM {$wpdb->prefix}stm_lms_user_assignments
+                            WHERE user_id = %d
+                            AND course_id = %d
+                            AND assignment_id = %d
+                            ORDER BY updated_at DESC, id DESC
+                            LIMIT 1",
+                            $user_id,
+                            $course_id,
+                            $assignment_id
+                        )
+                    );
+
+                    if ( ! $real || null === $real->grade ) {
+                        continue;
+                    }
+
+                    $grade = (int) $real->grade;
+
+                    $score_label = $this->fplms_resolve_grade_score_label( $grade );
+
+                    $assignment['grade'] = [
+                        'grade'   => $score_label,
+                        'color'   => $this->fplms_resolve_grade_score_color( $grade ),
+                        'point'   => $this->fplms_resolve_grade_score_point( $grade ),
+                        'percent' => $grade,
+                        'max'     => [
+                            'point' => 5,
+                        ],
+                    ];
+
+                    if ( 'not_passed' === $real->status ) {
+                        $assignment['status'] = [
+                            'status' => 'not_passed',
+                            'label'  => 'Declined',
+                        ];
+                    }
+                }
+
+                return wp_json_encode( $data );
+            }
+        );
+    }
+
+    /**
+     * Resuelve la calificación numérica a una etiqueta de puntuación.
+     *
+     * @param int $grade La calificación numérica.
+     * @return string La etiqueta de puntuación correspondiente.
+     */
+    private function fplms_resolve_grade_score_label( int $grade ): string {
+        if ( $grade >= 95 ) {
+            return 'EX';
+        }
+
+        if ( $grade >= 85 ) {
+            return 'MB';
+        }
+
+        if ( $grade >= 75 ) {
+            return 'B';
+        }
+
+        if ( $grade >= 68 ) {
+            return 'RE';
+        }
+
+        return 'NS';
+    }
+    /**
+     * Resuelve la calificación numérica a un punto de puntuación.
+     *
+     * @param int $grade La calificación numérica.
+     * @return int El punto de puntuación correspondiente.
+     */
+    private function fplms_resolve_grade_score_point( int $grade ): int {
+        if ( $grade >= 95 ) {
+            return 5;
+        }
+
+        if ( $grade >= 85 ) {
+            return 4;
+        }
+
+        if ( $grade >= 75 ) {
+            return 3;
+        }
+
+        if ( $grade >= 68 ) {
+            return 2;
+        }
+
+        return 1;
+    }
+    /**
+     * Resuelve la calificación numérica a un color de puntuación.
+     *
+     * @param int $grade La calificación numérica.
+     * @return string El color de puntuación correspondiente.
+     */
+    private function fplms_resolve_grade_score_color( int $grade ): string {
+        if ( $grade >= 95 ) {
+            return 'rgb(0, 175, 80)';
+        }
+
+        if ( $grade >= 85 ) {
+            return 'rgb(146, 209, 79)';
+        }
+
+        if ( $grade >= 75 ) {
+            return 'rgb(255, 192, 0)';
+        }
+
+        if ( $grade >= 68 ) {
+            return 'rgb(255, 51, 0)';
+        }
+
+        return 'rgb(254, 0, 0)';
+    }
+
     /**
      * Permite a usuarios con rol administrator editar/eliminar/publicar cualquier
      * curso de MasterStudy aunque no sean el autor del post.
