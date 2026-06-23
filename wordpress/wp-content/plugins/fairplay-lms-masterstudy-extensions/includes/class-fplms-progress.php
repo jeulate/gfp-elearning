@@ -227,33 +227,77 @@ class FairPlay_LMS_Progress_Service {
 
             $stats['avg_progress'] = (int) round( $total_progress / $stats['enrolled'] );
 
-            // Horas de formación
-            $total_hours = 0.0;
+            // Horas de formación:
+            // Suma duración de lecciones y quizzes de cursos completados.
+            // Excluye tareas/assignments.
+            $total_minutes = 0;
+
             if ( ! empty( $completed_ids ) ) {
                 $ids_safe = implode( ',', array_map( 'intval', $completed_ids ) );
-                $dur_rows = $wpdb->get_results(
-                    "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta}
-                     WHERE post_id IN ($ids_safe)
-                       AND meta_key IN ('duration_info', 'video_duration')
-                       AND meta_value != ''"
+
+                $duration_rows = $wpdb->get_results(
+                    "
+                    SELECT 
+                        cs.course_id,
+                        cm.post_id,
+                        cm.post_type,
+                        duration_meta.meta_value AS duration,
+                        measure_meta.meta_value AS duration_measure
+                    FROM {$wpdb->prefix}stm_lms_curriculum_materials cm
+                    INNER JOIN {$wpdb->prefix}stm_lms_curriculum_sections cs
+                        ON cs.id = cm.section_id
+                    LEFT JOIN {$wpdb->postmeta} duration_meta
+                        ON duration_meta.post_id = cm.post_id
+                    AND duration_meta.meta_key = 'duration'
+                    LEFT JOIN {$wpdb->postmeta} measure_meta
+                        ON measure_meta.post_id = cm.post_id
+                    AND measure_meta.meta_key = 'duration_measure'
+                    WHERE cs.course_id IN ({$ids_safe})
+                    AND cm.post_type IN ('stm-lessons', 'stm-quizzes')
+                    AND duration_meta.meta_value IS NOT NULL
+                    AND duration_meta.meta_value != ''
+                    "
                 );
-                $course_hours = [];
-                foreach ( $dur_rows as $dr ) {
-                    $cid_dr = (int) $dr->post_id;
-                    if ( preg_match( '/(\d+(?:[.,]\d+)?)/', $dr->meta_value, $m ) ) {
-                        $val = (float) str_replace( ',', '.', $m[1] );
-                        if ( $val > 0 ) {
-                            $course_hours[ $cid_dr ][ $dr->meta_key ] = $val;
+
+                foreach ( $duration_rows as $row ) {
+                    $duration = trim( (string) $row->duration );
+                    $measure  = strtolower( trim( (string) $row->duration_measure ) );
+
+                    if ( '' === $duration ) {
+                        continue;
+                    }
+
+                    // Formato HH:MM o H:MM. Ejemplo: 1:15, 0:30.
+                    if ( false !== strpos( $duration, ':' ) ) {
+                        [ $hours, $minutes ] = array_pad( explode( ':', $duration ), 2, 0 );
+
+                        $total_minutes += ( (int) $hours * 60 ) + (int) $minutes;
+                        continue;
+                    }
+
+                    // Formato numérico. En quizzes normalmente viene "3" + duration_measure = minutes.
+                    if ( is_numeric( $duration ) ) {
+                        $value = (int) $duration;
+
+                        if ( in_array( $measure, [ 'hour', 'hours' ], true ) ) {
+                            $total_minutes += $value * 60;
+                        } else {
+                            $total_minutes += $value;
                         }
                     }
                 }
-                foreach ( $course_hours as $keys ) {
-                    $base  = $keys['duration_info'] ?? 0.0;
-                    $extra = $keys['video_duration'] ?? 0.0;
-                    $total_hours += $base + $extra;
-                }
             }
-            $stats['hours'] = round( $total_hours, 1 );
+
+            $hours_part   = intdiv( $total_minutes, 60 );
+            $minutes_part = $total_minutes % 60;
+
+            $stats['hours_minutes'] = $total_minutes;
+
+            $stats['hours'] = sprintf(
+                '%d:%02d horas',
+                $hours_part,
+                $minutes_part
+            );
 
             // Cursos próximos y por vencer
             $filtered_cids = array_keys( $enrolled_ids );
@@ -285,31 +329,23 @@ class FairPlay_LMS_Progress_Service {
         // Certificados - CORREGIDO
         // Los certificados de MasterStudy se almacenan como metadatos de usuario
         // con la clave 'stm_lms_certificate_code_XXX' donde XXX es el ID del curso
-        $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
-            "SELECT COUNT(um.umeta_id)
-            FROM {$wpdb->usermeta} um
-            INNER JOIN {$wpdb->prefix}stm_lms_user_courses uc 
-                ON uc.user_id = %d 
-                AND uc.course_id = REPLACE(um.meta_key, 'stm_lms_certificate_code_', '')
-            INNER JOIN {$wpdb->posts} p 
-                ON p.ID = uc.course_id 
+         $cert_count = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(DISTINCT uc.course_id)
+                FROM {$wpdb->prefix}stm_lms_user_courses uc
+                INNER JOIN {$wpdb->posts} p
+                    ON p.ID = uc.course_id
                 AND p.post_type = 'stm-courses'
                 AND p.post_status = 'publish'
-            WHERE um.user_id = %d
-            AND um.meta_key LIKE 'stm_lms_certificate_code_%'
-            AND uc.progress_percent >= 100",
-            $user_id, $user_id
-        ) );
-
-        if ( 0 === $cert_count ) {
-            $cert_count = (int) $wpdb->get_var( $wpdb->prepare(
-                "SELECT COUNT(ID) FROM {$wpdb->posts}
-                 WHERE post_type IN ('stm-certificates','stm-certificate')
-                   AND post_status != 'trash'
-                   AND post_author = %d",
+                INNER JOIN {$wpdb->usermeta} um
+                    ON um.user_id = uc.user_id
+                AND um.meta_key = CONCAT('stm_lms_certificate_code_', uc.course_id)
+                AND um.meta_value != ''
+                WHERE uc.user_id = %d
+                AND uc.progress_percent >= 100",
                 $user_id
-            ) );
-        }
+            )
+        );
 
         $stats['certificates'] = $cert_count;
 
