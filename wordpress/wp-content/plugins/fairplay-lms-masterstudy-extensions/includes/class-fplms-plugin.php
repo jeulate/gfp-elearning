@@ -258,6 +258,11 @@ class FairPlay_LMS_Plugin {
         add_filter( 'pre_update_user_metadata', [ $this, 'fplms_block_failed_certificate_meta' ], 10, 5 );
         add_filter( 'pre_add_user_metadata', [ $this, 'fplms_block_failed_certificate_meta' ], 10, 5 );
 
+        add_filter('stm_lms_template_file', [ $this, 'fplms_override_masterstudy_templates' ], 20, 2);
+
+        //sobre escribimos en el template propio
+        add_filter('fplms_my_certificates_completed_courses', [ $this, 'fplms_filter_failed_courses_from_certificates' ], 10, 2);
+
         // Invalidar caché de estadísticas del estudiante cuando un curso cambia de estado.
         // Garantiza que publish→draft o draft→publish toma efecto inmediatamente en el
         // panel del usuario (sin esperar los 5 min de TTL del transient).
@@ -435,49 +440,143 @@ class FairPlay_LMS_Plugin {
 
         //ajuste para mostrar las fechas de las calificaciones al final del día
         add_filter( 'rest_request_before_callbacks', [ $this, 'fplms_fix_grades_date_to_end_of_day' ], 10, 3 );
+        
+        //interceptar correos de certificados para evitar que se envien a estudiantes que reprobaron el curso
+        add_action('masterstudy_plugin_student_course_completion', 'mastertudy_plugin_send_certificate_email', 10, 3);
+        add_action('wp_loaded', [ $this, 'fplms_disable_certificate_email_for_failed_courses' ], 999);
 
+    }
+
+    /**
+     * Desactiva el envío de correos de certificado para cursos reprobados y reemplaza la función de envío por una que solo envía si el estudiante aprobó el curso.
+     */
+    public function fplms_disable_certificate_email_for_failed_courses(): void {
+        if ( ! function_exists( 'mastertudy_plugin_send_certificate_email' ) ) {
+            error_log('[FPLMS_CERT_EMAIL] función nativa no existe todavía');
+            return;
+        }
+
+        remove_action(
+            'masterstudy_plugin_student_course_completion',
+            'mastertudy_plugin_send_certificate_email',
+            10
+        );
+
+        error_log('[FPLMS_CERT_EMAIL] función nativa removida');
+
+        add_action(
+            'masterstudy_plugin_student_course_completion',
+            [ $this, 'fplms_send_certificate_email_only_if_passed' ],
+            10,
+            3
+        );
+    }
+    
+    /**
+     * Envía el correo de certificado solo si el estudiante aprobó el curso.
+     */
+    public function fplms_send_certificate_email_only_if_passed( $user_id, $course_id, $progress = null ): void {
+        $user_id   = (int) $user_id;
+        $course_id = (int) $course_id;
+
+        error_log(
+            sprintf(
+                '[FPLMS_CERT_EMAIL] intento email certificado user=%d course=%d',
+                $user_id,
+                $course_id
+            )
+        );
+
+        if ( ! $this->fplms_student_passed_course( $user_id, $course_id ) ) {
+            error_log('[FPLMS_CERT_EMAIL] bloqueado por curso reprobado');
+            return;
+        }
+
+        error_log('[FPLMS_CERT_EMAIL] permitido por curso aprobado');
+
+        mastertudy_plugin_send_certificate_email( $user_id, $course_id, $progress );
+    }
+
+
+    /**
+     * Override MasterStudy LMS templates with custom templates.
+     */
+    public function fplms_override_masterstudy_templates( $base_path, $template_name ) {
+        if ( '/stm-lms-templates/account/my-certificates.php' !== $template_name ) {
+            return $base_path;
+        }
+
+        $override_base = plugin_dir_path( dirname( __FILE__ ) ) . 'fplms-overrides';
+        $override_file = $override_base . $template_name;
+
+        if ( file_exists( $override_file ) ) {
+           // error_log( '[FPLMS] Override activo para my-certificates' );
+            return $override_base;
+        }
+
+        return $base_path;
+    }
+
+    /**
+     * Filtra los cursos completados para que solo se incluyan aquellos que el estudiante haya aprobado.
+     */
+    public function fplms_filter_failed_courses_from_certificates( array $completed, int $user_id ): array {
+        return array_values(
+            array_filter(
+                $completed,
+                function ( array $course ) use ( $user_id ): bool {
+                    return $this->fplms_student_passed_course(
+                        $user_id,
+                        (int) ( $course['course_id'] ?? 0 )
+                    );
+                }
+            )
+        );
     }
 
     /**
      * Bloquea la actualización o adición de meta de certificado si el estudiante no aprobó el curso.
      */
     public function fplms_block_failed_certificate_meta( $check, $user_id, $meta_key, $meta_value, $prev_value = null ) {
+        
+       // error_log('[FPLMS_CERT_BLOCK] Hook ejecutado meta_key=' . $meta_key);
+        
         if ( 0 !== strpos( (string) $meta_key, 'stm_lms_certificate_code_' ) ) {
             return $check;
         }
 
         $course_id = (int) str_replace( 'stm_lms_certificate_code_', '', (string) $meta_key );
-         error_log(
+        /* error_log(
             sprintf(
                 '[FPLMS_CERT_BLOCK] intento certificado user=%d course=%d meta_key=%s',
                 (int) $user_id,
                 $course_id,
                 (string) $meta_key
             )
-        );
+        );*/
 
         if ( $course_id <= 0 ) {
             return $check;
         }
 
         if ( ! $this->fplms_student_passed_course( (int) $user_id, $course_id ) ) {
-            error_log('[FPLMS_CERT_BLOCK] BLOQUEADO por curso reprobado');
+            //error_log('[FPLMS_CERT_BLOCK] BLOQUEADO por curso reprobado');
             return false;
         }
 
-        error_log('[FPLMS_CERT_BLOCK] PERMITIDO por curso aprobado');
+       // error_log('[FPLMS_CERT_BLOCK] PERMITIDO por curso aprobado');
         return $check;
     }
 
     public function fplms_debug_assignment_hook($student_id, $assignment_id, $course_id): void {
-        error_log(
+       /* error_log(
             sprintf(
                 '[HOOK_ASSIGNMENT] user=%d assignment=%d course=%d',
                 $student_id,
                 $assignment_id,
                 $course_id
             )
-        );
+        );*/
     }
 
     /**
@@ -503,10 +602,10 @@ class FairPlay_LMS_Plugin {
             }
         }
 
-        error_log(
+       /* error_log(
             '[FPLMS_GRADES_DATE_FIX] route=' . $request->get_route() .
             ' date_to=' . print_r( $request->get_param( 'date_to' ), true )
-        );
+        );*/
         return $response;
     }
 
@@ -711,14 +810,6 @@ class FairPlay_LMS_Plugin {
                 )
             );
 
-            error_log(
-                sprintf(
-                    '[FPLMS_ASSIGNMENT] attempts=%d max=%d',
-                    $attempts_made,
-                    $max_attempts
-                )
-            );
-
             $last_attempt = $wpdb->get_row(
                 $wpdb->prepare(
                     "SELECT status, grade
@@ -744,6 +835,14 @@ class FairPlay_LMS_Plugin {
         //    error_log('[FPLMS_ASSIGNMENT] Marcando tarea como completada');
 
             $max_attempts = (int) $this->fplms_get_assignment_max_attempts( $assignment_id );
+
+           /* error_log(
+                sprintf(
+                    '[FPLMS_ASSIGNMENT] attempts=%d max=%d',
+                    $attempts_made,
+                    $max_attempts
+                )
+            );*/
 
             if ( $max_attempts <= 0 ) {
                 return;
