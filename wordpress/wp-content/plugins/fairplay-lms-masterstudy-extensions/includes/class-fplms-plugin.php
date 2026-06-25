@@ -419,8 +419,78 @@ class FairPlay_LMS_Plugin {
         add_action( 'stm_lms_assignment_not_passed', [ $this, 'fplms_complete_assignment_progress_when_attempts_exhausted' ], 20, 3 );
         add_action( 'stm_lms_assignment_graded', [ $this, 'fplms_complete_assignment_progress_when_attempts_exhausted' ], 20, 3 );
 
+        //add_action( 'shutdown', [ $this, 'fplms_process_recent_assignment_attempt_on_shutdown' ], 20);
+
+        //hook espia para verificar el error en tareas y no en test
+        add_action( 'stm_lms_assignment_not_passed', function( $student_id, $assignment_id, $course_id ) {
+                error_log("[FPLMS_SPY] stm_lms_assignment_not_passed user={$student_id} assignment={$assignment_id} course={$course_id}");
+            }, 1, 3 );
+
         //ajustando la nota que se muestra en el panel de los estudiantes
         add_action( 'wp_ajax_stm_lms_get_enrolled_assignments', [ $this, 'fplms_fix_enrolled_assignments_real_grade' ], 1 );
+
+        //ajuste para mostrar las fechas de las calificaciones al final del día
+        add_filter( 'rest_request_before_callbacks', [ $this, 'fplms_fix_grades_date_to_end_of_day' ], 10, 3 );
+
+        add_action(
+            'stm_lms_assignment_not_passed',
+            [ $this, 'fplms_debug_assignment_hook' ],
+            5,
+            3
+        );
+
+        add_action(
+            'stm_lms_assignment_passed',
+            [ $this, 'fplms_debug_assignment_hook' ],
+            5,
+            3
+        );
+    }
+
+    public function fplms_debug_assignment_hook(
+        $student_id,
+        $assignment_id,
+        $course_id
+    ): void {
+
+        error_log(
+            sprintf(
+                '[HOOK_ASSIGNMENT] user=%d assignment=%d course=%d',
+                $student_id,
+                $assignment_id,
+                $course_id
+            )
+        );
+    }
+
+    /**
+     * Ajusta las fechas de las calificaciones para que se muestren al final del día en las respuestas REST.
+     */
+    public function fplms_fix_grades_date_to_end_of_day( $response, $handler, $request ) {
+         if ( ! $request instanceof WP_REST_Request ) {
+            return $response;
+        }
+
+        if ( '/masterstudy-lms/v2/student-grades' !== $request->get_route() ) {
+            return $response;
+        }
+
+        $params = $request->get_params();
+        $date_to = $params['date_to'] ?? '';
+
+        if ( preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date_to ) ) {
+            $params['date_to'] = $date_to . ' 23:59:59';
+
+            foreach ( $params as $key => $value ) {
+                $request->set_param( $key, $value );
+            }
+        }
+
+        error_log(
+            '[FPLMS_GRADES_DATE_FIX] route=' . $request->get_route() .
+            ' date_to=' . print_r( $request->get_param( 'date_to' ), true )
+        );
+        return $response;
     }
 
     /**
@@ -521,11 +591,100 @@ class FairPlay_LMS_Plugin {
     }
 
     /**
+     * Procesa los intentos recientes de asignación al finalizar la solicitud.
+     */
+   /* public function fplms_process_recent_assignment_attempt_on_shutdown(): void {
+
+        if ( wp_doing_cron() ) {
+            return;
+        }
+
+        if ( ! is_user_logged_in() ) {
+            return;
+        }
+
+        $request_uri = $_SERVER['REQUEST_URI'] ?? '';
+
+        if (
+            false === strpos( $request_uri, 'admin-ajax.php' ) &&
+            false === strpos( $request_uri, 'wp-json' )
+        ) {
+            return;
+        }
+
+        global $wpdb;
+
+        $user_id = get_current_user_id();
+
+        $recent_attempt = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT user_id, course_id, assignment_id, status, grade, updated_at
+                FROM {$wpdb->prefix}stm_lms_user_assignments
+                WHERE user_id = %d
+                AND status IN ('not_passed', 'passed')
+                AND updated_at >= %d
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1",
+                $user_id,
+                time() - 60
+            )
+        );
+
+        if ( ! $recent_attempt ) {
+            return;
+        }
+
+        if ( defined( 'FPLMS_DEBUG' ) && FPLMS_DEBUG ) {
+            error_log(
+                sprintf(
+                    '[FPLMS] Último intento encontrado -> user=%d assignment=%d course=%d status=%s grade=%d',
+                    $recent_attempt->user_id,
+                    $recent_attempt->assignment_id,
+                    $recent_attempt->course_id,
+                    $recent_attempt->status,
+                    $recent_attempt->grade
+                )
+            );
+        }
+
+        $this->fplms_complete_assignment_progress_when_attempts_exhausted(
+            (int) $recent_attempt->user_id,
+            (int) $recent_attempt->assignment_id,
+            (int) $recent_attempt->course_id
+        );
+    }*/
+
+    /**
+     * Función para la lectura de intentos maximos de tareas.
+     */
+    private function fplms_get_assignment_max_attempts( int $assignment_id ): int {
+        $meta_keys = [
+            'assignment_tries',
+            'max_attempts',
+            'attempts',
+            'allowed_attempts',
+        ];
+
+        foreach ( $meta_keys as $meta_key ) {
+            $value = get_post_meta( $assignment_id, $meta_key, true );
+
+            if ( '' !== $value && is_numeric( $value ) ) {
+                $value = (int) $value;
+
+                if ( $value > 0 ) {
+                    return $value;
+                }
+            }
+        }
+
+        return 0;
+    }
+    
+    /**
      * Funcion para las tareas
      * tomar en cuenta los cambios que se hacen
      */
-    public function fplms_complete_assignment_progress_when_attempts_exhausted($student_id = 0,$assignment_id = 0,$course_id = 0 ): void {
-        error_log('[FPLMS] Entró a fplms_complete_assignment_progress_when_attempts_exhausted');    
+    public function fplms_complete_assignment_progress_when_attempts_exhausted($student_id = 0,$assignment_id = 0,$course_id = 0 ): void {  
         global $wpdb;
 
             $student_id = (int) $student_id;
@@ -542,16 +701,39 @@ class FairPlay_LMS_Plugin {
                 $wpdb->prepare(
                     "SELECT COUNT(*)
                     FROM {$table}
-                    WHERE user_id=%d
-                    AND assignment_id=%d
-                    AND course_id=%d",
+                    WHERE user_id = %d
+                    AND assignment_id = %d
+                    AND course_id = %d
+                    AND status IN ('passed', 'not_passed')",
                     $student_id,
                     $assignment_id,
                     $course_id
                 )
             );
 
-            $max_attempts = (int) get_post_meta( $assignment_id, 'max_attempts', true );
+            $last_attempt = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT status, grade
+                    FROM {$table}
+                    WHERE user_id = %d
+                    AND assignment_id = %d
+                    AND course_id = %d
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1",
+                    $student_id,
+                    $assignment_id,
+                    $course_id
+                )
+            );
+
+            if (
+                ! $last_attempt ||
+                ! in_array( $last_attempt->status, [ 'passed', 'not_passed' ], true )
+            ) {
+                return;
+            }
+
+            $max_attempts = (int) $this->fplms_get_assignment_max_attempts( $assignment_id );
 
             if ( $max_attempts <= 0 ) {
                 return;
@@ -662,7 +844,7 @@ class FairPlay_LMS_Plugin {
     /**
      * Recalcular el progreso si en caso el estudiante reprobo en tarea y examen
      */
-    private function fplms_recalculate_course_progress(int $user_id,int $course_id): void {
+    private function fplms_recalculate_course_progress(int $user_id, int $course_id): void {
         global $wpdb;
 
         $completed_items = (int) $wpdb->get_var(
@@ -693,40 +875,53 @@ class FairPlay_LMS_Plugin {
             return;
         }
 
-        $progress = round(
+        $progress = (int) round(
             ( $completed_items / $total_items ) * 100
         );
 
-        $wpdb->update(
-            $wpdb->prefix . 'stm_lms_user_courses',
-            [
-                'progress_percent' => $progress
-            ],
-            [
-                'user_id' => $user_id,
-                'course_id' => $course_id
-            ]
-        );
+        $update_data = [
+            'progress_percent' => $progress,
+        ];
 
         if ( $progress >= 100 ) {
-
-            $wpdb->update(
-                $wpdb->prefix . 'stm_lms_user_courses',
-                [
-                    'status' => 'completed'
-                ],
-                [
-                    'user_id' => $user_id,
-                    'course_id' => $course_id
-                ]
+             $update_data['status'] = 'completed';
+             
+            $course_row = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT start_time
+                    FROM {$wpdb->prefix}stm_lms_user_courses
+                    WHERE user_id = %d
+                    AND course_id = %d
+                    LIMIT 1",
+                    $user_id,
+                    $course_id
+                )
             );
 
-            do_action(
-                'stm_lms_course_passed',
-                $user_id,
-                $course_id
-            );
+            if ( $course_row && ! empty( $course_row->start_time ) ) {
+                $update_data['start_time'] = strtotime(
+                    wp_date( 'Y-m-d 00:00:00', (int) $course_row->start_time )
+                );
+            }
+
+            if (
+                class_exists( 'STM_LMS_Certificates' ) &&
+                method_exists( 'STM_LMS_Certificates', 'generate_certificate_code' ) &&
+                function_exists( 'masterstudy_lms_course_has_certificate' ) &&
+                masterstudy_lms_course_has_certificate( $course_id )
+            ) {
+                STM_LMS_Certificates::generate_certificate_code( $user_id, $course_id );
+            }
         }
+
+        $wpdb->update(
+            $wpdb->prefix . 'stm_lms_user_courses',
+            $update_data,
+            [
+                'user_id'   => $user_id,
+                'course_id' => $course_id,
+            ]
+        );
 
         delete_transient( 'fplms_sdash_v14_' . $user_id );
         delete_transient( 'fplms_sdash_v15_' . $user_id );
@@ -801,7 +996,6 @@ class FairPlay_LMS_Plugin {
                     }
 
                     $grade = (int) $real->grade;
-
                     $score_label = $this->fplms_resolve_grade_score_label( $grade );
 
                     $assignment['grade'] = [
@@ -826,7 +1020,6 @@ class FairPlay_LMS_Plugin {
             }
         );
     }
-
     /**
      * Resuelve la calificación numérica a una etiqueta de puntuación.
      *
