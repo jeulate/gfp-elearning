@@ -254,6 +254,10 @@ class FairPlay_LMS_Plugin {
         add_filter( 'stm_lms_account_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
         add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
 
+        //Bloqueamos el envio de certificados si el estudiante reprobo el curso, para evitar que se genere un certificado de un curso no aprobado
+        add_filter( 'pre_update_user_metadata', [ $this, 'fplms_block_failed_certificate_meta' ], 10, 5 );
+        add_filter( 'pre_add_user_metadata', [ $this, 'fplms_block_failed_certificate_meta' ], 10, 5 );
+
         // Invalidar caché de estadísticas del estudiante cuando un curso cambia de estado.
         // Garantiza que publish→draft o draft→publish toma efecto inmediatamente en el
         // panel del usuario (sin esperar los 5 min de TTL del transient).
@@ -432,27 +436,40 @@ class FairPlay_LMS_Plugin {
         //ajuste para mostrar las fechas de las calificaciones al final del día
         add_filter( 'rest_request_before_callbacks', [ $this, 'fplms_fix_grades_date_to_end_of_day' ], 10, 3 );
 
-       /* add_action(
-            'stm_lms_assignment_not_passed',
-            [ $this, 'fplms_debug_assignment_hook' ],
-            5,
-            3
-        );
-
-        add_action(
-            'stm_lms_assignment_passed',
-            [ $this, 'fplms_debug_assignment_hook' ],
-            5,
-            3
-        );*/
     }
 
-    public function fplms_debug_assignment_hook(
-        $student_id,
-        $assignment_id,
-        $course_id
-    ): void {
+    /**
+     * Bloquea la actualización o adición de meta de certificado si el estudiante no aprobó el curso.
+     */
+    public function fplms_block_failed_certificate_meta( $check, $user_id, $meta_key, $meta_value, $prev_value = null ) {
+        if ( 0 !== strpos( (string) $meta_key, 'stm_lms_certificate_code_' ) ) {
+            return $check;
+        }
 
+        $course_id = (int) str_replace( 'stm_lms_certificate_code_', '', (string) $meta_key );
+         error_log(
+            sprintf(
+                '[FPLMS_CERT_BLOCK] intento certificado user=%d course=%d meta_key=%s',
+                (int) $user_id,
+                $course_id,
+                (string) $meta_key
+            )
+        );
+
+        if ( $course_id <= 0 ) {
+            return $check;
+        }
+
+        if ( ! $this->fplms_student_passed_course( (int) $user_id, $course_id ) ) {
+            error_log('[FPLMS_CERT_BLOCK] BLOQUEADO por curso reprobado');
+            return false;
+        }
+
+        error_log('[FPLMS_CERT_BLOCK] PERMITIDO por curso aprobado');
+        return $check;
+    }
+
+    public function fplms_debug_assignment_hook($student_id, $assignment_id, $course_id): void {
         error_log(
             sprintf(
                 '[HOOK_ASSIGNMENT] user=%d assignment=%d course=%d',
@@ -667,7 +684,7 @@ class FairPlay_LMS_Plugin {
      * tomar en cuenta los cambios que se hacen
      */
     public function fplms_complete_assignment_progress_when_attempts_exhausted($student_id = 0,$assignment_id = 0,$course_id = 0 ): void {  
-        error_log('[FPLMS_ASSIGNMENT] Inicio de fplms_complete_assignment_progress_when_attempts_exhausted');
+       // error_log('[FPLMS_ASSIGNMENT] Inicio de fplms_complete_assignment_progress_when_attempts_exhausted');
         global $wpdb;
 
             $student_id = (int) $student_id;
@@ -724,7 +741,7 @@ class FairPlay_LMS_Plugin {
                 return;
             }
 
-            error_log('[FPLMS_ASSIGNMENT] Marcando tarea como completada');
+        //    error_log('[FPLMS_ASSIGNMENT] Marcando tarea como completada');
 
             $max_attempts = (int) $this->fplms_get_assignment_max_attempts( $assignment_id );
 
@@ -751,7 +768,7 @@ class FairPlay_LMS_Plugin {
      * Funcion para los Quiz
      */
     public function fplms_complete_quiz_progress_when_attempts_exhausted(array $user_quiz): void {
-        error_log('[FPLMS] Entró a fplms_complete_quiz_progress_when_attempts_exhausted');    
+        //error_log('[FPLMS] Entró a fplms_complete_quiz_progress_when_attempts_exhausted');    
         global $wpdb;
 
         $user_id   = (int) ( $user_quiz['user_id'] ?? 0 );
@@ -877,6 +894,7 @@ class FairPlay_LMS_Plugin {
         );
 
         if ( $progress >= 100 ) {
+            $this->fplms_remove_course_certificate_if_failed( $user_id, $course_id );
             $this->fplms_generate_course_certificate_if_enabled( $user_id, $course_id );
         }
 
@@ -947,6 +965,7 @@ class FairPlay_LMS_Plugin {
 
     private function fplms_generate_course_certificate_if_enabled( int $user_id, int $course_id ): void {
         if (
+            $this->fplms_student_passed_course( $user_id, $course_id ) &&
             class_exists( 'STM_LMS_Certificates' ) &&
             method_exists( 'STM_LMS_Certificates', 'generate_certificate_code' ) &&
             function_exists( 'masterstudy_lms_course_has_certificate' ) &&
@@ -955,12 +974,46 @@ class FairPlay_LMS_Plugin {
             STM_LMS_Certificates::generate_certificate_code( $user_id, $course_id );
         }
     }
+ 
+    private function fplms_student_passed_course( int $user_id, int $course_id ): bool {
+        global $wpdb;
+
+        $final_grade = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT final_grade
+                FROM {$wpdb->prefix}stm_lms_user_courses
+                WHERE user_id = %d
+                AND course_id = %d
+                LIMIT 1",
+                $user_id,
+                $course_id
+            )
+        );
+
+        $passing_grade = (int) get_post_meta( $course_id, 'passing_grade', true );
+
+        if ( $passing_grade <= 0 ) {
+            $passing_grade = 70;
+        }
+
+        return $final_grade >= $passing_grade;
+    }
 
     private function fplms_clear_student_cache( int $user_id ): void {
         delete_transient( 'fplms_sdash_v14_' . $user_id );
         delete_transient( 'fplms_sdash_v15_' . $user_id );
     }
 
+    private function fplms_remove_course_certificate_if_failed( int $user_id, int $course_id ): void {
+        if ( $this->fplms_student_passed_course( $user_id, $course_id ) ) {
+            return;
+        }
+
+        delete_user_meta(
+            $user_id,
+            'stm_lms_certificate_code_' . $course_id
+        );
+    }
 
     /**
      * Función para ajustar la nota que se muestra en el panel de los estudiantes
