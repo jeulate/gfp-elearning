@@ -7180,7 +7180,7 @@ class FairPlay_LMS_Plugin {
             // Generar HTML de la tarjeta del curso
             ob_start();
             ?>
-            <div class="masterstudy-course-card" data-fplms-cid="<?php echo esc_attr( $course_id ); ?>">
+             <div class="masterstudy-course-card" data-fplms-cid="<?php echo esc_attr( $course_id ); ?>">
                 <div class="masterstudy-course-card__image">
                     <a href="<?php echo esc_url( get_permalink( $course_id ) ); ?>">
                         <?php echo get_the_post_thumbnail( $course_id, 'medium', ['class' => 'masterstudy-course-card__image-element'] ); ?>

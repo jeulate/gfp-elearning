@@ -2357,7 +2357,7 @@ class FairPlay_LMS_Users_Controller {
                     $error_msg = sanitize_text_field( wp_unslash( $_GET['error'] ) );
                     $error_messages = [
                         'incomplete_data'    => 'Datos incompletos. Verifica que llenes todos los campos requeridos.',
-                        'invalid_id_usuario' => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
+                        'invalid_id_usuario' => 'IDUsuario inválido. Solo se permiten letras, números, punto (.), coma (,) y signo dólar ($), máximo 20 caracteres.',
                         'id_usuario_exists'  => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
                         'user_exists'        => 'El nombre de usuario o correo ya existe. Por favor, verifica e ingresa datos diferentes.',
                         'structure_required' => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
@@ -2447,8 +2447,8 @@ class FairPlay_LMS_Users_Controller {
                                 <div class="fplms-card-body">
                                     <div class="fplms-form-group">
                                         <label for="fplms_id_usuario">IDUsuario <span class="required">*</span></label>
-                                        <input type="text" id="fplms_id_usuario" name="fplms_id_usuario" maxlength="20" pattern="[a-zA-Z0-9]+" title="Solo letras y números, máximo 20 caracteres" required>
-                                        <small>Alfanumérico, máximo 20 caracteres.</small>
+                                        <input type="text" id="fplms_id_usuario" name="fplms_id_usuario" maxlength="20" pattern="[a-zA-Z0-9.,$]+" title="Solo letras, números, punto (.), coma (,) y signo dólar ($), máximo 20 caracteres" required>
+                                        <small>Letras, números, punto (.), coma (,) y signo dólar ($), máximo 20 caracteres.</small>
                                     </div>
                                     <div class="fplms-form-group">
                                         <label for="fplms_user_login">Nombre de usuario <span class="required">*</span></label>
@@ -3557,7 +3557,7 @@ class FairPlay_LMS_Users_Controller {
                         $error_msg = sanitize_text_field( wp_unslash( $_GET['error'] ) );
                         $error_messages = [
                             'incomplete_data'     => 'Datos incompletos. Verifica que llenes todos los campos requeridos.',
-                            'invalid_id_usuario'  => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
+                            'invalid_id_usuario'  => 'IDUsuario inválido. Solo se permiten letras, números, punto (.), coma (,) y signo dólar ($), máximo 20 caracteres.',
                             'id_usuario_exists'   => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
                             'structure_required'  => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
                         ];
@@ -3933,9 +3933,9 @@ class FairPlay_LMS_Users_Controller {
                                     </label>
                                     <input type="text" id="fplms_id_usuario" name="fplms_id_usuario"
                                            value="<?php echo esc_attr( $id_usuario ); ?>"
-                                           maxlength="20" pattern="[a-zA-Z0-9]+"
-                                           title="Solo letras y números, máximo 20 caracteres" required>
-                                    <small>Alfanumérico, máximo 20 caracteres.</small>
+                                         maxlength="20" pattern="[a-zA-Z0-9.,$]+"
+                                         title="Solo letras, números, punto (.), coma (,) y signo dólar ($), máximo 20 caracteres" required>
+                                     <small>Letras, números, punto (.), coma (,) y signo dólar ($), máximo 20 caracteres.</small>
                                 </div>
                                 <div class="fplms-form-group">
                                     <label for="fplms_user_login">
@@ -5185,8 +5185,8 @@ class FairPlay_LMS_Users_Controller {
                 exit;
             }
 
-            // Validar formato de IDUsuario (alfanumérico, máximo 20 caracteres)
-            if ( ! preg_match( '/^[a-zA-Z0-9]{1,20}$/', $id_usuario ) ) {
+            // Validar formato de IDUsuario (letras, números, ., , y $, máximo 20 caracteres)
+            if ( ! preg_match( '/^[a-zA-Z0-9.,$]{1,20}$/', $id_usuario ) ) {
                 wp_safe_redirect(
                     add_query_arg(
                         [ 'page' => 'fplms-users', 'action' => 'create', 'error' => 'invalid_id_usuario' ],
@@ -5387,8 +5387,8 @@ class FairPlay_LMS_Users_Controller {
                 exit;
             }
 
-            // Validar formato de IDUsuario
-            if ( ! preg_match( '/^[a-zA-Z0-9]{1,20}$/', $id_usuario ) ) {
+            // Validar formato de IDUsuario (letras, números, ., , y $, máximo 20 caracteres)
+            if ( ! preg_match( '/^[a-zA-Z0-9.,$]{1,20}$/', $id_usuario ) ) {
                 wp_safe_redirect(
                     add_query_arg(
                         [ 'page' => 'fplms-users', 'action' => 'edit', 'user_id' => $user_id, 'error' => 'invalid_id_usuario' ],
@@ -5831,7 +5831,7 @@ class FairPlay_LMS_Users_Controller {
                 $error_msg = sanitize_text_field( wp_unslash( $_GET['error'] ) );
                 $error_messages = [
                     'incomplete_data'    => 'Datos incompletos. Verifica que llenes todos los campos requeridos.',
-                    'invalid_id_usuario' => 'IDUsuario inválido. Debe ser alfanumérico y tener máximo 20 caracteres.',
+                    'invalid_id_usuario' => 'IDUsuario inválido. Solo se permiten letras, números, punto (.), coma (,) y signo dólar ($), máximo 20 caracteres.',
                     'id_usuario_exists'  => 'El IDUsuario ya existe. Por favor, utiliza uno diferente.',
                     'user_exists'        => 'El nombre de usuario o correo ya existe. Por favor, registra datos nuevos.',
                     'structure_required' => 'Para usuarios no administradores debes asignar ciudad, empresa, canal, sucursal y cargo.',
@@ -6147,8 +6147,8 @@ class FairPlay_LMS_Users_Controller {
                             <div class="fplms-card-body">
                                 <div class="fplms-form-group">
                                     <label for="fplms_id_usuario">IDUsuario <span class="required">*</span></label>
-                                    <input type="text" id="fplms_id_usuario" name="fplms_id_usuario" maxlength="20" pattern="[a-zA-Z0-9]+" title="Solo letras y números, máximo 20 caracteres" required>
-                                    <small>Alfanumérico, máximo 20 caracteres.</small>
+                                    <input type="text" id="fplms_id_usuario" name="fplms_id_usuario" maxlength="20" pattern="[a-zA-Z0-9.,$]+" title="Solo letras, números, punto (.), coma (,) y signo dólar ($), máximo 20 caracteres" required>
+                                    <small>Letras, números, punto (.), coma (,) y signo dólar ($), máximo 20 caracteres.</small>
                                 </div>
                                 <div class="fplms-form-group">
                                     <label for="fplms_user_login">Nombre de usuario <span class="required">*</span></label>
