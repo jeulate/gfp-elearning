@@ -371,6 +371,8 @@ class FairPlay_LMS_Plugin {
         // Ajustes de Tests: menú + guardar configuración
         add_action( 'admin_menu', [ $this->quiz_settings, 'register_admin_menu' ] );
         add_action( 'admin_init', [ $this->quiz_settings, 'handle_save' ] );
+        //bloqueo de acceso a la pagina de cursos públicos para usuarios no autenticados
+        add_action( 'template_redirect', [ $this, 'fplms_block_public_courses_page' ], 5);
 
         // Vigencia de quizzes: metabox + enforcement REST
         $this->quiz_availability->register_hooks();
@@ -7225,6 +7227,49 @@ class FairPlay_LMS_Plugin {
             ]
         ]);
     }
+     /**
+     * Bloquea la página pública de exploración de cursos para usuarios
+     * que no sean administradores.
+     */
+    public function fplms_block_public_courses_page(): void {
+        // No interferir con wp-admin, AJAX, REST API o cron.
+        if (
+            is_admin() ||
+            wp_doing_ajax() ||
+            wp_doing_cron() ||
+            ( defined( 'REST_REQUEST' ) && REST_REQUEST )
+        ) {
+            return;
+        }
+
+        // Detectar la página por su slug.
+        if ( ! is_page( 'pagina-de-cursos' ) ) {
+            return;
+        }
+
+        // Permitir únicamente administradores.
+        if ( current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        // Usuario no autenticado: enviarlo al login.
+        if ( ! is_user_logged_in() ) {
+            $login_url = wp_login_url(
+                home_url( '/user-account/' )
+            );
+
+            wp_safe_redirect( $login_url );
+            exit;
+        }
+
+        // Usuario autenticado no administrador:
+        // redirigirlo a sus cursos asignados.
+        $destination = home_url( '/user-account/enrolled-courses/' );
+
+        wp_safe_redirect( $destination );
+        exit;
+    }
+    
     
 }
 
