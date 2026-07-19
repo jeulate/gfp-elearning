@@ -45,6 +45,8 @@ class FairPlay_LMS_Course_Display {
 
         // Inyectar mensaje personalizado al finalizar un quiz
         add_action( 'wp_footer', [ $this, 'inject_quiz_completion_message' ] );
+        // Consultar si el usuario agotó los intentos del quiz.
+        add_action( 'wp_ajax_fplms_quiz_attempt_status', [ $this, 'ajax_quiz_attempt_status' ] );
     }
 
     /**
@@ -303,6 +305,107 @@ class FairPlay_LMS_Course_Display {
     }
 
     /**
+     * Devuelve el estado de intentos del quiz para el usuario autenticado.
+     */
+    public function ajax_quiz_attempt_status(): void {
+        if ( ! is_user_logged_in() ) {
+            wp_send_json_error(
+                [ 'message' => 'Usuario no autenticado.' ],
+                401
+            );
+        }
+
+        check_ajax_referer(
+            'fplms_quiz_attempt_status',
+            'nonce'
+        );
+
+        $user_id   = get_current_user_id();
+        $course_id = isset( $_POST['course_id'] )
+            ? absint( $_POST['course_id'] )
+            : 0;
+        $quiz_id   = isset( $_POST['quiz_id'] )
+            ? absint( $_POST['quiz_id'] )
+            : 0;
+
+        if ( ! $course_id || ! $quiz_id ) {
+            wp_send_json_error(
+                [ 'message' => 'Curso o quiz inválido.' ],
+                400
+            );
+        }
+
+        if ( FairPlay_LMS_Config::MS_PT_QUIZ !== get_post_type( $quiz_id ) ) {
+            wp_send_json_error(
+                [ 'message' => 'El contenido solicitado no es un quiz.' ],
+                400
+            );
+        }
+
+        global $wpdb;
+
+        $table = $wpdb->prefix . 'stm_lms_user_quizzes';
+
+        $attempts_used = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*)
+                FROM {$table}
+                WHERE user_id = %d
+                AND course_id = %d
+                AND quiz_id = %d",
+                $user_id,
+                $course_id,
+                $quiz_id
+            )
+        );
+
+        $last_status = (string) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT status
+                FROM {$table}
+                WHERE user_id = %d
+                AND course_id = %d
+                AND quiz_id = %d
+                ORDER BY user_quiz_id DESC
+                LIMIT 1",
+                $user_id,
+                $course_id,
+                $quiz_id
+            )
+        );
+
+        $attempts_mode  = (string) get_post_meta(
+            $quiz_id,
+            'quiz_attempts',
+            true
+        );
+
+        $attempts_limit = (int) get_post_meta(
+            $quiz_id,
+            'attempts',
+            true
+        );
+
+        $is_limited = 'limited' === $attempts_mode;
+
+        $is_exhausted = (
+            $is_limited
+            && $attempts_limit > 0
+            && $attempts_used >= $attempts_limit
+        );
+
+        wp_send_json_success(
+            [
+                'attempts_used'  => $attempts_used,
+                'attempts_limit' => $attempts_limit,
+                'attempts_mode'  => $attempts_mode,
+                'last_status'    => $last_status,
+                'is_exhausted'   => $is_exhausted,
+            ]
+        );
+    }
+
+    /**
      * Inyecta el mensaje personalizado debajo del resultado del quiz una vez
      * que el estudiante termina el examen (cuando aparece el % de puntuación).
      * El mensaje se configura desde FairPlay LMS → Ajustes de Tests.
@@ -317,6 +420,12 @@ class FairPlay_LMS_Course_Display {
 
         $msg_pass_js = wp_json_encode( $msg_pass );
         $msg_fail_js = wp_json_encode( $msg_fail );
+
+        $ajax_url_js = wp_json_encode( admin_url( 'admin-ajax.php' ) );
+        $ajax_nonce_js = wp_json_encode(
+            wp_create_nonce( 'fplms_quiz_attempt_status' )
+        );
+
         ?>
         <style>
         /* Badge pill base */
@@ -363,6 +472,12 @@ class FairPlay_LMS_Course_Display {
             var MSG_PASS = <?php echo $msg_pass_js; // phpcs:ignore WordPress.Security.EscapeOutput -- json_encoded ?>;
             var MSG_FAIL = <?php echo $msg_fail_js; // phpcs:ignore WordPress.Security.EscapeOutput -- json_encoded ?>;
 
+            var AJAX_URL = <?php echo $ajax_url_js; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>;
+            var AJAX_NONCE = <?php echo $ajax_nonce_js; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>;
+
+            var failCheckInFlight = false;
+            var failedResultChecked = false;
+            var failedMessageAllowed = false;
             // Iconos SVG inline — sin emojis
             var SVG_PASS = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5l4 4 8-8"/></svg>';
             var SVG_FAIL = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15L15 5M5 5l10 10"/></svg>';
@@ -374,45 +489,265 @@ class FairPlay_LMS_Course_Display {
              *   tener o no _show-answers dependiendo de la versión de MasterStudy)
              * - null: resultado todavía no visible (quiz en curso o después de Repetir)
              */
+            function isVisible( element ) {
+                return Boolean(
+                    element
+                    && (
+                        element.offsetWidth
+                        || element.offsetHeight
+                        || element.getClientRects().length
+                    )
+                );
+            }
+
             function detectResult( quiz ) {
-                if ( quiz.querySelector( '.masterstudy-course-player-quiz__result_failed' ) ) return 'failed';
-                if ( quiz.querySelector( '.masterstudy-course-player-quiz__result-container' ) ) return 'passed';
-                return null;
+                var resultContainer = quiz.querySelector(
+                    '.masterstudy-course-player-quiz__result-container'
+                );
+
+                if ( ! isVisible( resultContainer ) ) {
+                    return null;
+                }
+
+                var failedResult = quiz.querySelector(
+                    '.masterstudy-course-player-quiz__result_failed'
+                );
+
+                if ( failedResult ) {
+                    return 'failed';
+                }
+
+                return 'passed';
+            }
+
+            function removeMessage( quiz ) {
+                var message = quiz
+                    ? quiz.querySelector( '.fplms-quiz-completion-msg' )
+                    : document.querySelector( '.fplms-quiz-completion-msg' );
+
+                if ( message && message.parentNode ) {
+                    message.parentNode.removeChild( message );
+                }
+            }
+
+            function getQuizIds() {
+                var quizData = (
+                    window.quiz_data
+                    && typeof window.quiz_data === 'object'
+                )
+                    ? window.quiz_data
+                    : null;
+
+                var pathMatch = window.location.pathname.match(
+                    /\/(\d+)\/?$/
+                );
+
+                var quizId = (
+                    quizData
+                    && quizData.quiz_id
+                )
+                    ? parseInt( quizData.quiz_id, 10 )
+                    : (
+                        pathMatch
+                            ? parseInt( pathMatch[1], 10 )
+                            : 0
+                    );
+
+                var courseId = (
+                    quizData
+                    && quizData.course_id
+                )
+                    ? parseInt( quizData.course_id, 10 )
+                    : 0;
+
+                return {
+                    quizId: quizId,
+                    courseId: courseId
+                };
+            }
+
+            function checkFailedAttempts( quiz, callback ) {
+                if ( failCheckInFlight || failedResultChecked ) {
+                    return;
+                }
+
+                var ids = getQuizIds();
+
+                if ( ! ids.quizId || ! ids.courseId ) {
+                    removeMessage( quiz );
+                    return;
+                }
+
+                failCheckInFlight = true;
+
+                var body = new URLSearchParams();
+                body.append( 'action', 'fplms_quiz_attempt_status' );
+                body.append( 'nonce', AJAX_NONCE );
+                body.append( 'quiz_id', String( ids.quizId ) );
+                body.append( 'course_id', String( ids.courseId ) );
+
+                fetch(
+                    AJAX_URL,
+                    {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: {
+                            'Content-Type':
+                                'application/x-www-form-urlencoded; charset=UTF-8'
+                        },
+                        body: body.toString()
+                    }
+                )
+                    .then( function( response ) {
+                        if ( ! response.ok ) {
+                            throw new Error(
+                                'Error HTTP ' + response.status
+                            );
+                        }
+
+                        return response.json();
+                    } )
+                    .then( function( response ) {
+                        failedResultChecked = true;
+
+                        var data = response && response.success
+                            ? response.data
+                            : null;
+
+                        var shouldShow = Boolean(
+                            data
+                            && data.last_status === 'failed'
+                            && data.is_exhausted === true
+                        );
+
+                        failedMessageAllowed = shouldShow;
+                        callback( shouldShow );
+                    } )
+                    .catch( function() {
+                        // Ante un error, no mostrar un mensaje incorrecto.
+                        removeMessage( quiz );
+                    } )
+                    .finally( function() {
+                        failCheckInFlight = false;
+                    } );
+            }
+
+            function renderMessage( quiz, result, message, icon ) {
+                var existing = quiz.querySelector(
+                    '.fplms-quiz-completion-msg'
+                );
+
+                if ( existing ) {
+                    if (
+                        existing.classList.contains(
+                            'fplms-quiz-completion-msg--' + result
+                        )
+                    ) {
+                        return;
+                    }
+
+                    existing.parentNode.removeChild( existing );
+                }
+
+                var resultContainer = quiz.querySelector(
+                    '.masterstudy-course-player-quiz__result-container'
+                );
+
+                if ( ! isVisible( resultContainer ) ) {
+                    return;
+                }
+
+                var wrapper = document.createElement( 'div' );
+
+                wrapper.className =
+                    'fplms-quiz-completion-msg '
+                    + 'fplms-quiz-completion-msg--'
+                    + result;
+
+                wrapper.innerHTML =
+                    icon + '<span>' + message + '</span>';
+
+                resultContainer.parentNode.insertBefore(
+                    wrapper,
+                    resultContainer.nextSibling
+                );
             }
 
             function syncMessage() {
-                var quiz = document.querySelector( '.masterstudy-course-player-quiz' );
+                var quiz = document.querySelector(
+                    '.masterstudy-course-player-quiz'
+                );
 
                 if ( ! quiz ) {
-                    var old = document.querySelector( '.fplms-quiz-completion-msg' );
-                    if ( old ) old.parentNode.removeChild( old );
+                    removeMessage( null );
+                    failedResultChecked = false;
+                    failedMessageAllowed = false;
                     return;
                 }
 
                 var result = detectResult( quiz );
-                var msg  = result === 'passed' ? MSG_PASS : result === 'failed' ? MSG_FAIL : '';
-                var icon = result === 'passed' ? SVG_PASS : result === 'failed' ? SVG_FAIL : '';
 
-                if ( ! msg ) {
-                    var stale = quiz.querySelector( '.fplms-quiz-completion-msg' );
-                    if ( stale ) stale.parentNode.removeChild( stale );
+                if ( ! result ) {
+                    removeMessage( quiz );
+                    failedResultChecked = false;
+                    failedMessageAllowed = false;
                     return;
                 }
 
-                // Si ya existe el badge correcto no duplicar; si cambió (retake) reemplazar
-                var existing = quiz.querySelector( '.fplms-quiz-completion-msg' );
-                if ( existing ) {
-                    if ( existing.classList.contains( 'fplms-quiz-completion-msg--' + result ) ) return;
-                    existing.parentNode.removeChild( existing );
+                if ( result === 'failed' ) {
+                    if ( ! MSG_FAIL ) {
+                        removeMessage( quiz );
+                        return;
+                    }
+
+                    if ( failedResultChecked ) {
+                        if ( failedMessageAllowed ) {
+                            renderMessage(
+                                quiz,
+                                'failed',
+                                MSG_FAIL,
+                                SVG_FAIL
+                            );
+                        } else {
+                            removeMessage( quiz );
+                        }
+
+                        return;
+                    }
+
+                    removeMessage( quiz );
+
+                    checkFailedAttempts(
+                        quiz,
+                        function( shouldShow ) {
+                            if ( ! shouldShow ) {
+                                removeMessage( quiz );
+                                return;
+                            }
+
+                            renderMessage(
+                                quiz,
+                                'failed',
+                                MSG_FAIL,
+                                SVG_FAIL
+                            );
+                        }
+                    );
+
+                    return;
                 }
 
-                var resultContainer = quiz.querySelector( '.masterstudy-course-player-quiz__result-container' );
-                if ( ! resultContainer ) return;
+                if ( ! MSG_PASS ) {
+                    removeMessage( quiz );
+                    return;
+                }
 
-                var wrapper = document.createElement( 'div' );
-                wrapper.className = 'fplms-quiz-completion-msg fplms-quiz-completion-msg--' + result;
-                wrapper.innerHTML = icon + '<span>' + msg + '</span>';
-                resultContainer.parentNode.insertBefore( wrapper, resultContainer.nextSibling );
+                renderMessage(
+                    quiz,
+                    'passed',
+                    MSG_PASS,
+                    SVG_PASS
+                );
             }
 
             var observer = new MutationObserver( syncMessage );
@@ -422,7 +757,7 @@ class FairPlay_LMS_Course_Display {
                 if ( ! root ) { setTimeout( startObserver, 500 ); return; }
                 observer.observe( root.parentNode || root, {
                     childList: true, subtree: true,
-                    attributes: true, attributeFilter: ['class']
+                    attributes: true, attributeFilter: ['class', 'style']
                 } );
                 syncMessage();
             }
