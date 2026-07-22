@@ -5150,10 +5150,30 @@ class FairPlay_LMS_Plugin {
              * Muestra el calendario del estudiante.
              */
             function showStudentCalendarPage() {
-                var acctContainer = document.querySelector( '.masterstudy-account-container' );
+                var acctContainer = document.querySelector(
+                    '.masterstudy-account-container'
+                );
+
                 if ( ! acctContainer ) return;
 
-                if ( ! document.getElementById( 'fplms-cal-student-page' ) && studentCalData ) {
+                // Cargar los datos cuando el usuario abre el calendario
+                // directamente desde otra sección de su cuenta.
+                if ( ! studentCalData ) {
+                    fetchStats( 'student', function ( data ) {
+                        if ( ! data ) return;
+
+                        studentCalData = data;
+                        showStudentCalendarPage();
+                    } );
+
+                    return;
+                }
+
+                if (
+                    ! document.getElementById(
+                        'fplms-cal-student-page'
+                    )
+                ) {
                     var cont = document.createElement( 'div' );
                     cont.id = 'fplms-cal-student-page';
                     cont.style.cssText = 'display:none;flex:1;min-width:0;overflow:auto;';
@@ -5229,31 +5249,55 @@ class FairPlay_LMS_Plugin {
              */
             function injectStudentCalendarSidebarLink() {
                 function tryBuild() {
-                    // Si ya existe, nada que hacer
-                    if ( document.getElementById( 'fplms-mi-calendario-student-nav' ) ) return;
+                    // Si ya existe, no volver a insertarlo.
+                    if (
+                        document.getElementById(
+                            'fplms-mi-calendario-student-nav'
+                        )
+                    ) {
+                        return;
+                    }
 
-                    var items = document.querySelectorAll( '.masterstudy-account-menu__list-item' );
-                    if ( ! items.length ) return;
+                    var menu = document.querySelector(
+                        '.masterstudy-account-menu'
+                    );
 
-                    // Insertar antes de la sección AJUSTES DE CUENTA
-                    var anchor = null;
-                    items.forEach( function ( a ) {
-                        var txt = ( a.textContent || '' ).trim();
-                        if ( txt.indexOf( 'Ajustes' ) === -1 && txt.indexOf( 'Salir' ) === -1 ) anchor = a;
-                    } );
-                    if ( ! anchor ) anchor = items[ items.length - 1 ];
+                    if ( ! menu ) return;
+
+                    // Insertar dentro de la sección Progreso.
+                    var anchor = menu.querySelector(
+                        'a[href*="/my-grades/"]'
+                    );
+
+                    // Respaldo por si “Mis Calificaciones” no está disponible.
+                    if ( ! anchor ) {
+                        anchor = menu.querySelector(
+                            'a[href*="/my-certificates/"]'
+                        );
+                    }
+
                     if ( ! anchor ) return;
 
                     var link = document.createElement( 'a' );
-                    link.id        = 'fplms-mi-calendario-student-nav';
-                    link.className = 'masterstudy-account-menu__list-item';
-                    link.href      = '#';
-                    link.setAttribute( 'data-menu-place', 'main' );
-                    link.setAttribute( 'data-menu-mode',  'on' );
+
+                    link.id = 'fplms-mi-calendario-student-nav';
+                    link.className =
+                        'masterstudy-account-menu__list-item';
+                    link.href = '#';
+
+                    link.setAttribute( 'data-menu-place', 'learning' );
+                    link.setAttribute( 'data-menu-mode', 'off' );
+
                     link.innerHTML =
                         '<i class="stmlms-menu-enrolled-courses"></i>' +
-                        '<span class="masterstudy-account-menu__list-item-label">Mi Calendario</span>';
-                    anchor.parentNode.insertBefore( link, anchor.nextSibling );
+                        '<span class="masterstudy-account-menu__list-item-label">' +
+                            'Mi Calendario' +
+                        '</span>';
+
+                    anchor.parentNode.insertBefore(
+                        link,
+                        anchor.nextSibling
+                    );
 
                     link.addEventListener( 'click', function ( e ) {
                         e.preventDefault();
@@ -5261,27 +5305,47 @@ class FairPlay_LMS_Plugin {
                         showStudentCalendarPage();
                     } );
 
-                    // Ocultar calendario al pulsar cualquier otro ítem del menú
-                    var menu = anchor.closest( '.masterstudy-account-menu' );
-                    if ( menu && ! menu.dataset.fplmsStudentCalListened ) {
+                    // Ocultar calendario al seleccionar otra sección.
+                    if (
+                        ! menu.dataset.fplmsStudentCalListened
+                    ) {
                         menu.dataset.fplmsStudentCalListened = '1';
+
                         menu.addEventListener( 'click', function ( e ) {
-                            var item = e.target.closest( '.masterstudy-account-menu__list-item' );
-                            if ( item && item.id !== 'fplms-mi-calendario-student-nav' ) hideStudentCalendarPage();
+                            var item = e.target.closest(
+                                '.masterstudy-account-menu__list-item'
+                            );
+
+                            if (
+                                item
+                                && item.id !==
+                                    'fplms-mi-calendario-student-nav'
+                            ) {
+                                hideStudentCalendarPage();
+                            }
                         } );
                     }
                 }
 
-                // Primer intento inmediato
+                // Primer intento inmediato.
                 tryBuild();
 
-                // Observer persistente: re-inyecta si el menú se re-renderiza
+                // Reinsertar si MasterStudy reconstruye el menú.
                 var debounceTimer;
+
                 var sidebarObs = new MutationObserver( function () {
                     clearTimeout( debounceTimer );
-                    debounceTimer = setTimeout( tryBuild, 80 );
+
+                    debounceTimer = setTimeout(
+                        tryBuild,
+                        80
+                    );
                 } );
-                sidebarObs.observe( document.body, { childList: true, subtree: true } );
+
+                sidebarObs.observe( document.body, {
+                    childList: true,
+                    subtree: true
+                } );
             }
 
             /**
@@ -5436,7 +5500,6 @@ class FairPlay_LMS_Plugin {
 
                 reapplyStudentVisibility();
                 injectStudentTabs( data );
-                injectStudentCalendarSidebarLink();
 
                 // Re-aplicar visibilidad tras re-renders de Vue durante la carga inicial.
                 var _visibilityTries = 0;
@@ -6012,6 +6075,7 @@ class FairPlay_LMS_Plugin {
             }
 
             // Exponer renderStudent globalmente
+            injectStudentCalendarSidebarLink();
             window.renderStudent = renderStudent;
 
             /* ── Render instructor ───────────────────────────────────────────── */
