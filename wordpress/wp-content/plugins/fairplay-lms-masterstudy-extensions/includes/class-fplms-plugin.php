@@ -1200,7 +1200,7 @@ class FairPlay_LMS_Plugin {
                     if ( 'not_passed' === $real->status ) {
                         $assignment['status'] = [
                             'status' => 'not_passed',
-                            'label'  => 'Declined',
+                            'label'  => 'Reprobado',
                         ];
                     }
                 }
