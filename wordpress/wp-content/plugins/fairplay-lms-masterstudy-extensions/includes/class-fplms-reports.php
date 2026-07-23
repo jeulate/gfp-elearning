@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
@@ -542,55 +542,68 @@ class FairPlay_LMS_Reports_Controller {
         return $this->format_comparison_score($score) . '%';
     }
 
-    private function build_course_grade_map(?array $user_ids = null): array {
+    private function build_course_grade_map(?array $user_ids = null, array $filters = []): array {
         global $wpdb;
 
-        $quiz_table = $wpdb->prefix . 'stm_lms_user_quizzes';
-        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $quiz_table)) !== $quiz_table) {
+        $courses_table = $wpdb->prefix . 'stm_lms_user_courses';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $courses_table)) !== $courses_table) {
             return [];
         }
 
         $where = '';
         if (null !== $user_ids) {
             $where = empty($user_ids)
-                ? 'AND uq.user_id=0'
-                : 'AND uq.user_id IN (' . implode(',', array_map('intval', $user_ids)) . ')';
+                ? 'AND uc.user_id=0'
+                : 'AND uc.user_id IN (' . implode(',', array_map('intval', $user_ids)) . ')';
+        }
+        if (!empty($filters['date_from'])) {
+            $where .= $wpdb->prepare(
+                ' AND FROM_UNIXTIME(uc.end_time) >= %s',
+                $filters['date_from'] . ' 00:00:00'
+            );
+        }
+        if (!empty($filters['date_to'])) {
+            $where .= $wpdb->prepare(
+                ' AND FROM_UNIXTIME(uc.end_time) <= %s',
+                $filters['date_to'] . ' 23:59:59'
+            );
         }
 
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $qrows = (array) $wpdb->get_results(
-            "SELECT uq.user_id,uq.course_id,uq.quiz_id,uq.user_quiz_id,
-                    uq.progress AS score,uq.status,
-                    u.display_name,u.user_email,
-                    pc.post_title AS course_name,q.post_title AS quiz_name
-             FROM `{$quiz_table}` uq
-             INNER JOIN {$wpdb->users} u ON uq.user_id=u.ID
-             LEFT JOIN {$wpdb->posts} q ON uq.quiz_id=q.ID
-             LEFT JOIN {$wpdb->posts} pc ON uq.course_id=pc.ID
-             WHERE 1=1 $where
-             ORDER BY uq.user_id,uq.quiz_id,uq.course_id,uq.user_quiz_id ASC LIMIT 10000"
+        $course_rows = (array) $wpdb->get_results(
+            "SELECT uc.user_id, uc.course_id, uc.final_grade
+             FROM `{$courses_table}` uc
+             WHERE uc.user_id > 0
+               AND uc.course_id > 0
+               AND uc.final_grade IS NOT NULL
+               AND (
+                    LOWER(COALESCE(uc.status, '')) IN ('completed', 'passed')
+                    OR uc.progress_percent >= 100
+               )
+               $where
+               AND NOT EXISTS (
+                    SELECT 1
+                    FROM `{$courses_table}` newer
+                    WHERE newer.user_id = uc.user_id
+                      AND newer.course_id = uc.course_id
+                      AND newer.user_course_id > uc.user_course_id
+               )
+             ORDER BY uc.user_id, uc.course_id
+             LIMIT 10000"
         );
 
-        if (empty($qrows)) {
+        if (empty($course_rows)) {
             return [];
         }
 
         $course_grade_map = [];
-        foreach ($this->aggregate_quiz_rows($qrows) as $row) {
+        foreach ($course_rows as $row) {
             $user_id = (int) ($row->user_id ?? 0);
             $course_id = (int) ($row->course_id ?? 0);
             if ($user_id < 1 || $course_id < 1) {
                 continue;
             }
-            $course_grade_map[$user_id][$course_id][] = (float) ($row->score ?? 0);
-        }
-
-        foreach ($course_grade_map as $user_id => $courses) {
-            foreach ($courses as $course_id => $scores) {
-                $course_grade_map[$user_id][$course_id] = empty($scores)
-                    ? null
-                    : round(array_sum($scores) / count($scores), 1);
-            }
+            $course_grade_map[$user_id][$course_id] = round((float) $row->final_grade, 1);
         }
 
         return $course_grade_map;
@@ -600,11 +613,10 @@ class FairPlay_LMS_Reports_Controller {
         global $wpdb;
 
         $uids = $this->get_user_ids_for_filters($f);
-        $quiz_table = null;
-        $table_name = $wpdb->prefix . 'stm_lms_user_quizzes';
-        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name)) === $table_name) {
-            $quiz_table = $table_name;
-        }
+        $courses_table = $wpdb->prefix . 'stm_lms_user_courses';
+        $courses_table_found = (
+            $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $courses_table)) === $courses_table
+        );
 
         $scale = $this->get_comparison_grade_scale();
         $distribution = [];
@@ -612,9 +624,9 @@ class FairPlay_LMS_Reports_Controller {
             $distribution[$grade['code']] = 0;
         }
 
-        if (!$quiz_table) {
+        if (!$courses_table_found) {
             return [
-            'quiz_table_found' => false,
+                'courses_table_found' => false,
                 'rows' => [],
                 'scale' => $scale,
                 'distribution' => $distribution,
@@ -626,24 +638,53 @@ class FairPlay_LMS_Reports_Controller {
             ];
         }
 
-        $qw = null !== $uids ? (empty($uids) ? 'AND uq.user_id=0' : 'AND uq.user_id IN (' . implode(',', array_map('intval', $uids)) . ')') : '';
+        $where = null !== $uids
+            ? (empty($uids) ? 'AND uc.user_id=0' : 'AND uc.user_id IN (' . implode(',', array_map('intval', $uids)) . ')')
+            : '';
+        if (!empty($f['date_from'])) {
+            $where .= $wpdb->prepare(
+                ' AND FROM_UNIXTIME(uc.end_time) >= %s',
+                $f['date_from'] . ' 00:00:00'
+            );
+        }
+        if (!empty($f['date_to'])) {
+            $where .= $wpdb->prepare(
+                ' AND FROM_UNIXTIME(uc.end_time) <= %s',
+                $f['date_to'] . ' 23:59:59'
+            );
+        }
+
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $qrows = (array) $wpdb->get_results(
-            "SELECT uq.user_id,uq.course_id,uq.quiz_id,uq.user_quiz_id,
-                    uq.progress AS score,uq.status,
-                    u.display_name,u.user_email,
-                    pc.post_title AS course_name,q.post_title AS quiz_name
-             FROM `{$quiz_table}` uq
-             INNER JOIN {$wpdb->users} u ON uq.user_id=u.ID
-             LEFT JOIN {$wpdb->posts} q ON uq.quiz_id=q.ID
-             LEFT JOIN {$wpdb->posts} pc ON uq.course_id=pc.ID
-             WHERE 1=1 $qw
-             ORDER BY uq.user_id,uq.quiz_id,uq.course_id,uq.user_quiz_id ASC LIMIT 5000"
+        $course_rows = (array) $wpdb->get_results(
+            "SELECT uc.user_course_id, uc.user_id, uc.course_id,
+                    uc.final_grade AS score, uc.status,
+                    u.display_name, u.user_email,
+                    pc.post_title AS course_name
+             FROM `{$courses_table}` uc
+             INNER JOIN {$wpdb->users} u ON uc.user_id = u.ID
+             LEFT JOIN {$wpdb->posts} pc ON uc.course_id = pc.ID
+             WHERE uc.user_id > 0
+               AND uc.course_id > 0
+               AND uc.final_grade IS NOT NULL
+               AND (
+                    LOWER(COALESCE(uc.status, '')) IN ('completed', 'passed')
+                    OR uc.progress_percent >= 100
+               )
+               $where
+               AND NOT EXISTS (
+                    SELECT 1
+                    FROM `{$courses_table}` newer
+                    WHERE newer.user_id = uc.user_id
+                      AND newer.course_id = uc.course_id
+                      AND newer.user_course_id > uc.user_course_id
+               )
+             ORDER BY uc.user_id, uc.course_id
+             LIMIT 5000"
         );
 
-        if (empty($qrows)) {
+        if (empty($course_rows)) {
             return [
-                'quiz_table_found' => true,
+                'courses_table_found' => true,
                 'rows' => [],
                 'scale' => $scale,
                 'distribution' => $distribution,
@@ -654,17 +695,13 @@ class FairPlay_LMS_Reports_Controller {
                 'top_grade' => null,
             ];
         }
-
-        $valid_statuses = ['passed', 'completed', 'failed', 'not_passed'];
-        $agg = $this->aggregate_quiz_rows($qrows);
 
         $by_user = [];
         $total_evaluations = 0;
-        foreach ($agg as $row) {
-            $status = strtolower((string) ($row->status ?? ''));
+        foreach ($course_rows as $row) {
             $user_id = (int) ($row->user_id ?? 0);
             $course_id = (int) ($row->course_id ?? 0);
-            if ($user_id < 1 || $course_id < 1 || !in_array($status, $valid_statuses, true)) {
+            if ($user_id < 1 || $course_id < 1) {
                 continue;
             }
             if (!isset($by_user[$user_id])) {
@@ -685,10 +722,9 @@ class FairPlay_LMS_Reports_Controller {
             if (!isset($by_user[$user_id]['courses'][$course_id])) {
                 $by_user[$user_id]['courses'][$course_id] = [
                     'course_name' => (string) ($row->course_name ?? ('Curso #' . $course_id)),
-                    'scores' => [],
+                    'final_grade' => round((float) ($row->score ?? 0), 1),
                 ];
             }
-            $by_user[$user_id]['courses'][$course_id]['scores'][] = (float) ($row->score ?? 0);
             $total_evaluations++;
         }
 
@@ -697,11 +733,10 @@ class FairPlay_LMS_Reports_Controller {
         foreach ($by_user as $user_data) {
             $course_averages = [];
             foreach ((array) ($user_data['courses'] ?? []) as $course_data) {
-                $scores = (array) ($course_data['scores'] ?? []);
-                if (empty($scores)) {
+                if (!array_key_exists('final_grade', $course_data)) {
                     continue;
                 }
-                $course_averages[] = round(array_sum($scores) / count($scores), 1);
+                $course_averages[] = (float) $course_data['final_grade'];
             }
 
             if (empty($course_averages)) {
@@ -746,7 +781,7 @@ class FairPlay_LMS_Reports_Controller {
         }
 
         return [
-            'quiz_table_found' => true,
+            'courses_table_found' => true,
             'rows' => $rows,
             'scale' => $scale,
             'distribution' => $distribution,
@@ -805,7 +840,7 @@ class FairPlay_LMS_Reports_Controller {
             . '<div class="fplms-cmp-hero-value">' . esc_html($this->format_comparison_score($overall_average)) . '</div>'
             . '<div class="fplms-cmp-hero-suffix">puntos</div>'
             . '<div class="fplms-cmp-inline-pill" style="--cmp-color:' . esc_attr((string) ($overall_grade['color'] ?? '#00af50')) . '">' . esc_html((string) ($overall_grade['code'] ?? 'EX') . ' - ' . (string) ($overall_grade['label'] ?? 'Excelente')) . '</div>'
-            . '<div class="fplms-cmp-hero-meta">' . esc_html(number_format_i18n($total_users)) . ' estudiantes evaluados - ' . esc_html(number_format_i18n($total_evaluations)) . ' evaluaciones consideradas</div>'
+            . '<div class="fplms-cmp-hero-meta">' . esc_html(number_format_i18n($total_users)) . ' estudiantes evaluados - ' . esc_html(number_format_i18n($total_evaluations)) . ' cursos calificados</div>'
             . $top_grade_html
             . '</div>'
             . '<div class="fplms-cmp-summary">'
@@ -1407,14 +1442,14 @@ class FairPlay_LMS_Reports_Controller {
         $html = $this->render_section_head('Reporte de Comparaciones', $this->build_export_url('comparisons', $f));
         $payload = $this->build_comparisons_payload($f);
 
-        if (empty($payload['quiz_table_found'])) {
-            $html .= $this->empty_msg('Tabla de resultados de MasterStudy no encontrada.');
+        if (empty($payload['courses_table_found'])) {
+            $html .= $this->empty_msg('Tabla de matrículas de MasterStudy no encontrada.');
             wp_send_json_success(['html' => $html]);
             return;
         }
 
         if (empty($payload['rows'])) {
-            $html .= $this->empty_msg('Sin datos de evaluaciones para construir la comparación.');
+            $html .= $this->empty_msg('Sin cursos calificados para construir la comparación.');
             wp_send_json_success(['html' => $html]);
             return;
         }
@@ -1423,7 +1458,7 @@ class FairPlay_LMS_Reports_Controller {
         $top_grade = $payload['top_grade'];
         $html .= $this->stat_cards([
             ['label' => 'Estudiantes evaluados', 'value' => '<strong>' . (int) $payload['total_users'] . '</strong>', 'color' => 'blue'],
-            ['label' => 'Evaluaciones consideradas', 'value' => '<strong>' . (int) $payload['total_evaluations'] . '</strong>', 'color' => 'orange'],
+            ['label' => 'Cursos calificados', 'value' => '<strong>' . (int) $payload['total_evaluations'] . '</strong>', 'color' => 'orange'],
             ['label' => 'Desempeño general', 'value' => '<strong>' . esc_html($overall_grade['code'] . ' - ' . $overall_grade['label']) . '</strong>', 'sub' => $this->format_comparison_score((float) $payload['overall_average']) . '%', 'color' => 'green'],
             ['label' => 'Nivel dominante', 'value' => '<strong>' . esc_html(($top_grade['code'] ?? '—') . ' - ' . ($top_grade['label'] ?? '—')) . '</strong>', 'sub' => isset($top_grade['count']) ? (int) $top_grade['count'] . ' estudiantes' : '', 'color' => 'yellow'],
         ]);
@@ -1546,7 +1581,7 @@ class FairPlay_LMS_Reports_Controller {
         $f=$this->get_filters(); $uids=$this->get_user_ids_for_filters($f); $ms=$this->ms_table();
         $html = $this->render_section_head('Reporte de Tiempo de Capacitacion', $this->build_export_url('time',$f));
         if (!$ms) { $html.=$this->empty_msg('Tabla de matriculas no encontrada.'); wp_send_json_success(['html'=>$html]); return; }
-        $mw=null!==$uids?(empty($uids)?'AND uc.user_id=0':'AND uc.user_id IN ('.implode(',',array_map('intval',$uids)).')'):''; 
+        $mw=null!==$uids?(empty($uids)?'AND uc.user_id=0':'AND uc.user_id IN ('.implode(',',array_map('intval',$uids)).')'):'';
         $sec_tbl=$wpdb->prefix.'stm_lms_curriculum_sections';
         $mat_tbl=$wpdb->prefix.'stm_lms_curriculum_materials';
         $ul_tbl =$wpdb->prefix.'stm_lms_user_lessons';
@@ -2382,7 +2417,10 @@ class FairPlay_LMS_Reports_Controller {
                 ];
             }
         }
-        $course_grade_map = $this->build_course_grade_map(array_map(fn($u) => (int) $u->ID, $users));
+        $course_grade_map = $this->build_course_grade_map(
+            array_map(fn($u) => (int) $u->ID, $users),
+            $f
+        );
 
         // 7. Icons
         $check_ico = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:0 auto"><polyline points="20 6 9 17 4 12"/></svg>';
@@ -2848,7 +2886,7 @@ class FairPlay_LMS_Reports_Controller {
             // -- COMPARACIONES --------------------------------------------
             case str_starts_with($format, 'comparisons'):
                 $comparison_payload = $this->build_comparisons_payload($f);
-                if (empty($comparison_payload['quiz_table_found']) || empty($comparison_payload['rows'])) { echo 'Sin datos.'; exit; }
+                if (empty($comparison_payload['courses_table_found']) || empty($comparison_payload['rows'])) { echo 'Sin datos.'; exit; }
                 $channel_context_xls = $this->resolve_channel_comparison_context($f, $comparison_payload);
                 $this->output_xls_comparisons('comparaciones', 'Reporte de Comparaciones', $comparison_payload, $channel_context_xls, $f);
                 break;
@@ -3205,7 +3243,10 @@ class FairPlay_LMS_Reports_Controller {
                         ];
                     }
                 }
-                $mx_course_grade_map = $this->build_course_grade_map(array_map(fn($u) => (int) $u->ID, $mx_users));
+                $mx_course_grade_map = $this->build_course_grade_map(
+                    array_map(fn($u) => (int) $u->ID, $mx_users),
+                    $f
+                );
                 // Build headers + data
                     $mx_rows = [];
                 foreach ($mx_users as $u) {
@@ -3648,9 +3689,9 @@ class FairPlay_LMS_Reports_Controller {
         $user_sheet .= '<Row ss:Height="14"><Cell ss:StyleID="s_meta" ss:MergeAcross="4"><Data ss:Type="String">' . $xe($meta) . '</Data></Cell></Row>';
         $user_sheet .= '<Row ss:Height="8"/>';
         $user_sheet .= '<Row ss:Height="20"><Cell ss:StyleID="s_sec" ss:MergeAcross="4"><Data ss:Type="String">Desempeno por Usuario</Data></Cell></Row>';
-        $user_sheet .= '<Row ss:Height="18"><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Promedio General</Data></Cell><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Estudiantes Evaluados</Data></Cell><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Evaluaciones Consideradas</Data></Cell></Row>';
+        $user_sheet .= '<Row ss:Height="18"><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Promedio General</Data></Cell><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Estudiantes Evaluados</Data></Cell><Cell ss:StyleID="s_card_lbl" ss:MergeAcross="1"><Data ss:Type="String">Cursos Calificados</Data></Cell></Row>';
         $user_sheet .= '<Row ss:Height="34"><Cell ss:StyleID="s_card_val" ss:MergeAcross="1"><Data ss:Type="String">' . $xe($this->format_comparison_score((float) ($payload['overall_average'] ?? 0)) . '%') . '</Data></Cell><Cell ss:StyleID="s_card_val" ss:MergeAcross="1"><Data ss:Type="Number">' . $xe((int) ($payload['total_users'] ?? 0)) . '</Data></Cell><Cell ss:StyleID="s_card_val" ss:MergeAcross="1"><Data ss:Type="Number">' . $xe((int) ($payload['total_evaluations'] ?? 0)) . '</Data></Cell></Row>';
-        $user_sheet .= '<Row ss:Height="24"><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">' . $xe(($overall_grade['code'] ?? '—') . ' - ' . ($overall_grade['label'] ?? '—') . ' | ' . ($overall_grade['range'] ?? '')) . '</Data></Cell><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">Usuarios con promedio general calculado</Data></Cell><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">Evaluaciones agregadas desde el tab de desempeno</Data></Cell></Row>';
+        $user_sheet .= '<Row ss:Height="24"><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">' . $xe(($overall_grade['code'] ?? '—') . ' - ' . ($overall_grade['label'] ?? '—') . ' | ' . ($overall_grade['range'] ?? '')) . '</Data></Cell><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">Usuarios con promedio general calculado</Data></Cell><Cell ss:StyleID="s_card_sub" ss:MergeAcross="1"><Data ss:Type="String">Notas finales consolidadas por curso</Data></Cell></Row>';
         $user_sheet .= '<Row ss:Height="8"/>';
         $user_sheet .= '<Row ss:Height="20"><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Usuario</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Canal</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Promedio General</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Desempeno</Data></Cell><Cell ss:StyleID="s_hdr"><Data ss:Type="String">Rango</Data></Cell></Row>';
         if (empty($user_rows)) {
