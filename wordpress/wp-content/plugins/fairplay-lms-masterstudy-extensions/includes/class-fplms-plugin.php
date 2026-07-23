@@ -302,28 +302,28 @@ class FairPlay_LMS_Plugin {
         // AJAX: Cargar dinámicamente términos filtrados por ciudad
         add_action( 'wp_ajax_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
         add_action( 'wp_ajax_nopriv_fplms_get_terms_by_city', [ $this->structures, 'ajax_get_terms_by_city' ] );
-        
+
         // AJAX: Cargar términos filtrados por padre (sistema jerárquico completo)
         add_action( 'wp_ajax_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
-        
+
         // Bitácora: Menú
         add_action( 'admin_menu', [ $this->audit_admin, 'register_admin_menu' ] );
-        
+
         // Bitácora: Acciones de usuario desde bitácora
         add_action( 'admin_post_fplms_reactivate_user', [ $this->audit_admin, 'handle_user_reactivation' ] );
         add_action( 'admin_post_fplms_delete_user_permanently', [ $this->audit_admin, 'handle_user_permanent_deletion' ] );
         add_action( 'wp_ajax_nopriv_fplms_get_terms_by_parent', [ $this->structures, 'ajax_get_terms_by_parent' ] );
-        
+
         // AJAX: Cargar estructuras en cascada para asignación a cursos
         add_action( 'wp_ajax_fplms_get_cascade_structures', [ $this->structures, 'ajax_get_cascade_structures' ] );
 
         // FEATURE 1: Meta Box de Estructuras en Creación de Cursos
         add_action( 'add_meta_boxes', [ $this->courses, 'register_structures_meta_box' ] );
         add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'save_course_structures_on_publish' ], 10, 3 );
-        
+
         // Forzar editor clásico para cursos (evitar Course Builder automático)
         add_filter( 'use_block_editor_for_post_type', [ $this, 'force_classic_editor_for_courses' ], 10, 2 );
-        
+
         // FEATURE 2: Sincronización Canales ↔ Categorías
         add_action( 'created_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'sync_channel_to_category' ], 10, 3 );
         add_action( 'edited_' . FairPlay_LMS_Config::TAX_CHANNEL, [ $this->structures, 'sync_channel_to_category' ], 10, 3 );
@@ -336,25 +336,25 @@ class FairPlay_LMS_Plugin {
         add_action( 'created_' . FairPlay_LMS_Config::TAX_ROLE,         [ $this->structures, 'sync_role_to_subcategory' ], 10, 3 );
         add_action( 'edited_' . FairPlay_LMS_Config::TAX_ROLE,          [ $this->structures, 'sync_role_to_subcategory' ], 10, 3 );
         add_action( 'delete_' . FairPlay_LMS_Config::TAX_ROLE,          [ $this->structures, 'unsync_role_on_delete' ], 10, 4 );
-        
+
         // FEATURE 3: Detectar categorías asignadas en Course Builder y aplicar cascada
         add_action( 'set_object_terms', [ $this->courses, 'sync_categories_to_structures' ], 10, 6 );
-        
+
         // También sincronizar cuando se guarda un curso (para editor clásico y actualizaciones)
         add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'sync_course_categories_on_save' ], 20, 3 );
-        
+
         // Auditoría: Registrar acciones en cursos
         add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_COURSE, [ $this->courses, 'log_course_save' ], 30, 3 );
         add_action( 'before_delete_post', [ $this->courses, 'log_course_deletion' ], 10, 1 );
-        
+
         // Auditoría: Registrar acciones en lecciones
         add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_LESSON, [ $this->courses, 'log_lesson_save' ], 10, 3 );
         add_action( 'before_delete_post', [ $this->courses, 'log_lesson_deletion' ], 10, 1 );
-        
+
         // Auditoría: Registrar acciones en quizzes
         add_action( 'save_post_' . FairPlay_LMS_Config::MS_PT_QUIZ, [ $this->courses, 'log_quiz_save' ], 10, 3 );
         add_action( 'before_delete_post', [ $this->courses, 'log_quiz_deletion' ], 10, 1 );
-        
+
         // Auditoría: Registrar eliminación/reactivación de usuarios
         add_action( 'delete_user', [ $this->users, 'handle_user_soft_delete' ], 5, 3 );
         add_action( 'admin_post_fplms_reactivate_user', [ $this->audit_admin, 'handle_user_reactivation' ] );
@@ -442,7 +442,15 @@ class FairPlay_LMS_Plugin {
 
         //ajuste para mostrar las fechas de las calificaciones al final del día
         add_filter( 'rest_request_before_callbacks', [ $this, 'fplms_fix_grades_date_to_end_of_day' ], 10, 3 );
-        
+        // Permitir al estudiante consultar su propia calificación histórica
+        // aunque el acceso al curso finalizado ya haya vencido.
+        add_filter(
+            'rest_post_dispatch',
+            [ $this, 'fplms_allow_own_historical_grade' ],
+            20,
+            3
+        );
+
         //interceptar correos de certificados para evitar que se envien a estudiantes que reprobaron el curso
         add_action('masterstudy_plugin_student_course_completion', 'mastertudy_plugin_send_certificate_email', 10, 3);
         add_action('wp_loaded', [ $this, 'fplms_disable_certificate_email_for_failed_courses' ], 999);
@@ -473,7 +481,7 @@ class FairPlay_LMS_Plugin {
             3
         );
     }
-    
+
     /**
      * Envía el correo de certificado solo si el estudiante aprobó el curso.
      */
@@ -540,9 +548,9 @@ class FairPlay_LMS_Plugin {
      * Bloquea la actualización o adición de meta de certificado si el estudiante no aprobó el curso.
      */
     public function fplms_block_failed_certificate_meta( $check, $user_id, $meta_key, $meta_value, $prev_value = null ) {
-        
+
        // error_log('[FPLMS_CERT_BLOCK] Hook ejecutado meta_key=' . $meta_key);
-        
+
         if ( 0 !== strpos( (string) $meta_key, 'stm_lms_certificate_code_' ) ) {
             return $check;
         }
@@ -603,12 +611,124 @@ class FairPlay_LMS_Plugin {
                 $request->set_param( $key, $value );
             }
         }
-
        /* error_log(
             '[FPLMS_GRADES_DATE_FIX] route=' . $request->get_route() .
             ' date_to=' . print_r( $request->get_param( 'date_to' ), true )
         );*/
         return $response;
+    }
+
+    /**
+     * Reemplaza exclusivamente el 403 de una calificación histórica propia.
+     *
+     * @param WP_HTTP_Response $response Respuesta REST generada.
+     * @param WP_REST_Server   $server   Servidor REST.
+     * @param WP_REST_Request  $request  Solicitud REST.
+     *
+     * @return WP_HTTP_Response
+     */
+    public function fplms_allow_own_historical_grade( $response, $server, $request ) {
+        if ( ! $request instanceof WP_REST_Request ) {
+            return $response;
+        }
+
+        if ( 'GET' !== strtoupper( $request->get_method() ) ) {
+            return $response;
+        }
+
+        if (
+            ! preg_match(
+                '#^/masterstudy-lms/v2/student-grades/([1-9][0-9]*)$#',
+                $request->get_route(),
+                $matches
+            )
+        ) {
+            return $response;
+        }
+
+        // Solamente sustituir la respuesta 403 de MasterStudy.
+        $status = (
+            $response instanceof WP_HTTP_Response
+            || $response instanceof WP_REST_Response
+        )
+            ? (int) $response->get_status()
+            : 0;
+
+        if ( 403 !== $status ) {
+            return $response;
+        }
+
+        if ( ! is_user_logged_in() ) {
+            return $response;
+        }
+
+        $user_course_id = (int) $matches[1];
+        $current_user_id = get_current_user_id();
+
+        if ( $user_course_id <= 0 || $current_user_id <= 0 ) {
+            return $response;
+        }
+
+        global $wpdb;
+
+        $user_courses_table = stm_lms_user_courses_name( $wpdb );
+
+        $user_course = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT user_course_id, user_id, course_id
+                FROM {$user_courses_table}
+                WHERE user_course_id = %d
+                LIMIT 1",
+                $user_course_id
+            ),
+            ARRAY_A
+        );
+
+        if ( empty( $user_course ) ) {
+            return $response;
+        }
+
+        // Impide consultar calificaciones de otro estudiante.
+        if ( (int) $user_course['user_id'] !== $current_user_id ) {
+            return $response;
+        }
+
+        $repository_class = '\MasterStudy\Lms\Pro\AddonsPlus\Grades\Repositories\GradesRepository';
+        $serializer_class = '\MasterStudy\Lms\Pro\AddonsPlus\Grades\Http\Serializers\CourseGradeSerializer';
+
+        if (
+            ! class_exists( $repository_class )
+            || ! class_exists( $serializer_class )
+        ) {
+            return $response;
+        }
+
+        try {
+            $grade = ( new $repository_class() )->get_user_course_grade(
+                $user_course_id
+            );
+
+            if ( empty( $grade ) ) {
+                return $response;
+            }
+
+            $data = ( new $serializer_class() )->toArray( $grade );
+
+            $historical_response = rest_ensure_response( $data );
+            $historical_response->set_status( 200 );
+
+            return $historical_response;
+        } catch ( Throwable $exception ) {
+            error_log(
+                sprintf(
+                    '[FPLMS_HISTORICAL_GRADE] Matrícula %d: %s',
+                    $user_course_id,
+                    $exception->getMessage()
+                )
+            );
+
+            return $response;
+        }
     }
 
     /**
@@ -779,12 +899,12 @@ class FairPlay_LMS_Plugin {
 
         return 0;
     }
-    
+
     /**
      * Funcion para las tareas
      * tomar en cuenta los cambios que se hacen
      */
-    public function fplms_complete_assignment_progress_when_attempts_exhausted($student_id = 0,$assignment_id = 0,$course_id = 0 ): void {  
+    public function fplms_complete_assignment_progress_when_attempts_exhausted($student_id = 0,$assignment_id = 0,$course_id = 0 ): void {
        // error_log('[FPLMS_ASSIGNMENT] Inicio de fplms_complete_assignment_progress_when_attempts_exhausted');
         global $wpdb;
 
@@ -869,7 +989,7 @@ class FairPlay_LMS_Plugin {
      * Funcion para los Quiz
      */
     public function fplms_complete_quiz_progress_when_attempts_exhausted(array $user_quiz): void {
-        //error_log('[FPLMS] Entró a fplms_complete_quiz_progress_when_attempts_exhausted');    
+        //error_log('[FPLMS] Entró a fplms_complete_quiz_progress_when_attempts_exhausted');
         global $wpdb;
 
         $user_id   = (int) ( $user_quiz['user_id'] ?? 0 );
@@ -1075,7 +1195,7 @@ class FairPlay_LMS_Plugin {
             STM_LMS_Certificates::generate_certificate_code( $user_id, $course_id );
         }
     }
- 
+
     private function fplms_student_passed_course( int $user_id, int $course_id ): bool {
         global $wpdb;
 
@@ -1677,7 +1797,7 @@ class FairPlay_LMS_Plugin {
 
                 statusElements.forEach(function(el) {
                     var originalText = el.textContent.trim().toLowerCase();
-                    if (originalText === TARGET_TEXT.toLowerCase() || 
+                    if (originalText === TARGET_TEXT.toLowerCase() ||
                         originalText === 'en borrador') {
                         el.textContent = REPLACEMENT;
                         // Mantener la clase pero asegurar consistencia visual
@@ -1701,12 +1821,12 @@ class FairPlay_LMS_Plugin {
 
             function startObserver() {
                 if (observer) return;
-                
+
                 observer = new MutationObserver(function() {
                     clearTimeout(debounceTimer);
                     debounceTimer = setTimeout(replaceStatusText, 80);
                 });
-                
+
                 observer.observe(document.body, {
                     childList: true,
                     subtree: true,
@@ -1717,7 +1837,7 @@ class FairPlay_LMS_Plugin {
 
             // Iniciar el observer después de un pequeño retraso para no interferir con la carga inicial
             setTimeout(startObserver, 500);
-            
+
             // Detener observer después de 30 segundos para liberar recursos
             setTimeout(function() {
                 if (observer) {
@@ -1802,12 +1922,12 @@ class FairPlay_LMS_Plugin {
 
             function startObserver() {
                 if (observer) return;
-                
+
                 observer = new MutationObserver(function() {
                     clearTimeout(debounceTimer);
                     debounceTimer = setTimeout(replaceTabText, 80);
                 });
-                
+
                 observer.observe(document.body, {
                     childList: true,
                     subtree: true,
@@ -1817,7 +1937,7 @@ class FairPlay_LMS_Plugin {
             }
 
             startObserver();
-            
+
             // Limpiar observer después de 30 segundos
             setTimeout(function() {
                 if (observer) {
@@ -1855,7 +1975,7 @@ class FairPlay_LMS_Plugin {
 
             function replaceModeText() {
                 var modeContainer = document.querySelector('.masterstudy-account-menu__mode');
-                
+
                 if (!modeContainer) {
                     replaced = false;
                     return;
@@ -1871,7 +1991,7 @@ class FairPlay_LMS_Plugin {
                 // Método 1: Reemplazar nodos de texto
                 var childNodes = modeContainer.childNodes;
                 var found = false;
-                
+
                 for (var i = 0; i < childNodes.length; i++) {
                     var node = childNodes[i];
                     if (node.nodeType === 3) { // Text node
@@ -1915,7 +2035,7 @@ class FairPlay_LMS_Plugin {
             // Observer persistente
             var observer = new MutationObserver(function(mutations) {
                 var shouldCheck = false;
-                
+
                 for (var i = 0; i < mutations.length; i++) {
                     var mutation = mutations[i];
                     if (mutation.type === 'childList' && mutation.addedNodes.length) {
@@ -1935,19 +2055,19 @@ class FairPlay_LMS_Plugin {
                     }
                     if (shouldCheck) break;
                 }
-                
+
                 if (shouldCheck) {
                     setTimeout(replaceModeText, 50);
                 }
             });
-            
+
             observer.observe(document.body, {
                 childList: true,
                 subtree: true,
                 characterData: true,
                 attributes: true
             });
-            
+
             // No desconectamos el observer para mantener la traducción durante toda la sesión
         })();
         </script>
@@ -1983,17 +2103,17 @@ class FairPlay_LMS_Plugin {
             'use strict';
 
             var CALENDAR_URL = '/user-account/chat/';
-            
+
             // Intentar obtener la URL base correcta
             function getBaseUrl() {
                 var origin = window.location.origin;
                 var pathname = window.location.pathname;
-                
+
                 // Si estamos en /visar-account/ o similar, usar esa base
                 if (pathname.indexOf('/visar-account') !== -1) {
                     return origin + '/visar-account/chat/';
                 }
-                
+
                 return origin + CALENDAR_URL;
             }
 
@@ -2004,7 +2124,7 @@ class FairPlay_LMS_Plugin {
                     '.masterstudy-account-mobile-menu a[data-id="wishlist"], ' +
                     '.masterstudy-account-mobile-menu__link:has(.stmlms-mobile-menu-wishlist)'
                 );
-                
+
                 if (!wishlistLink) {
                     // Buscar por el texto "Lista de deseos" como fallback
                     var allLinks = document.querySelectorAll('.masterstudy-account-mobile-menu__link, .masterstudy-account-mobile-menu a');
@@ -2017,15 +2137,15 @@ class FairPlay_LMS_Plugin {
                         }
                     }
                 }
-                
+
                 if (!wishlistLink) {
                     return false;
                 }
-                
+
                 // Cambiar el href al calendario
                 var newUrl = getBaseUrl();
                 wishlistLink.href = newUrl;
-                
+
                 // Cambiar el ícono (de corazón/favorito a calendario)
                 var icon = wishlistLink.querySelector('i');
                 if (icon) {
@@ -2033,7 +2153,7 @@ class FairPlay_LMS_Plugin {
                     // También podemos cambiar el estilo si es necesario
                     icon.style.fontSize = '20px';
                 }
-                
+
                 // Cambiar el texto
                 var textDiv = wishlistLink.querySelector('.masterstudy-account-mobile-menu__item');
                 if (textDiv) {
@@ -2042,13 +2162,13 @@ class FairPlay_LMS_Plugin {
                     // Si no tiene la estructura esperada, cambiar el texto directamente
                     wishlistLink.innerHTML = wishlistLink.innerHTML.replace(/Lista de deseos/g, 'Mis Mensajes');
                 }
-                
+
                 // Cambiar el atributo data-id
                 wishlistLink.setAttribute('data-id', 'calendar');
-                
+
                 // Añadir una clase personalizada para identificación
                 wishlistLink.classList.add('fplms-calendar-link');
-                
+
                 return true;
             }
 
@@ -2065,12 +2185,12 @@ class FairPlay_LMS_Plugin {
 
             function startObserver() {
                 if (observer) return;
-                
+
                 observer = new MutationObserver(function() {
                     clearTimeout(debounceTimer);
                     debounceTimer = setTimeout(replaceWishlistWithCalendar, 80);
                 });
-                
+
                 observer.observe(document.body, {
                     childList: true,
                     subtree: true,
@@ -2080,7 +2200,7 @@ class FairPlay_LMS_Plugin {
             }
 
             startObserver();
-            
+
             // Limpiar observer después de 30 segundos
             setTimeout(function() {
                 if (observer) {
@@ -2368,29 +2488,29 @@ class FairPlay_LMS_Plugin {
 
     /**
      * Obtener instancia del controlador de usuarios.
-     * 
+     *
      * @return FairPlay_LMS_Users_Controller
      */
     public function get_users_controller(): FairPlay_LMS_Users_Controller {
         return $this->users;
     }
-    
+
     /**
      * Fuerza el editor clásico para cursos de MasterStudy.
      * Esto evita que el Course Builder se abra automáticamente
      * y permite usar la meta box de estructuras.
-     * 
+     *
      * @param bool   $use_block_editor Si se debe usar el editor de bloques
      * @param string $post_type        Tipo de post
      * @return bool
      */
     public function force_classic_editor_for_courses( $use_block_editor, $post_type ): bool {
-        
+
         // Forzar editor clásico para cursos de MasterStudy
         if ( FairPlay_LMS_Config::MS_PT_COURSE === $post_type ) {
             return false;
         }
-        
+
         return $use_block_editor;
     }
 
@@ -5696,7 +5816,7 @@ class FairPlay_LMS_Plugin {
                         return false;
                     }
 
-                    
+
                    function _normalizeLegacyCardNode( node ) {
                     var card = node.classList && node.classList.contains( 'masterstudy-course-card' )
                         ? node
@@ -5714,13 +5834,13 @@ class FairPlay_LMS_Plugin {
 
                     // Extraer datos de la tarjeta legacy
                     var courseId = card.dataset.fplmsCid || card.dataset.id || '';
-                    
+
                     // Obtener imagen
                     var imageLink = card.querySelector( '.masterstudy-course-card__image a' );
                     var imageImg = card.querySelector( '.masterstudy-course-card__image img' );
                     var imageSrc = imageImg ? imageImg.src : '';
                     var imageHref = imageLink ? imageLink.href : '#';
-                    
+
                     // Si no hay imagen en el enlace, buscar en el contenedor de imagen
                     if ( !imageSrc ) {
                         var imgContainer = card.querySelector( '.masterstudy-course-card__image' );
@@ -5821,16 +5941,16 @@ class FairPlay_LMS_Plugin {
                     // Reemplazar completamente la tarjeta
                     card.outerHTML = newHTML;
                 }
-                   
+
 
 
                     // Agrega esta función después de _normalizeLegacyCardNode
                     function _forceCompletedButtonText(card) {
                         if (!card) return;
-                        
+
                         // Verificar si el curso está completado
                         var isCompleted = false;
-                        
+
                         // 1. Verificar por barra de progreso al 100%
                         var progressBar = card.querySelector('.masterstudy-course-card__progress-bar_filled');
                         if (progressBar) {
@@ -5839,7 +5959,7 @@ class FairPlay_LMS_Plugin {
                                 isCompleted = true;
                             }
                         }
-                        
+
                         // 2. Verificar por texto de progreso
                         var progressText = card.querySelector('.masterstudy-course-card__progress-title, .masterstudy-course-card__progress-text');
                         if (progressText && !isCompleted) {
@@ -5848,7 +5968,7 @@ class FairPlay_LMS_Plugin {
                                 isCompleted = true;
                             }
                         }
-                        
+
                         // 3. Verificar si el botón ya dice "Completado"
                         var button = card.querySelector('.masterstudy-button .masterstudy-button__title');
                         if (button && !isCompleted) {
@@ -5857,7 +5977,7 @@ class FairPlay_LMS_Plugin {
                                 isCompleted = true;
                             }
                         }
-                        
+
                         // Si está completado y el botón no dice "Completado", cambiarlo
                         if (isCompleted && button) {
                             var currentText = button.textContent.trim();
@@ -5866,7 +5986,7 @@ class FairPlay_LMS_Plugin {
                             }
                         }
                     }
- 
+
                     function _parseNativeCourseNodes( courses ) {
                         var out = [];
                         if ( ! courses || ! courses.length ) {
@@ -5891,16 +6011,16 @@ class FairPlay_LMS_Plugin {
                             Array.prototype.slice.call( temp.children ).forEach( function ( child ) {
                                 // 🔥 CORRECCIÓN: Siempre normalizar estructura completa
                                 _normalizeLegacyCardNode( child );
-                                
+
                                 // 🔥 NUEVO: Forzar el texto del botón "Completado" en TODAS las tarjetas completadas
                                 var card = child.classList && child.classList.contains( 'masterstudy-course-card' )
                                     ? child
                                     : child.querySelector( '.masterstudy-course-card' );
-                                
+
                                 if ( card ) {
                                     _forceCompletedButtonText( card );
                                 }
-                                
+
                                 out.push( child );
                             } );
                         } );
@@ -6396,22 +6516,22 @@ class FairPlay_LMS_Plugin {
                 init();
             }
         })();
-        
+
         // 🔥 FORZAR NORMALIZACIÓN DE TARJETAS LEGACY - VERSIÓN MEJORADA
         (function() {
             'use strict';
-            
+
             console.log('[FPLMS] Iniciando monitor de tarjetas legacy');
-            
+
             var maxAttempts = 30;
             var attempts = 0;
             var intervalId = null;
             var normalized = false;
-            
+
             function hasCompleteStructure(card) {
                 return !!card.querySelector('.masterstudy-course-card__wrapper');
             }
-            
+
             function normalizeLegacyCards() {
                 if (normalized) return;
 
@@ -6452,10 +6572,10 @@ class FairPlay_LMS_Plugin {
 
                     return url + '/' + encodeURIComponent(cleanId) + query + hash;
                 }
-                
+
                 function getCourseCategory(card) {
                     console.log('[FPLMS] 🔍 Buscando categoría para tarjeta:', card.dataset.fplmsCid || card.dataset.id || 'sin ID');
-                    
+
                      // 🔥 NUEVO: Buscar en estructura legacy (tarjetas sin wrapper)
                     // Buscar cualquier span o div con texto que parezca categoría
                     var legacyCategory = card.querySelector('.masterstudy-course-card__info-category a, .masterstudy-course-card__info .masterstudy-course-card__info-category a');
@@ -6469,7 +6589,7 @@ class FairPlay_LMS_Plugin {
                             };
                         }
                     }
-                    
+
                     // 1. Intentar obtener la categoría del DOM existente
                     var categoryEl = card.querySelector('.masterstudy-course-card__info-category a');
                     if (categoryEl) {
@@ -6482,7 +6602,7 @@ class FairPlay_LMS_Plugin {
                             };
                         }
                     }
-                    
+
                     // 2. Intentar obtener la categoría desde el enlace de categoría en el meta
                     var metaCategory = card.querySelector('.masterstudy-course-card__meta a[href*="terms"], .masterstudy-course-card__meta-block a');
                     if (metaCategory) {
@@ -6495,7 +6615,7 @@ class FairPlay_LMS_Plugin {
                             };
                         }
                     }
-                    
+
                     // 3. Intentar obtener desde el data attribute (si existe)
                     if (card.dataset.category) {
                         console.log('[FPLMS] ✅ Categoría encontrada en data-category:', card.dataset.category);
@@ -6504,7 +6624,7 @@ class FairPlay_LMS_Plugin {
                             link: card.dataset.categoryLink || '#'
                         };
                     }
-                    
+
                     // 4. Intentar extraer de la URL de la categoría
                     var categoryLinks = card.querySelectorAll('a[href*="terms"], a[href*="category"]');
                     for (var i = 0; i < categoryLinks.length; i++) {
@@ -6518,7 +6638,7 @@ class FairPlay_LMS_Plugin {
                             };
                         }
                     }
-                    
+
                     // 5. Buscar la categoría en elementos relacionados
                     var categoryElements = card.querySelectorAll('[class*="category"], [class*="categoria"]');
                     for (var i = 0; i < categoryElements.length; i++) {
@@ -6532,7 +6652,7 @@ class FairPlay_LMS_Plugin {
                             };
                         }
                     }
-                    
+
                     // 6. Intentar extraer de la URL del curso (slug)
                     var courseLink = card.querySelector('a[href*="pagina-de-cursos"]');
                     if (courseLink) {
@@ -6547,7 +6667,7 @@ class FairPlay_LMS_Plugin {
                             };
                         }
                     }
-                    
+
                     // 7. Valor por defecto
                     console.log('[FPLMS] ⚠️ No se encontró categoría, usando "Fair Play" por defecto');
                     return {
@@ -6558,7 +6678,7 @@ class FairPlay_LMS_Plugin {
 
                 attempts++;
                 console.log('[FPLMS] Intento ' + attempts + '/' + maxAttempts + ' - Buscando tarjetas legacy...');
-                
+
                 var cards = document.querySelectorAll('.masterstudy-course-card');
                 var legacyCards = [];
                 cards.forEach(function(card) {
@@ -6566,7 +6686,7 @@ class FairPlay_LMS_Plugin {
                         legacyCards.push(card);
                     }
                 });
-                
+
                 if (legacyCards.length === 0) {
                     if (attempts > 3) {
                         console.log('[FPLMS] ✅ No hay tarjetas legacy');
@@ -6578,37 +6698,37 @@ class FairPlay_LMS_Plugin {
                     }
                     return;
                 }
-                
+
                 console.log('[FPLMS] 🔄 Encontradas ' + legacyCards.length + ' tarjetas legacy, normalizando...');
-                
+
                 legacyCards.forEach(function(card, index) {
                     console.log('[FPLMS] Normalizando tarjeta ' + (index + 1) + ' de ' + legacyCards.length);
-                    
+
                     var courseId = card.dataset.fplmsCid || card.dataset.id || '';
                     var titleEl = card.querySelector('.masterstudy-course-card__title a');
                     var title = titleEl ? titleEl.textContent.trim() : 'Curso';
                     var titleLink = titleEl ? titleEl.href : '#';
-                    
+
                     var imgEl = card.querySelector('.masterstudy-course-card__image img');
                     var imageSrc = imgEl ? imgEl.src : '';
                     var imageLink = card.querySelector('.masterstudy-course-card__image a');
                     var imageHref = imageLink ? imageLink.href : titleLink;
-                    
+
                     var progressFilled = card.querySelector('.masterstudy-course-card__progress-bar_filled');
                     var progressWidth = progressFilled ? progressFilled.style.width || '0%' : '0%';
                     var progressTextEl = card.querySelector('.masterstudy-course-card__progress-text');
                     var progressText = progressTextEl ? progressTextEl.textContent.trim() : 'Progreso: 0%';
                     var isCompleted = progressText.includes('Completado') || progressWidth === '100%';
-                    
+
                     var button = card.querySelector('.masterstudy-button');
                     var buttonHref = button ? button.href : titleLink;
                     var resolvedButtonHref = buildCourseActionUrl(buttonHref, courseId);
-                    
+
                      // 🔥 OBTENER CATEGORÍA
                     var categoryData = getCourseCategory(card);
                     var category = categoryData.name;
                     var categoryLink = categoryData.link;
-                    
+
                     var startDate = new Date().toLocaleDateString('es-ES');
                     var dateEl = card.querySelector('.masterstudy-course-card__start-time');
                     if (dateEl) {
@@ -6617,7 +6737,7 @@ class FairPlay_LMS_Plugin {
                             startDate = dateText;
                         }
                     }
-                    
+
                     var newHTML = `
                         <div class="masterstudy-course-card" data-fplms-cid="${courseId}">
                             <div class="masterstudy-course-card__wrapper">
@@ -6662,10 +6782,10 @@ class FairPlay_LMS_Plugin {
                             </div>
                         </div>
                     `;
-                    
+
                     card.outerHTML = newHTML;
                 });
-                
+
                 console.log('[FPLMS] ✅ ' + legacyCards.length + ' tarjetas normalizadas');
                 normalized = true;
                 if (intervalId) {
@@ -6673,15 +6793,15 @@ class FairPlay_LMS_Plugin {
                     intervalId = null;
                 }
             }
-            
+
             // Iniciar el monitoreo
             function startMonitoring() {
                 // Ejecutar inmediatamente
                 setTimeout(normalizeLegacyCards, 500);
-                
+
                 // Ejecutar cada segundo
                 intervalId = setInterval(normalizeLegacyCards, 1000);
-                
+
                 // También escuchar cambios en el DOM
                 var observer = new MutationObserver(function() {
                     if (!normalized) {
@@ -6698,14 +6818,14 @@ class FairPlay_LMS_Plugin {
                         }
                     }
                 });
-                
+
                 observer.observe(document.body, {
                     childList: true,
                     subtree: true,
                     attributes: true,
                     attributeFilter: ['style', 'class']
                 });
-                
+
                 // Desconectar después de 30 segundos
                 setTimeout(function() {
                     observer.disconnect();
@@ -6715,7 +6835,7 @@ class FairPlay_LMS_Plugin {
                     }
                 }, 30000);
             }
-            
+
             // Iniciar cuando el DOM esté listo
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', startMonitoring);
@@ -6724,7 +6844,7 @@ class FairPlay_LMS_Plugin {
             }
         })();
         </script>
-    
+
 
         <?php
     }
@@ -6810,7 +6930,7 @@ class FairPlay_LMS_Plugin {
         })();
         </script>
         <?php
-        
+
     }
 
     /**
@@ -7134,7 +7254,7 @@ class FairPlay_LMS_Plugin {
         </script>
         <?php
     }
-  
+
     /**
      * Obtener progreso de un curso para un usuario
      */
@@ -7147,7 +7267,7 @@ class FairPlay_LMS_Plugin {
         ) );
         return $progress ? floatval( $progress ) : 0;
     }
-  
+
     /**
      * OVERRIDE COMPLETO DEL ENDPOINT DE CURSOS
      * Esto bypassea React y devuelve directamente los cursos desde FairPlay
@@ -7157,24 +7277,24 @@ class FairPlay_LMS_Plugin {
         // Verificar acción
         $action = $_REQUEST['action'] ?? '';
         $actions = ['stm_lms_get_user_courses', 'stm_lms_user_courses', 'stm_lms_student_courses', 'stm_lms_enrolled_courses', 'stm_lms_account_courses'];
-        
+
         if ( ! in_array( $action, $actions ) ) {
             return;
         }
-        
+
         // Remover cualquier otro handler para esta acción
         remove_all_actions( 'wp_ajax_' . $action );
         remove_all_actions( 'wp_ajax_nopriv_' . $action );
-        
+
         $user_id = get_current_user_id();
         if ( ! $user_id ) {
             wp_send_json_error( 'Usuario no autenticado', 401 );
             return;
         }
-        
+
         // Obtener cursos visibles desde el servicio de visibilidad
         $visible_courses = $this->visibility->get_visible_courses_for_user( $user_id );
-        
+
         if ( empty( $visible_courses ) ) {
             wp_send_json_success([
                 'courses' => [],
@@ -7186,7 +7306,7 @@ class FairPlay_LMS_Plugin {
             ]);
             return;
         }
-        
+
         // Generar HTML para cada curso
         $courses_html = [];
         foreach ( $visible_courses as $course_id ) {
@@ -7194,13 +7314,13 @@ class FairPlay_LMS_Plugin {
             if ( ! $course || $course->post_status !== 'publish' ) {
                 continue;
             }
-            
+
             $progress = $this->get_course_progress( $user_id, $course_id );
             $completed = ( $progress >= 100 );
             // 🔥 OBTENER LA CATEGORÍA DESDE LA BASE DE DATOS
                 $category = 'Fair Play';
                 $category_link = '#';
-                
+
                 $terms = wp_get_post_terms( $course_id, 'stm_lms_course_taxonomy' );
                 if ( ! empty( $terms ) && ! is_wp_error( $terms ) ) {
                     $category = $terms[0]->name;
@@ -7209,11 +7329,11 @@ class FairPlay_LMS_Plugin {
                         $category_link = '#';
                     }
                 }
-                
+
                 // 🔥 OBTENER LECCIONES Y HORAS
                 $lessons_count = 1;
                 $hours_count = 1;
-                
+
                 // Intentar obtener el número de lecciones del curso
                 $curriculum = get_post_meta( $course_id, 'curriculum', true );
                 if ( ! empty( $curriculum ) && is_array( $curriculum ) ) {
@@ -7221,10 +7341,10 @@ class FairPlay_LMS_Plugin {
                     $lessons_count = count( $lesson_ids ) > 0 ? count( $lesson_ids ) : 1;
                     $hours_count = round( $lessons_count * 0.5, 1 );
                 }
-                
+
                 // 🔥 OBTENER FECHA DE INICIO
                 $start_date = get_the_date( 'd/m/Y', $course_id );
-                
+
                 // 🔥 DETERMINAR TEXTO DEL BOTÓN
                 $button_text = $completed ? 'Completado' : 'Continuar';
                 $button_link = get_permalink( $course_id );
@@ -7233,16 +7353,16 @@ class FairPlay_LMS_Plugin {
                 } else {
                     $button_link = get_permalink( $course_id );
                 }
-                
+
                 // 🔥 DETERMINAR TEXTO DE FECHA
                 $start_time_text = $completed ? 'Completado' : 'Iniciado ' . $start_date;
-                
+
                 // 🔥 OBTENER IMAGEN
                 $image_url = get_the_post_thumbnail_url( $course_id, 'medium' );
-                $image_html = $image_url 
-                    ? '<img src="' . esc_url( $image_url ) . '" class="masterstudy-course-card__image">' 
+                $image_html = $image_url
+                    ? '<img src="' . esc_url( $image_url ) . '" class="masterstudy-course-card__image">'
                     : '<div style="width:100%;padding-top:56.25%;background:#f5f7fa;"></div>';
-            
+
             // Generar HTML de la tarjeta del curso
             ob_start();
             ?>
@@ -7274,7 +7394,7 @@ class FairPlay_LMS_Plugin {
             <?php
             $courses_html[] = ob_get_clean();
         }
-        
+
         // Enviar respuesta exitosa
         wp_send_json_success([
             'courses' => $courses_html,
@@ -7333,7 +7453,7 @@ class FairPlay_LMS_Plugin {
         wp_safe_redirect( $destination );
         exit;
     }
-    
-    
+
+
 }
 
