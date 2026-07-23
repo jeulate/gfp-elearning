@@ -16,6 +16,64 @@ define( 'FPLMS_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'FPLMS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
 /**
+ * Evita que el Gradebook de MasterStudy consulte sus endpoints con course_id vacío.
+ *
+ * El script de Fairplay se registra como dependencia del controlador original para
+ * poder interceptar el evento del selector antes de que MasterStudy inicialice las
+ * peticiones AJAX.
+ */
+function fplms_enqueue_gradebook_empty_course_guard() {
+    if ( ! is_user_logged_in() ) {
+        return;
+    }
+
+    $request_uri  = isset( $_SERVER['REQUEST_URI'] )
+        ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) )
+        : '';
+    $request_path = (string) wp_parse_url( $request_uri, PHP_URL_PATH );
+
+    if ( ! preg_match( '#/user-account/gradebook/?$#', $request_path ) ) {
+        return;
+    }
+
+    $script_handle = 'fplms-gradebook-empty-course';
+    $script_path   = 'assets/js/gradebook-empty-course.js';
+    $script_file   = FPLMS_PLUGIN_DIR . $script_path;
+
+    if ( ! file_exists( $script_file ) ) {
+        return;
+    }
+
+    wp_register_script(
+        $script_handle,
+        FPLMS_PLUGIN_URL . $script_path,
+        [],
+        (string) filemtime( $script_file ),
+        true
+    );
+
+    global $wp_scripts;
+
+    if (
+        $wp_scripts instanceof WP_Scripts &&
+        isset( $wp_scripts->registered['masterstudy-account-gradebook'] )
+    ) {
+        $dependencies = $wp_scripts->registered['masterstudy-account-gradebook']->deps;
+
+        if ( ! in_array( $script_handle, $dependencies, true ) ) {
+            $dependencies[] = $script_handle;
+            $wp_scripts->registered['masterstudy-account-gradebook']->deps = $dependencies;
+        }
+
+        return;
+    }
+
+    // Respaldo para cambios futuros en el registro de scripts de MasterStudy.
+    wp_enqueue_script( $script_handle );
+}
+add_action( 'wp_enqueue_scripts', 'fplms_enqueue_gradebook_empty_course_guard', 999 );
+
+/**
  * Normaliza números con coma decimal en respuestas REST de MasterStudy.
  * Evita errores JS como: data.current.toFixed is not a function
  */
