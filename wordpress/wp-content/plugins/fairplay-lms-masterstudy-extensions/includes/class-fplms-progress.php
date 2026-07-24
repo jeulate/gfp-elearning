@@ -6,6 +6,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 class FairPlay_LMS_Progress_Service {
 
     /**
+     * @var FairPlay_LMS_Course_Visibility_Service|null
+     */
+    private $visibility;
+
+    public function __construct( ?FairPlay_LMS_Course_Visibility_Service $visibility = null ) {
+        $this->visibility = $visibility;
+    }
+
+    /**
      * Devuelve detalle de progreso por usuario.
      */
     public function get_user_progress_detail( int $user_id ): array {
@@ -133,7 +142,7 @@ class FairPlay_LMS_Progress_Service {
         // Forzar limpieza de caché para debugging (eliminar en producción)
         // delete_transient( 'fplms_sdash_v14_' . $user_id );
 
-        $cache_key = 'fplms_sdash_v14_' . $user_id;
+        $cache_key = 'fplms_sdash_v15_' . $user_id;
         $cached    = get_transient( $cache_key );
         if ( false !== $cached ) {
             return $cached;
@@ -180,14 +189,15 @@ class FairPlay_LMS_Progress_Service {
             }
         }
 
-        /**
-         * NOTA: no re-filtrar por estructuras aquí.
-         *
-         * Esta fuente ya representa cursos publish en los que el usuario
-         * está matriculado (tabla stm_lms_user_courses). Reaplicar filtros de
-         * visibilidad en esta capa puede descontar cursos válidos y desalinear
-         * el total del panel respecto a las matrículas reales.
-         */
+        // El dashboard debe reflejar únicamente las matrículas compatibles con
+        // la estructura actual. Los registros históricos no se eliminan.
+        if ( $this->visibility ) {
+            $visible_enrolled_ids = array_flip(
+                $this->visibility->get_visible_enrolled_course_ids_for_user( $user_id )
+            );
+
+            $enrolled_ids = array_intersect_key( $enrolled_ids, $visible_enrolled_ids );
+        }
 
         /**
          * FILTRO 3: Eliminar cursos huérfanos
@@ -208,9 +218,10 @@ class FairPlay_LMS_Progress_Service {
         // Recalcular enrolled DESPUÉS de todos los filtros.
         $stats['enrolled'] = count( $enrolled_ids );
 
+        $completed_ids = [];
+
         if ( $stats['enrolled'] > 0 ) {
             $total_progress = 0.0;
-            $completed_ids  = [];
 
             foreach ( $enrolled_ids as $cid => $data ) {
                 $progress = (float) ( $data['progress'] ?? 0 );
@@ -326,26 +337,33 @@ class FairPlay_LMS_Progress_Service {
             }
         }
 
-        // Certificados - CORREGIDO
+        // Certificados de cursos actualmente visibles y completados.
         // Los certificados de MasterStudy se almacenan como metadatos de usuario
         // con la clave 'stm_lms_certificate_code_XXX' donde XXX es el ID del curso
-         $cert_count = (int) $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT COUNT(DISTINCT uc.course_id)
-                FROM {$wpdb->prefix}stm_lms_user_courses uc
-                INNER JOIN {$wpdb->posts} p
-                    ON p.ID = uc.course_id
-                AND p.post_type = 'stm-courses'
-                AND p.post_status = 'publish'
-                INNER JOIN {$wpdb->usermeta} um
-                    ON um.user_id = uc.user_id
-                AND um.meta_key = CONCAT('stm_lms_certificate_code_', uc.course_id)
-                AND um.meta_value != ''
-                WHERE uc.user_id = %d
-                AND uc.progress_percent >= 100",
-                $user_id
-            )
-        );
+        $cert_count = 0;
+
+        if ( ! empty( $completed_ids ) ) {
+            $completed_ids_sql = implode( ',', array_map( 'intval', $completed_ids ) );
+
+            $cert_count = (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT COUNT(DISTINCT uc.course_id)
+                    FROM {$wpdb->prefix}stm_lms_user_courses uc
+                    INNER JOIN {$wpdb->posts} p
+                        ON p.ID = uc.course_id
+                    AND p.post_type = 'stm-courses'
+                    AND p.post_status = 'publish'
+                    INNER JOIN {$wpdb->usermeta} um
+                        ON um.user_id = uc.user_id
+                    AND um.meta_key = CONCAT('stm_lms_certificate_code_', uc.course_id)
+                    AND um.meta_value != ''
+                    WHERE uc.user_id = %d
+                    AND uc.course_id IN ({$completed_ids_sql})
+                    AND uc.progress_percent >= 100",
+                    $user_id
+                )
+            );
+        }
 
         $stats['certificates'] = $cert_count;
 

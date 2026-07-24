@@ -103,10 +103,10 @@ class FairPlay_LMS_Plugin {
     public function __construct() {
 
         $this->structures     = new FairPlay_LMS_Structures_Controller();
-        $this->progress       = new FairPlay_LMS_Progress_Service();
+        $this->visibility     = new FairPlay_LMS_Course_Visibility_Service();
+        $this->progress       = new FairPlay_LMS_Progress_Service( $this->visibility );
         $this->users          = new FairPlay_LMS_Users_Controller( $this->structures, $this->progress );
         $this->courses        = new FairPlay_LMS_Courses_Controller( $this->structures );
-        $this->visibility     = new FairPlay_LMS_Course_Visibility_Service();
         $this->reports        = new FairPlay_LMS_Reports_Controller( $this->users, $this->structures, $this->progress );
         $this->pages          = new FairPlay_LMS_Admin_Pages();
         $this->course_display = new FairPlay_LMS_Course_Display();
@@ -222,22 +222,13 @@ class FairPlay_LMS_Plugin {
         // Auto-enrolar usuario en cursos al crear o actualizar su estructura
         add_action( 'fplms_user_created',          [ $this->courses, 'auto_enroll_user_in_matching_courses' ] );
         add_action( 'fplms_user_structures_saved', [ $this->courses, 'auto_enroll_user_in_matching_courses' ] );
+        add_action( 'fplms_user_structures_saved', [ $this, 'fplms_clear_student_cache' ], 20 );
 
-        // Forzar per_page alto en el AJAX de cursos matriculados ANTES de que MasterStudy
-        // ejecute su query, para que el hook stm_lms_get_user_courses_filter reciba TODOS
-        // los cursos y pueda filtrar por visibilidad correctamente (sin truncar por paginación).
-        /**add_action( 'wp_ajax_stm_lms_get_user_courses',    [ $this, 'intercept_enrolled_courses_per_page' ], 0 );
-        add_action( 'wp_ajax_stm_lms_user_courses',        [ $this, 'intercept_enrolled_courses_per_page' ], 0 );
-        add_action( 'wp_ajax_stm_lms_student_courses',     [ $this, 'intercept_enrolled_courses_per_page' ], 0 );
-        add_action( 'wp_ajax_stm_lms_enrolled_courses',    [ $this, 'intercept_enrolled_courses_per_page' ], 0 );
-        add_action( 'wp_ajax_stm_lms_account_courses',     [ $this, 'intercept_enrolled_courses_per_page' ], 0 );*/
-
-        // OVERRIDE COMPLETO del endpoint de cursos - Prioridad 0 para ejecutarse ANTES que MasterStudy
-        add_action( 'wp_ajax_stm_lms_get_user_courses',    [ $this, 'override_courses_endpoint' ], 0 );
-        add_action( 'wp_ajax_stm_lms_user_courses',        [ $this, 'override_courses_endpoint' ], 0 );
-        add_action( 'wp_ajax_stm_lms_student_courses',     [ $this, 'override_courses_endpoint' ], 0 );
-        add_action( 'wp_ajax_stm_lms_enrolled_courses',    [ $this, 'override_courses_endpoint' ], 0 );
-        add_action( 'wp_ajax_stm_lms_account_courses',     [ $this, 'override_courses_endpoint' ], 0 );
+        // MasterStudy pagina antes de ejecutar stm_lms_get_user_courses_filter.
+        // Solicitamos la colección completa en la página 1 y la repaginamos después
+        // de aplicar la visibilidad estructural, sin reemplazar su endpoint ni HTML.
+        add_filter( 'masterstudy_account_student_courses_per_page', [ $this, 'fplms_enrolled_courses_fetch_limit' ], 999 );
+        add_action( 'wp_ajax_stm_lms_get_user_courses', [ $this, 'intercept_enrolled_courses_per_page' ], 0 );
 
         // Filtrado de cursos matriculados por visibilidad de estructura (respuesta AJAX)
         // Filtro para modificar la consulta de cursos ANTES de que MasterStudy los renderice
@@ -247,11 +238,6 @@ class FairPlay_LMS_Plugin {
         add_filter( 'stm_lms_student_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
         add_filter( 'stm_lms_enrolled_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
         add_filter( 'stm_lms_account_courses_filter', [ $this->visibility, 'filter_user_courses_response' ], 10, 1 );
-        add_filter( 'stm_lms_get_user_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
-        add_filter( 'stm_lms_user_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
-        add_filter( 'stm_lms_student_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
-        add_filter( 'stm_lms_enrolled_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
-        add_filter( 'stm_lms_account_courses_filter', [ $this, 'modify_courses_pagination_response' ], 999, 1 );
         add_filter( 'stm_lms_course_list_query', [ $this, 'filter_course_query' ], 10, 1 );
 
         //Bloqueamos el envio de certificados si el estudiante reprobo el curso, para evitar que se genere un certificado de un curso no aprobado
@@ -1220,7 +1206,7 @@ class FairPlay_LMS_Plugin {
         return $final_grade >= $passing_grade;
     }
 
-    private function fplms_clear_student_cache( int $user_id ): void {
+    public function fplms_clear_student_cache( int $user_id ): void {
         delete_transient( 'fplms_sdash_v14_' . $user_id );
         delete_transient( 'fplms_sdash_v15_' . $user_id );
     }
@@ -2515,36 +2501,36 @@ class FairPlay_LMS_Plugin {
     }
 
     /**
-     * Intercepta el AJAX y fuerza per_page=500, además de modificar la respuesta
+     * Límite interno usado para filtrar antes de reconstruir la paginación visible.
+     *
+     * @param int $per_page Cantidad configurada por MasterStudy.
+     * @return int
+     */
+    public function fplms_enrolled_courses_fetch_limit( $per_page ): int {
+        if ( current_user_can( 'manage_options' ) ) {
+            return max( 1, (int) $per_page );
+        }
+
+        return 500;
+    }
+
+    /**
+     * Conserva la página solicitada y hace que MasterStudy consulte la página 1.
+     * La respuesta se pagina después de filtrar los cursos incompatibles.
      */
     public function intercept_enrolled_courses_per_page(): void {
         if ( current_user_can( 'manage_options' ) ) {
             return;
         }
 
-        // Forzar per_page=500 en la petición entrante
-        foreach ( [ 'per_page', 'posts_per_page', 'limit' ] as $k ) {
-            if ( isset( $_REQUEST[ $k ] ) || true ) {
-                $_REQUEST[ $k ] = 500;
-                $_POST[ $k ]    = 500;
-                $_GET[ $k ]     = 500;
-            }
-        }
+        $requested_page = isset( $_GET['page'] )
+            ? absint( wp_unslash( $_GET['page'] ) )
+            : ( isset( $_GET['offset'] ) ? absint( wp_unslash( $_GET['offset'] ) ) + 1 : 1 );
 
-        // Forzar página 1
-        foreach ( [ 'page', 'paged', 'offset' ] as $k ) {
-            $val = ( 'offset' === $k ) ? 0 : 1;
-            $_REQUEST[ $k ] = $val;
-            $_POST[ $k ]    = $val;
-            $_GET[ $k ]     = $val;
-        }
-
-        // 🔥 NUEVO: Filtrar la consulta de MasterStudy para forzar per_page
-        add_filter( 'stm_lms_get_user_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
-        add_filter( 'stm_lms_user_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
-        add_filter( 'stm_lms_student_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
-        add_filter( 'stm_lms_enrolled_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
-        add_filter( 'stm_lms_account_courses_query_args', [ $this, 'force_query_per_page' ], 999, 1 );
+        $_REQUEST['fplms_requested_page'] = max( 1, $requested_page );
+        $_GET['page']                     = 1;
+        $_REQUEST['page']                 = 1;
+        unset( $_GET['offset'], $_REQUEST['offset'] );
     }
 
     /**
@@ -2563,23 +2549,10 @@ class FairPlay_LMS_Plugin {
     }
 
     /**
-     * Modifica la respuesta para eliminar la paginación
+     * Compatibilidad heredada. La paginación se reconstruye actualmente en
+     * FairPlay_LMS_Course_Visibility_Service::filter_user_courses_response().
      */
     public function modify_courses_pagination_response( $response ) {
-        if ( ! is_array( $response ) ) {
-            return $response;
-        }
-
-        // Si tenemos cursos, forzar total = cantidad de cursos
-        if ( isset( $response['courses'] ) && is_array( $response['courses'] ) ) {
-            $total_courses = count( $response['courses'] );
-            $response['total'] = $total_courses;
-            $response['per_page'] = $total_courses;
-            $response['page'] = 1;
-            $response['total_pages'] = 1;
-            $response['pagination'] = '';
-        }
-
         return $response;
     }
 
@@ -7293,7 +7266,7 @@ class FairPlay_LMS_Plugin {
         }
 
         // Obtener cursos visibles desde el servicio de visibilidad
-        $visible_courses = $this->visibility->get_visible_courses_for_user( $user_id );
+        $visible_courses = $this->visibility->get_visible_enrolled_course_ids_for_user( $user_id );
 
         if ( empty( $visible_courses ) ) {
             wp_send_json_success([

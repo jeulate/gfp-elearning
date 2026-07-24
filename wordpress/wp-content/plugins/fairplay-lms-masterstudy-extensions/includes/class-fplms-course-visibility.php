@@ -85,12 +85,6 @@ class FairPlay_LMS_Course_Visibility_Service {
         return false;
     }
 
-    // Regla de prioridad: si el usuario ya está matriculado en un curso publish,
-    // ese curso debe ser visible aunque no haga match de estructuras.
-    if ( in_array( $course_id, $this->get_user_enrolled_published_course_ids( $user_id ), true ) ) {
-        return true;
-    }
-
     // Si no se pasan estructuras, obtenerlas
     if ( empty( $user_structures ) ) {
         $user_structures = $this->get_user_structures( $user_id );
@@ -381,116 +375,133 @@ class FairPlay_LMS_Course_Visibility_Service {
      * @return array Respuesta con cursos filtrados.
      */
     public function filter_user_courses_response( array $response ): array {
-    // Administrador: ve todo sin restricción
-    if ( current_user_can( 'manage_options' ) ) {
-        return $response;
-    }
-
-    // Intentar encontrar los cursos en diferentes estructuras posibles
-    $courses = null;
-    $courses_key = null;
-    
-    // Formato 1: $response['courses'] (más común)
-    if ( isset( $response['courses'] ) && is_array( $response['courses'] ) ) {
-        $courses = $response['courses'];
-        $courses_key = 'courses';
-    }
-    // Formato 2: $response['data']['courses']
-    elseif ( isset( $response['data']['courses'] ) && is_array( $response['data']['courses'] ) ) {
-        $courses = $response['data']['courses'];
-        $courses_key = 'data.courses';
-    }
-    // Formato 3: $response directo es un array indexado
-    elseif ( is_array( $response ) && ! isset( $response['courses'] ) && ! isset( $response['data'] ) ) {
-        // Verificar si el primer elemento tiene 'course_id'
-        $first = reset($response);
-        if ( is_array( $first ) && ( isset( $first['course_id'] ) || isset( $first['id'] ) ) ) {
-            $courses = $response;
-            $courses_key = 'direct';
+        if ( current_user_can( 'manage_options' ) ) {
+            return $response;
         }
-    }
-    
-    if ( empty( $courses ) ) {
-        return $response;
-    }
-    
-    $user_id = get_current_user_id();
-    
-    // Filtrar cursos
-    $filtered_courses = array_values(
-        array_filter(
-            $courses,
-            function( $course ) use ( $user_id ) {
-                // Extraer course_id de diferentes formatos
-                $course_id = 0;
-                
-                if ( is_array( $course ) ) {
-                    if ( isset( $course['course_id'] ) ) {
-                        $course_id = (int) $course['course_id'];
-                    } elseif ( isset( $course['id'] ) ) {
-                        $course_id = (int) $course['id'];
-                    } elseif ( isset( $course['ID'] ) ) {
-                        $course_id = (int) $course['ID'];
-                    } elseif ( isset( $course['post_id'] ) ) {
-                        $course_id = (int) $course['post_id'];
-                    }
-                } elseif ( is_numeric( $course ) ) {
-                    $course_id = (int) $course;
-                    } elseif ( is_object( $course ) ) {
-                        $course_id = (int) ($course->course_id ?? $course->id ?? $course->ID ?? 0);
-                    }
-                    
-                    if ( $course_id <= 0 ) {
-                        return false;
-                    }
-                    
-                    return $this->can_user_see_course( $user_id, $course_id );
+
+        $user_id = get_current_user_id();
+        if ( $user_id <= 0 ) {
+            return $response;
+        }
+
+        /*
+         * MasterStudy entrega posts (datos) y courses (HTML) en el mismo orden.
+         * posts es la fuente de identidad; los mismos índices se aplican a ambos
+         * arreglos para evitar que una tarjeta quede asociada a otro curso.
+         */
+        if ( isset( $response['posts'] ) && is_array( $response['posts'] ) ) {
+            $visible_indexes = [];
+
+            foreach ( $response['posts'] as $index => $post ) {
+                $course_id = $this->extract_course_id_from_response_item( $post );
+                if ( $course_id > 0 && $this->can_user_see_course( $user_id, $course_id ) ) {
+                    $visible_indexes[] = $index;
+                }
+            }
+
+            $visible_posts = [];
+            $visible_cards = [];
+
+            foreach ( $visible_indexes as $index ) {
+                $visible_posts[] = $response['posts'][ $index ];
+                if ( isset( $response['courses'][ $index ] ) ) {
+                    $visible_cards[] = $response['courses'][ $index ];
+                }
+            }
+
+            $per_page     = max( 1, (int) apply_filters( 'fplms_enrolled_courses_per_page', 6 ) );
+            $current_page = isset( $_REQUEST['fplms_requested_page'] )
+                ? absint( wp_unslash( $_REQUEST['fplms_requested_page'] ) )
+                : ( isset( $response['current_page'] ) ? absint( $response['current_page'] ) : 1 );
+            $current_page = max( 1, $current_page );
+            $total_posts  = count( $visible_posts );
+            $total_pages  = $total_posts > 0 ? (int) ceil( $total_posts / $per_page ) : 0;
+
+            if ( $total_pages > 0 ) {
+                $current_page = min( $current_page, $total_pages );
+            } else {
+                $current_page = 1;
+            }
+
+            $offset              = ( $current_page - 1 ) * $per_page;
+            $response['posts']   = array_slice( $visible_posts, $offset, $per_page );
+            $response['courses'] = array_slice( $visible_cards, $offset, $per_page );
+            $response['total_posts']  = $total_posts;
+            $response['total_pages']  = $total_pages;
+            $response['pages']        = $total_pages;
+            $response['current_page'] = $current_page;
+            $response['total']        = $total_posts;
+            $response['pagination']   = '';
+
+            return $response;
+        }
+
+        // Compatibilidad con respuestas antiguas que solo contienen datos.
+        $courses_key = null;
+        $courses     = [];
+
+        if ( isset( $response['data']['courses'] ) && is_array( $response['data']['courses'] ) ) {
+            $courses_key = 'data.courses';
+            $courses     = $response['data']['courses'];
+        } elseif ( isset( $response['courses'] ) && is_array( $response['courses'] ) ) {
+            $first = reset( $response['courses'] );
+            if ( $this->extract_course_id_from_response_item( $first ) > 0 ) {
+                $courses_key = 'courses';
+                $courses     = $response['courses'];
+            }
+        }
+
+        if ( null === $courses_key ) {
+            return $response;
+        }
+
+        $filtered_courses = array_values(
+            array_filter(
+                $courses,
+                function ( $course ) use ( $user_id ): bool {
+                    $course_id = $this->extract_course_id_from_response_item( $course );
+                    return $course_id > 0 && $this->can_user_see_course( $user_id, $course_id );
                 }
             )
         );
 
-        $filtered_count = count( $filtered_courses );
-        
-        // Actualizar la respuesta con los cursos filtrados
-        if ( $courses_key === 'courses' ) {
-            $response['courses'] = $filtered_courses;
-        } elseif ( $courses_key === 'data.courses' ) {
+        if ( 'data.courses' === $courses_key ) {
             $response['data']['courses'] = $filtered_courses;
-        } elseif ( $courses_key === 'direct' ) {
-            $response = $filtered_courses;
+        } else {
+            $response['courses'] = $filtered_courses;
         }
-        
-        // Recalcular totales
-        $per_page = isset( $_REQUEST['per_page'] ) ? (int) $_REQUEST['per_page'] : 10;
-        if ( $per_page <= 0 ) $per_page = 10;
-        
-        $total_pages = max( 1, (int) ceil( $filtered_count / $per_page ) );
-        $current_page = isset( $_REQUEST['page'] ) ? (int) $_REQUEST['page'] : 1;
-        if ( $current_page < 1 ) $current_page = 1;
-        
-        // Actualizar totales en la respuesta
-        if ( isset( $response['total_posts'] ) ) {
-            $response['total_posts'] = $filtered_count;
-        }
-        if ( isset( $response['total_pages'] ) ) {
-            $response['total_pages'] = $total_pages;
-        }
-        if ( isset( $response['data']['total_posts'] ) ) {
-            $response['data']['total_posts'] = $filtered_count;
-        }
-        if ( isset( $response['data']['total_pages'] ) ) {
-            $response['data']['total_pages'] = $total_pages;
-        }
-        
-        // Actualizar paginación si existe
-        if ( isset( $response['pagination'] ) && is_array( $response['pagination'] ) ) {
-            $response['pagination']['total_pages'] = $total_pages;
-            $response['pagination']['total_posts'] = $filtered_count;
-            $response['pagination']['per_page'] = $per_page;
-            $response['pagination']['current_page'] = $current_page;
-        }
-        
+
         return $response;
+    }
+
+    /**
+     * Extrae el ID de curso de los formatos conocidos de MasterStudy.
+     *
+     * @param mixed $item Elemento de respuesta.
+     * @return int
+     */
+    private function extract_course_id_from_response_item( $item ): int {
+        if ( is_numeric( $item ) ) {
+            return (int) $item;
+        }
+
+        if ( is_array( $item ) ) {
+            foreach ( [ 'course_id', 'id', 'ID', 'post_id' ] as $key ) {
+                if ( isset( $item[ $key ] ) && is_numeric( $item[ $key ] ) ) {
+                    return (int) $item[ $key ];
+                }
+            }
+        }
+
+        if ( is_object( $item ) ) {
+            foreach ( [ 'course_id', 'id', 'ID', 'post_id' ] as $key ) {
+                if ( isset( $item->{$key} ) && is_numeric( $item->{$key} ) ) {
+                    return (int) $item->{$key};
+                }
+            }
+        }
+
+        return 0;
     }
 
     /**
@@ -531,5 +542,33 @@ class FairPlay_LMS_Course_Visibility_Service {
         }
         
         return $args;
+    }
+
+    /**
+     * Devuelve únicamente los cursos publish en los que el usuario está
+     * matriculado y que además son compatibles con su estructura actual.
+     *
+     * La matrícula histórica permanece intacta en MasterStudy. Este método
+     * controla exclusivamente la visibilidad.
+     *
+     * @param int $user_id ID de usuario.
+     * @return array<int>
+     */
+    public function get_visible_enrolled_course_ids_for_user( int $user_id ): array {
+        if ( $user_id <= 0 ) {
+            return [];
+        }
+
+        $user_structures = $this->get_user_structures( $user_id );
+        $enrolled_ids    = $this->get_user_enrolled_published_course_ids( $user_id );
+
+        return array_values(
+            array_filter(
+                $enrolled_ids,
+                function ( int $course_id ) use ( $user_id, $user_structures ): bool {
+                    return $this->can_user_see_course( $user_id, $course_id, $user_structures );
+                }
+            )
+        );
     }
 }
