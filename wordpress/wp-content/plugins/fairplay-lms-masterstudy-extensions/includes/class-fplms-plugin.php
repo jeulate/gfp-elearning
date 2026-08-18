@@ -16,6 +16,12 @@ class FairPlay_LMS_Plugin {
     private static $pending_quiz_times = [];
 
     /**
+     * Configuración visual de la marca actual.
+     *
+     * @var FairPlay_LMS_Brand
+     */
+    private $brand;
+    /**
      * @var FairPlay_LMS_Structures_Controller
      */
     private $structures;
@@ -102,6 +108,17 @@ class FairPlay_LMS_Plugin {
 
     public function __construct() {
 
+        $this->brand          = new FairPlay_LMS_Brand();
+        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+            error_log(
+                sprintf(
+                    '[FPLMS_BRAND] host=%s brand=%s primary=%s',
+                    (string) wp_parse_url( home_url(), PHP_URL_HOST ),
+                    $this->brand->get_key(),
+                    $this->brand->color( 'primary', 'NOT_DEFINED' )
+                )
+            );
+        }
         $this->structures     = new FairPlay_LMS_Structures_Controller();
         $this->visibility     = new FairPlay_LMS_Course_Visibility_Service();
         $this->progress       = new FairPlay_LMS_Progress_Service( $this->visibility );
