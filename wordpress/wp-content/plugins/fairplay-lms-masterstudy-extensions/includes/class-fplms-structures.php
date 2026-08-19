@@ -814,6 +814,22 @@ class FairPlay_LMS_Structures_Controller {
                 'color'    => '#7c3aed',
             ],
         ];
+        $brand = new FairPlay_LMS_Brand();
+
+        $structure_cancel_bg = $brand->color(
+            'structure_cancel_bg',
+            '#ffe0b2'
+        );
+
+        $structure_cancel_hover = $brand->color(
+            'structure_cancel_hover',
+            '#ffd54f'
+        );
+
+        $warning_color = $brand->color(
+            'primary_warning',
+            '#FF9800'
+        );
 
         ?>
         <style>
@@ -2353,12 +2369,12 @@ class FairPlay_LMS_Structures_Controller {
             }
 
             .fplms-btn-edit.fplms-cancel-edit {
-                background: #ffe0b2;
+                background: <?php echo esc_attr( $structure_cancel_bg ); ?>;
                 color: #e65100;
             }
 
             .fplms-btn-edit.fplms-cancel-edit:hover {
-                background: #ffd54f;
+                background: <?php echo esc_attr( $structure_cancel_hover ); ?>;
             }
 
             .fplms-btn-delete {
@@ -2850,8 +2866,8 @@ class FairPlay_LMS_Structures_Controller {
                 const confirmBtn = document.getElementById('fplms-toggle-confirm-btn');
                 if (isActive) {
                     // Desactivar = naranja/amarillo
-                    confirmBtn.style.backgroundColor = '#ff9800';
-                    confirmBtn.style.borderColor = '#ff9800';
+                    confirmBtn.style.backgroundColor = '<?php echo esc_js( $warning_color ); ?>';
+                    confirmBtn.style.borderColor = '<?php echo esc_js( $warning_color ); ?>';
                 } else {
                     // Activar = verde
                     confirmBtn.style.backgroundColor = '#4caf50';
@@ -2941,7 +2957,7 @@ class FairPlay_LMS_Structures_Controller {
                     modalTitle.innerHTML = FPLMS_SVG_XCIRCLE + ' Desactivar Elementos';
                     actionLabel = 'Desactivar ' + termIds.length + ' elemento' + (termIds.length > 1 ? 's' : '');
                     questionText = '¿Estás seguro de que deseas DESACTIVAR estos elementos?';
-                    btnColor = '#ff9800';
+                    btnColor = '<?php echo esc_js( $warning_color ); ?>';
                     deleteWarning.style.display = 'none';
                 } else if (action === 'activate') {
                     modalTitle.innerHTML = FPLMS_SVG_CHKCIRCLE + ' Activar Elementos';
