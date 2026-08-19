@@ -12,13 +12,14 @@ return [
         ],
 
         'colors' => [
-            'primary'         => '#ffa800',
-            'primary_alt'     => '#f6b23a',
-            'primary_warning' => '#FF9800',
-            'primary_soft'    => '#fff8ee',
-            'primary_light'   => '#fffaf0',
-            'primary_hover'   => '#e08800',
-            'primary_dark'    => '#cc8600',
+            'primary'               => '#ffa800',
+            'primary_alt'           => '#f6b23a',
+            'primary_warning'       => '#FF9800',
+            'primary_warning_hover' => '#F57C00',
+            'primary_soft'          => '#fff8ee',
+            'primary_light'         => '#fffaf0',
+            'primary_hover'         => '#e08800',
+            'primary_dark'          => '#cc8600',
         ],
     ],
 
@@ -29,13 +30,14 @@ return [
         ],
 
         'colors' => [
-            'primary'         => '#6EC1E4',
-            'primary_alt'     => '#5E97B0',
-            'primary_warning' => '#6EC1E4',
-            'primary_soft'    => '#e4f1fa',
-            'primary_light'   => '#e4f1fa',
-            'primary_hover'   => '#3b667f',
-            'primary_dark'    => '#18648c',
+            'primary'               => '#6EC1E4',
+            'primary_alt'           => '#5E97B0',
+            'primary_warning'       => '#6EC1E4',
+            'primary_warning_hover' => '#6EC1E4',
+            'primary_soft'          => '#e4f1fa',
+            'primary_light'         => '#e4f1fa',
+            'primary_hover'         => '#3b667f',
+            'primary_dark'          => '#18648c',
         ],
     ],
 ];
