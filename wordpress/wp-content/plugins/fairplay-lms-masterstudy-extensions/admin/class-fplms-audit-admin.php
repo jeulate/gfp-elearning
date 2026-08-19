@@ -692,9 +692,17 @@ class FairPlay_LMS_Audit_Admin {
 						<span>Eliminar Usuario Permanentemente</span>
 					</h3>
 				</div>
+				<?php
+				$brand = new FairPlay_LMS_Brand();
+
+				$warning_color = $brand->color(
+					'primary_warning',
+					'#FF9800'
+				);
+				?>
 				<div class="fplms-audit-modal-body">
 					<p style="display: flex; align-items: flex-start; gap: 8px;">
-						<svg viewBox="0 0 24 24" style="width: 20px; height: 20px; fill: #FF9800; flex-shrink: 0; margin-top: 2px;">
+						<svg viewBox="0 0 24 24" style="width: 20px; height: 20px; fill: <?php echo esc_attr( $warning_color ); ?>; flex-shrink: 0; margin-top: 2px;">
 							<path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
 						</svg>
 						<span><strong>ADVERTENCIA:</strong> Esta acción es <strong style="color: #F44336;">permanente</strong> y no se puede deshacer.</span>
