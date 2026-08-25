@@ -248,7 +248,7 @@ class FairPlay_LMS_Progress_Service {
 
                 $duration_rows = $wpdb->get_results(
                     "
-                    SELECT 
+                    SELECT
                         cs.course_id,
                         cm.post_id,
                         cm.post_type,
@@ -314,7 +314,7 @@ class FairPlay_LMS_Progress_Service {
             $filtered_cids = array_keys( $enrolled_ids );
             if ( ! empty( $filtered_cids ) ) {
                 $all_cids_safe = implode( ',', array_map( 'intval', $filtered_cids ) );
-                
+
                 $expiring_ids = array_map( 'intval', (array) $wpdb->get_col(
                     "SELECT DISTINCT post_id FROM {$wpdb->postmeta}
                      WHERE post_id IN ($all_cids_safe)
@@ -372,7 +372,7 @@ class FairPlay_LMS_Progress_Service {
             $filtered_cids = array_keys( $enrolled_ids );
             if ( ! empty( $filtered_cids ) ) {
                 $cids_safe = implode( ',', array_map( 'intval', $filtered_cids ) );
-                
+
                 $cal_dur_rows = (array) $wpdb->get_results(
                     "SELECT post_id, meta_value FROM {$wpdb->postmeta}
                      WHERE post_id IN ($cids_safe) AND meta_key = 'end_time'
@@ -388,20 +388,23 @@ class FairPlay_LMS_Progress_Service {
                     if ( ! $post ) {
                         continue;
                     }
-                    
-                    $start_iso   = get_the_date( 'Y-m-d', $cid );
+
+                    $start_iso = $this->get_course_calendar_start_date( $cid );
                     $prog_data   = $enrolled_ids[ $cid ];
                     $progress    = (float) ( $prog_data['progress'] ?? 0 );
                     $status      = strtolower( (string) ( $prog_data['status'] ?? '' ) );
                     $is_complete = ( 'completed' === $status || $progress >= 100.0 );
-                    
+
                     $stats['courses_list'][] = [
                         'id'         => $cid,
                         'title'      => get_the_title( $cid ),
                         'view_url'   => (string) get_permalink( $cid ),
                         'date_start' => $start_iso,
-                        'date_end'   => isset( $cal_dur_map[ $cid ] )
-                            ? wp_date( 'Y-m-d', strtotime( $start_iso ) + $cal_dur_map[ $cid ] * DAY_IN_SECONDS )
+                        'date_end' => isset( $cal_dur_map[ $cid ] )
+                            ? $this->get_course_calendar_end_date(
+                                $start_iso,
+                                (int) $cal_dur_map[ $cid ]
+                            )
                             : null,
                         'progress'   => (int) round( $progress ),
                         'completed'  => $is_complete,
@@ -506,7 +509,7 @@ class FairPlay_LMS_Progress_Service {
                     ...$struct_meta_keys
                 )
             );
-            
+
             $struct_by_course = [];
             foreach ( $struct_rows as $sr ) {
                 $cid_s   = (int) $sr->post_id;
@@ -563,9 +566,12 @@ class FairPlay_LMS_Progress_Service {
                     'fplms_job_role'
                 );
 
-                $start_iso = get_the_date( 'Y-m-d', $cid );
-                $end_iso   = isset( $duration_map[ $cid ] )
-                    ? wp_date( 'Y-m-d', strtotime( $start_iso ) + $duration_map[ $cid ] * DAY_IN_SECONDS )
+                $start_iso = $this->get_course_calendar_start_date( $cid );
+                $end_iso = isset( $duration_map[ $cid ] )
+                    ? $this->get_course_calendar_end_date(
+                        $start_iso,
+                        (int) $duration_map[ $cid ]
+                    )
                     : null;
 
                 $stats['courses_list'][] = [
@@ -615,5 +621,80 @@ class FairPlay_LMS_Progress_Service {
             }
         }
         return array_unique( $ids );
+    }
+    /**
+     * Obtiene la fecha real desde la que un curso debe aparecer
+     * disponible en el calendario.
+     *
+     * Si existe una fecha Coming Soon válida, se conserva como
+     * fecha histórica de disponibilidad aunque MasterStudy haya
+     * desactivado automáticamente coming_soon_status.
+     *
+     * Si no existe una fecha válida, se utiliza la fecha
+     * de publicación del curso.
+     */
+    private function get_course_calendar_start_date( int $course_id ): string {
+        $post = get_post( $course_id );
+
+        if ( ! $post ) {
+            return '';
+        }
+
+        $post_start = get_the_date( 'Y-m-d', $course_id );
+
+        $coming_soon_raw = get_post_meta(
+            $course_id,
+            'coming_soon_date',
+            true
+        );
+
+        if (
+            empty( $coming_soon_raw ) ||
+            ! is_numeric( $coming_soon_raw )
+        ) {
+            return $post_start;
+        }
+
+        $coming_soon_timestamp = (int) floor(
+            (float) $coming_soon_raw / 1000
+        );
+
+        if ( $coming_soon_timestamp <= 0 ) {
+            return $post_start;
+        }
+
+        return gmdate(
+            'Y-m-d',
+            $coming_soon_timestamp
+        );
+    }
+
+    /**
+     * Calcula la fecha final de vigencia sin aplicar conversiones
+     * de zona horaria.
+     *
+     * Las fechas del calendario son fechas civiles (Y-m-d),
+     * no instantes UTC.
+     */
+    private function get_course_calendar_end_date(
+        string $start_date,
+        int $duration_days
+    ): ?string {
+        if ( empty( $start_date ) || $duration_days <= 0 ) {
+            return null;
+        }
+
+        try {
+            $date = new DateTimeImmutable(
+                $start_date,
+                new DateTimeZone( 'UTC' )
+            );
+
+            return $date
+                ->modify( '+' . ( $duration_days - 1 ) . ' days' )
+                ->format( 'Y-m-d' );
+        } catch ( Exception $e ) {
+            return null;
+        }
     }
 }

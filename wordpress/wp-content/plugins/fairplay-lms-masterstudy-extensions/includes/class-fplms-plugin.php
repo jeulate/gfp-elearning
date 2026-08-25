@@ -457,7 +457,58 @@ class FairPlay_LMS_Plugin {
         //interceptar correos de certificados para evitar que se envien a estudiantes que reprobaron el curso
         add_action('masterstudy_plugin_student_course_completion', 'mastertudy_plugin_send_certificate_email', 10, 3);
         add_action('wp_loaded', [ $this, 'fplms_disable_certificate_email_for_failed_courses' ], 999);
+        add_action(
+            'wp_footer',
+            [ $this, 'inject_completed_course_button_fix' ]
+        );
+        add_filter(
+            'wp_mail',
+            [ $this, 'filter_enterprise_training_recipient' ],
+            20
+        );
 
+    }
+
+    /**
+     * Redirige únicamente las consultas del modal
+     * "¿Tienes alguna pregunta?" al correo de capacitación
+     * correspondiente a la marca actual.
+     *
+     * No afecta otros correos de WordPress o MasterStudy.
+     *
+     * @param array $args Argumentos enviados a wp_mail().
+     * @return array
+     */
+    public function filter_enterprise_training_recipient( array $args ): array {
+        if ( ! wp_doing_ajax() ) {
+            return $args;
+        }
+
+        $action = isset( $_REQUEST['action'] )
+            ? sanitize_key( wp_unslash( $_REQUEST['action'] ) )
+            : '';
+
+        if ( 'stm_lms_enterprise' !== $action ) {
+            return $args;
+        }
+
+        $brand_key = $this->brand->get_key();
+
+        $recipient_map = [
+            'boostacademy' => 'training@boostacademy.com.bo',
+            'matchup'      => 'training@matchup.com.bo',
+        ];
+
+        if (
+            ! isset( $recipient_map[ $brand_key ] ) ||
+            ! is_email( $recipient_map[ $brand_key ] )
+        ) {
+            return $args;
+        }
+
+        $args['to'] = $recipient_map[ $brand_key ];
+
+        return $args;
     }
 
     /**
@@ -2942,12 +2993,14 @@ class FairPlay_LMS_Plugin {
         $ajax_url      = admin_url( 'admin-ajax.php' );
         $nonce         = wp_create_nonce( 'fplms_dashboard_stats' );
         $struct_nonce  = wp_create_nonce( 'fplms_frontend_structures' );
+        $hide_student_certificates = 'matchup' === $this->brand->get_key();
         ?>
         <script id="fplms-dashboard-stats-script">
         (function () {
             'use strict';
 
             var AJAX_URL      = <?php echo wp_json_encode( $ajax_url ); ?>;
+            var HIDE_STUDENT_CERTIFICATES =  <?php echo $hide_student_certificates ? 'true' : 'false'; ?>;
             var NONCE         = <?php echo wp_json_encode( $nonce ); ?>;
             var STRUCT_NONCE  = <?php echo wp_json_encode( $struct_nonce ); ?>;
             var fplmsUserRoles = <?php echo wp_json_encode( wp_get_current_user()->roles ); ?>;
@@ -5374,6 +5427,24 @@ class FairPlay_LMS_Plugin {
 
                     if ( ! menu ) return;
 
+                    if ( HIDE_STUDENT_CERTIFICATES ) {
+                            var gradesLink = menu.querySelector(
+                                'a[href*="/my-grades/"]'
+                            );
+
+                            var certificatesLink = menu.querySelector(
+                                'a[href*="/my-certificates/"]'
+                            );
+
+                            if ( gradesLink ) {
+                                gradesLink.style.display = 'none';
+                            }
+
+                            if ( certificatesLink ) {
+                                certificatesLink.style.display = 'none';
+                            }
+                        }
+
                     // Insertar dentro de la sección Progreso.
                     var anchor = menu.querySelector(
                         'a[href*="/my-grades/"]'
@@ -5585,12 +5656,37 @@ class FairPlay_LMS_Plugin {
                 } );
 
                 var avg  = (data.avg_progress || 0) + '%';
-                var hrs  = (data.hours || 0) + ' h';
-                var html = mkStudentBlock( 'courses',      'Cursos Inscritos',   data.enrolled      || 0 )
-                        + mkStudentBlock( 'groups',       'Avance Promedio',    avg                    )
-                        + mkStudentBlock( 'courses',      'Cursos Completados', data.completed     || 0 )
-                        + mkStudentBlock( 'certificates', 'Certificados',       data.certificates  || 0 )
-                        + mkStudentBlock( 'groups',       'Horas de Formación', hrs                    );
+                var hrs  = (data.hours || 0);
+
+                var html = mkStudentBlock(
+                    'courses',
+                    'Cursos Inscritos',
+                    data.enrolled || 0
+                )
+                + mkStudentBlock(
+                    'groups',
+                    'Avance Promedio',
+                    avg
+                )
+                + mkStudentBlock(
+                    'courses',
+                    'Cursos Completados',
+                    data.completed || 0
+                );
+
+                if ( ! HIDE_STUDENT_CERTIFICATES ) {
+                    html += mkStudentBlock(
+                        'certificates',
+                        'Certificados',
+                        data.certificates || 0
+                    );
+                }
+
+                html += mkStudentBlock(
+                    'groups',
+                    'Horas de Formación',
+                    hrs
+                );
                 el.innerHTML = html;
                 studentCalData  = data;
                 renderedStudent = true;
@@ -6836,6 +6932,101 @@ class FairPlay_LMS_Plugin {
         </script>
 
 
+        <?php
+    }
+
+    public function inject_completed_course_button_fix(): void {
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        $request_uri = isset( $_SERVER['REQUEST_URI'] )
+            ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) )
+            : '';
+
+        /*
+        * Ejecutar únicamente en páginas individuales de cursos.
+        *
+        * MatchUp:
+        * /courses/{slug}/
+        *
+        * Boost Academy:
+        * /pagina-de-cursos/{slug}/
+        */
+        $is_course_page =
+            false !== strpos( $request_uri, '/courses/' ) ||
+            false !== strpos( $request_uri, '/pagina-de-cursos/' );
+
+        if ( ! $is_course_page ) {
+            return;
+        }
+
+        ?>
+        <script id="fplms-completed-course-button-fix">
+        (function () {
+            'use strict';
+
+            function fixCompletedCourseButton() {
+                if ( ! document.body ) {
+                    return;
+                }
+
+                var pageText = document.body.innerText || '';
+
+                var isCompleted =
+                    pageText.indexOf('Curso completo') !== -1 &&
+                    pageText.indexOf('100%') !== -1;
+
+                if ( ! isCompleted ) {
+                    return;
+                }
+
+                var titles = document.querySelectorAll(
+                    '.masterstudy-buy-button__title, ' +
+                    '.masterstudy-button .masterstudy-button__title'
+                );
+
+                titles.forEach(function(title) {
+                    var text = (title.textContent || '')
+                        .trim()
+                        .toLowerCase();
+
+                    if (
+                        text === 'continuar' ||
+                        text === 'continue'
+                    ) {
+                        title.textContent = 'Completado';
+                    }
+                });
+            }
+
+            function initCompletedCourseButtonFix() {
+                fixCompletedCourseButton();
+
+                if ( ! document.body ) {
+                    return;
+                }
+
+                var observer = new MutationObserver(function() {
+                    fixCompletedCourseButton();
+                });
+
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            }
+
+            if ( document.readyState === 'loading' ) {
+                document.addEventListener(
+                    'DOMContentLoaded',
+                    initCompletedCourseButtonFix
+                );
+            } else {
+                initCompletedCourseButtonFix();
+            }
+        })();
+        </script>
         <?php
     }
 
