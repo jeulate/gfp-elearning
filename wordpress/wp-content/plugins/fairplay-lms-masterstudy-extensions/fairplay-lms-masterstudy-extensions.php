@@ -135,6 +135,7 @@ add_filter( 'rest_post_dispatch', 'fplms_normalize_masterstudy_rest_numbers', 10
 
 // Includes
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-config.php';
+require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-brand.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-capabilities.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-progress.php';
 require_once FPLMS_PLUGIN_DIR . 'includes/class-fplms-structures.php';

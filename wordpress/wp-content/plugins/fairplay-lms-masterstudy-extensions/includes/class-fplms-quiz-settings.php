@@ -52,6 +52,36 @@ class FairPlay_LMS_Quiz_Settings {
         if ( ! current_user_can( 'manage_options' ) ) {
             return;
         }
+        /*
+         * Acción: eliminar definitivamente un test huérfano.
+         *
+         * Por seguridad, solo se permite eliminar quizzes que:
+         * - existan;
+         * - sean stm-quizzes;
+         * - no estén vinculados a ningún curso activo.
+         */
+        if ( isset( $_POST['fplms_delete_quiz'] ) ) {
+            $quiz_id = absint( $_POST['fplms_delete_quiz'] );
+
+            if (
+                $quiz_id > 0 &&
+                'stm-quizzes' === get_post_type( $quiz_id ) &&
+                $this->is_orphan_quiz( $quiz_id )
+            ) {
+                wp_delete_post( $quiz_id, true );
+
+                wp_safe_redirect(
+                    add_query_arg(
+                        [
+                            'page'          => 'fplms-quiz-settings',
+                            'fplms_deleted' => '1',
+                        ],
+                        admin_url( 'admin.php' )
+                    )
+                );
+                exit;
+            }
+        }
 
         $enabled = isset( $_POST['fplms_quiz_completion_enabled'] ) ? '1' : '';
         update_option( self::OPTION_ENABLED, $enabled );
@@ -106,8 +136,31 @@ class FairPlay_LMS_Quiz_Settings {
                 $d_until = \DateTime::createFromFormat( 'Y-m-d', $av_until );
                 $av_from  = ( $d_from  instanceof \DateTime && $d_from->format( 'Y-m-d' )  === $av_from  ) ? $av_from  : '';
                 $av_until = ( $d_until instanceof \DateTime && $d_until->format( 'Y-m-d' ) === $av_until ) ? $av_until : '';
-                update_post_meta( $qid, FairPlay_LMS_Quiz_Availability::META_FROM,  $av_from );
-                update_post_meta( $qid, FairPlay_LMS_Quiz_Availability::META_UNTIL, $av_until );
+                if ( '' === $av_from ) {
+                    delete_post_meta(
+                        $qid,
+                        FairPlay_LMS_Quiz_Availability::META_FROM
+                    );
+                } else {
+                    update_post_meta(
+                        $qid,
+                        FairPlay_LMS_Quiz_Availability::META_FROM,
+                        $av_from
+                    );
+                }
+
+                if ( '' === $av_until ) {
+                    delete_post_meta(
+                        $qid,
+                        FairPlay_LMS_Quiz_Availability::META_UNTIL
+                    );
+                } else {
+                    update_post_meta(
+                        $qid,
+                        FairPlay_LMS_Quiz_Availability::META_UNTIL,
+                        $av_until
+                    );
+                }
             }
         }
 
@@ -134,6 +187,9 @@ class FairPlay_LMS_Quiz_Settings {
         // Aviso de guardado exitoso (POST→Redirect→GET: el parámetro lo pone handle_save)
         if ( ! empty( $_GET['fplms_saved'] ) ) {
             echo '<div class="notice notice-success is-dismissible"><p>✅ Ajustes de test guardados correctamente.</p></div>';
+        }
+        if ( ! empty( $_GET['fplms_deleted'] ) ) {
+            echo '<div class="notice notice-success is-dismissible"><p>✅ Test eliminado correctamente.</p></div>';
         }
         ?>
         <div class="wrap">
@@ -422,6 +478,50 @@ class FairPlay_LMS_Quiz_Settings {
                             line-height: 1;
                         }
                         .fplms-av-clear-btn:hover { border-color: #ef4444; color: #ef4444; background: #fff5f5; }
+                        .fplms-av-actions {
+                            display: flex;
+                            align-items: center;
+                            gap: 6px;
+                            flex-wrap: wrap;
+                        }
+
+                        .fplms-av-action-btn {
+                            display: inline-flex;
+                            align-items: center;
+                            justify-content: center;
+                            min-height: 30px;
+                            padding: 5px 9px;
+                            border-radius: 6px;
+                            border: 1px solid #d1d5db;
+                            background: #fff;
+                            color: #374151;
+                            font-size: 12px;
+                            line-height: 1;
+                            text-decoration: none;
+                            cursor: pointer;
+                            box-sizing: border-box;
+                        }
+
+                        .fplms-av-action-btn:hover {
+                            background: #f9fafb;
+                            color: #111827;
+                        }
+
+                        .fplms-av-action-edit {
+                            border-color: #c7d2fe;
+                            color: #4338ca;
+                        }
+
+                        .fplms-av-action-delete {
+                            border-color: #fecaca;
+                            color: #dc2626;
+                        }
+
+                        .fplms-av-action-delete:hover {
+                            border-color: #ef4444;
+                            background: #fff5f5;
+                            color: #b91c1c;
+                        }
                         .fplms-av-no-results { text-align:center; color:#9ca3af; padding:20px; font-style:italic; display:none; }
                         .fplms-av-count { font-size: 12px; color: #9ca3af; margin-bottom: 10px; }
                     </style>
@@ -443,7 +543,7 @@ class FairPlay_LMS_Quiz_Settings {
                                     <th>Test</th>
                                     <th style="width:148px;">Disponible desde</th>
                                     <th style="width:148px;">Disponible hasta</th>
-                                    <th style="width:46px;"></th>
+                                    <th style="width:220px;">Acciones</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -461,15 +561,26 @@ class FairPlay_LMS_Quiz_Settings {
                                     $sc = 's-expired'; $sl = '✕ Expirado';
                                 }
                                 $edit_url = get_edit_post_link( $quiz->ID );
+                                $is_orphan = $this->is_orphan_quiz( $quiz->ID );
                             ?>
                             <tr data-name="<?php echo esc_attr( mb_strtolower( $quiz->post_title ) ); ?>">
-                                <td><span class="fplms-av-status <?php echo esc_attr( $sc ); ?>"><?php echo esc_html( $sl ); ?></span></td>
+                                <td>
+                                    <?php if ( $is_orphan ) : ?>
+                                        <span
+                                            class="fplms-av-status"
+                                            style="background:#fef3c7;color:#92400e;"
+                                        >
+                                            ⚠ Sin curso
+                                        </span>
+                                    <?php else : ?>
+                                        <span class="fplms-av-status <?php echo esc_attr( $sc ); ?>">
+                                            <?php echo esc_html( $sl ); ?>
+                                        </span>
+                                    <?php endif; ?>
+                                </td>
                                 <td>
                                     <span class="fplms-av-quiz-name">
                                         <?php echo esc_html( $quiz->post_title ); ?>
-                                        <?php if ( $edit_url ) : ?>
-                                        <a href="<?php echo esc_url( $edit_url ); ?>" target="_blank">Editar</a>
-                                        <?php endif; ?>
                                     </span>
                                 </td>
                                 <td>
@@ -483,7 +594,39 @@ class FairPlay_LMS_Quiz_Settings {
                                            value="<?php echo esc_attr( $q_until ); ?>">
                                 </td>
                                 <td>
-                                    <button type="button" class="fplms-av-clear-btn" title="Borrar fechas">✕</button>
+                                    <div class="fplms-av-actions">
+
+                                        <?php if ( $edit_url ) : ?>
+                                            <a
+                                                href="<?php echo esc_url( $edit_url ); ?>"
+                                                target="_blank"
+                                                class="fplms-av-action-btn fplms-av-action-edit"
+                                            >
+                                                Editar
+                                            </a>
+                                        <?php endif; ?>
+
+                                        <button
+                                            type="button"
+                                            class="fplms-av-action-btn fplms-av-clear-btn"
+                                            title="Vacía las fechas. Pulsa Guardar ajustes para aplicar el cambio."
+                                        >
+                                            Limpiar vigencia
+                                        </button>
+
+                                        <?php if ( $is_orphan ) : ?>
+                                            <button
+                                                type="submit"
+                                                name="fplms_delete_quiz"
+                                                value="<?php echo esc_attr( $quiz->ID ); ?>"
+                                                class="fplms-av-action-btn fplms-av-action-delete"
+                                                onclick="return confirm('¿Eliminar definitivamente este test? Esta acción no se puede deshacer.');"
+                                            >
+                                                Eliminar
+                                            </button>
+                                        <?php endif; ?>
+
+                                    </div>
                                 </td>
                             </tr>
                             <?php endforeach; ?>
@@ -819,5 +962,65 @@ class FairPlay_LMS_Quiz_Settings {
     public static function get_weight_default_mode(): string {
         $opt = (string) get_option( self::OPTION_WEIGHT_DEFAULT, 'auto' );
         return in_array( $opt, [ 'auto', 'manual' ], true ) ? $opt : 'auto';
+    }
+    /**
+     * Determina si un quiz ya no pertenece a ningún curso válido.
+     *
+     * Comprueba la relación moderna:
+     * curriculum_materials -> curriculum_sections -> course.
+     *
+     * También contempla una posible relación legacy mediante course_id.
+     */
+    private function is_orphan_quiz( int $quiz_id ): bool {
+        global $wpdb;
+
+        if (
+            $quiz_id <= 0 ||
+            'stm-quizzes' !== get_post_type( $quiz_id )
+        ) {
+            return false;
+        }
+
+        $materials_table = $wpdb->prefix . 'stm_lms_curriculum_materials';
+        $sections_table  = $wpdb->prefix . 'stm_lms_curriculum_sections';
+
+        $course_id = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "
+                SELECT cs.course_id
+                FROM {$materials_table} cm
+                INNER JOIN {$sections_table} cs
+                    ON cs.id = cm.section_id
+                WHERE cm.post_id = %d
+                AND cm.post_type = 'stm-quizzes'
+                LIMIT 1
+                ",
+                $quiz_id
+            )
+        );
+
+        if (
+            $course_id > 0 &&
+            'stm-courses' === get_post_type( $course_id ) &&
+            'trash' !== get_post_status( $course_id )
+        ) {
+            return false;
+        }
+
+        $legacy_course_id = (int) get_post_meta(
+            $quiz_id,
+            'course_id',
+            true
+        );
+
+        if (
+            $legacy_course_id > 0 &&
+            'stm-courses' === get_post_type( $legacy_course_id ) &&
+            'trash' !== get_post_status( $legacy_course_id )
+        ) {
+            return false;
+        }
+
+        return true;
     }
 }

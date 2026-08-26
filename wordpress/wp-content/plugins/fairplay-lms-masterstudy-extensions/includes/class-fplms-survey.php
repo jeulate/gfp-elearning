@@ -130,6 +130,19 @@ class FairPlay_LMS_Survey {
             $questions = [ '' ];
         }
         ?>
+        <?php
+        $brand = new FairPlay_LMS_Brand();
+
+        $survey_primary = $brand->color(
+            'primary_alt',
+            '#f5a623'
+        );
+
+        $survey_hover = $brand->color(
+            'primary_hover',
+            '#e8941a'
+        );
+        ?>
         <style>
         .fplms-sv-box { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding-top: 4px; }
         .fplms-sv-toggle-row { display:flex; align-items:center; gap:12px; padding:10px 0 14px; border-bottom:1px solid #e5e7eb; margin-bottom:18px; }
@@ -562,14 +575,14 @@ class FairPlay_LMS_Survey {
                 line-height: 1.2; 
             }
             .fplms-sv-opt input:checked + label { 
-                border-color: #f5a623; 
+                border-color: <?php echo esc_attr( $survey_primary ); ?>;
                 background: #fffbeb; 
             }
             .fplms-sv-opt input:checked + label .sv-num { 
-                color: #f5a623; 
+                color: <?php echo esc_attr( $survey_primary ); ?>;
             }
             .fplms-sv-opt label:hover { 
-                border-color: #f5a623; 
+                border-color: <?php echo esc_attr( $survey_primary ); ?>;
                 background: #fffbeb; 
             }
 
@@ -603,7 +616,7 @@ class FairPlay_LMS_Survey {
                 color: #9ca3af; 
             }
             .fplms-sv-comment textarea:focus {
-                outline: none; border-color: #f5a623; 
+                outline: none; border-color: <?php echo esc_attr( $survey_primary ); ?>;
                 box-shadow: 0 0 0 2px rgba(245,166,35,.16);
             }
             .fplms-sv-comment__footer {
@@ -617,12 +630,12 @@ class FairPlay_LMS_Survey {
 
             .fplms-sv-submit {
                 flex: 1; display: inline-flex; align-items: center; justify-content: center;
-                gap: 7px; background: #f5a623;
+                gap: 7px; background: <?php echo esc_attr( $survey_primary ); ?>;
                 color: #ffffff; border: none; border-radius: 8px; padding: 10px 20px;
                 font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .2s;
             }
             .fplms-sv-submit:hover { 
-                background: #e8941a; 
+                background: <?php echo esc_attr( $survey_hover ); ?>;
             }
             .fplms-sv-submit:disabled { opacity: .5; cursor: not-allowed; }
 

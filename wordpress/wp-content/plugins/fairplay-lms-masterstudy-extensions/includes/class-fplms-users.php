@@ -611,7 +611,17 @@ class FairPlay_LMS_Users_Controller {
         
         // Obtener datos de estructura para cascada
         $structure_relations = $this->get_structure_relations();
-        
+        $brand = new FairPlay_LMS_Brand();
+
+        $warning_color = $brand->color(
+            'primary_warning',
+            '#FF9800'
+        );
+
+        $warning_hover = $brand->color(
+            'primary_warning_hover',
+            '#F57C00'
+        );
         ?>
         <style>
             .fplms-users-wrapper {
@@ -1129,10 +1139,10 @@ class FairPlay_LMS_Users_Controller {
                 background: #FFF3E0;
             }
             .fplms-action-icon.deactivate:hover {
-                background: #FF9800;
+                background: <?php echo esc_attr( $warning_color ); ?>;
             }
             .fplms-action-icon.deactivate svg {
-                fill: #FF9800;
+                fill: <?php echo esc_attr( $warning_color ); ?>;
             }
             .fplms-action-icon.deactivate:hover svg {
                 fill: #fff;
@@ -1288,10 +1298,10 @@ class FairPlay_LMS_Users_Controller {
                 background: #D32F2F;
             }
             .fplms-modal-btn-confirm.warning {
-                background: #FF9800;
+                background: <?php echo esc_attr( $warning_color ); ?>;
             }
             .fplms-modal-btn-confirm.warning:hover {
-                background: #F57C00;
+                background: <?php echo esc_attr( $warning_hover ); ?>;
             }
             .fplms-modal-btn-confirm.success {
                 background: #4CAF50;
@@ -2213,7 +2223,7 @@ class FairPlay_LMS_Users_Controller {
                 <div class="fplms-action-modal">
                     <div class="fplms-action-modal-header">
                         <h3>
-                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="fill: #FF9800;">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="fill: <?php echo esc_attr( $warning_color ); ?>;">
                                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8 0-1.85.63-3.55 1.69-4.9L16.9 18.31C15.55 19.37 13.85 20 12 20zm6.31-3.1L7.1 5.69C8.45 4.63 10.15 4 12 4c4.42 0 8 3.58 8 8 0 1.85-.63 3.55-1.69 4.9z"/>
                             </svg>
                             Desactivar Usuario
@@ -2225,7 +2235,7 @@ class FairPlay_LMS_Users_Controller {
                             <strong id="deactivate-user-name"></strong>
                             <span id="deactivate-user-email"></span>
                         </div>
-                        <p style="color: #FF9800;">⚠️ El usuario no podrá iniciar sesión hasta que sea reactivado.</p>
+                        <p style="color: <?php echo esc_attr( $warning_color ); ?>;">⚠️ El usuario no podrá iniciar sesión hasta que sea reactivado.</p>
                     </div>
                     <div class="fplms-action-modal-footer">
                         <button type="button" class="fplms-modal-btn-cancel" onclick="fplmsCloseActionModal()">Cancelar</button>

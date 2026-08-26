@@ -16,6 +16,12 @@ class FairPlay_LMS_Plugin {
     private static $pending_quiz_times = [];
 
     /**
+     * Configuración visual de la marca actual.
+     *
+     * @var FairPlay_LMS_Brand
+     */
+    private $brand;
+    /**
      * @var FairPlay_LMS_Structures_Controller
      */
     private $structures;
@@ -102,6 +108,17 @@ class FairPlay_LMS_Plugin {
 
     public function __construct() {
 
+        $this->brand          = new FairPlay_LMS_Brand();
+        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+            error_log(
+                sprintf(
+                    '[FPLMS_BRAND] host=%s brand=%s primary=%s',
+                    (string) wp_parse_url( home_url(), PHP_URL_HOST ),
+                    $this->brand->get_key(),
+                    $this->brand->color( 'primary', 'NOT_DEFINED' )
+                )
+            );
+        }
         $this->structures     = new FairPlay_LMS_Structures_Controller();
         $this->visibility     = new FairPlay_LMS_Course_Visibility_Service();
         $this->progress       = new FairPlay_LMS_Progress_Service( $this->visibility );
@@ -440,7 +457,58 @@ class FairPlay_LMS_Plugin {
         //interceptar correos de certificados para evitar que se envien a estudiantes que reprobaron el curso
         add_action('masterstudy_plugin_student_course_completion', 'mastertudy_plugin_send_certificate_email', 10, 3);
         add_action('wp_loaded', [ $this, 'fplms_disable_certificate_email_for_failed_courses' ], 999);
+        add_action(
+            'wp_footer',
+            [ $this, 'inject_completed_course_button_fix' ]
+        );
+        add_filter(
+            'wp_mail',
+            [ $this, 'filter_enterprise_training_recipient' ],
+            20
+        );
 
+    }
+
+    /**
+     * Redirige únicamente las consultas del modal
+     * "¿Tienes alguna pregunta?" al correo de capacitación
+     * correspondiente a la marca actual.
+     *
+     * No afecta otros correos de WordPress o MasterStudy.
+     *
+     * @param array $args Argumentos enviados a wp_mail().
+     * @return array
+     */
+    public function filter_enterprise_training_recipient( array $args ): array {
+        if ( ! wp_doing_ajax() ) {
+            return $args;
+        }
+
+        $action = isset( $_REQUEST['action'] )
+            ? sanitize_key( wp_unslash( $_REQUEST['action'] ) )
+            : '';
+
+        if ( 'stm_lms_enterprise' !== $action ) {
+            return $args;
+        }
+
+        $brand_key = $this->brand->get_key();
+
+        $recipient_map = [
+            'boostacademy' => 'training@boostacademy.com.bo',
+            'matchup'      => 'training@matchup.com.bo',
+        ];
+
+        if (
+            ! isset( $recipient_map[ $brand_key ] ) ||
+            ! is_email( $recipient_map[ $brand_key ] )
+        ) {
+            return $args;
+        }
+
+        $args['to'] = $recipient_map[ $brand_key ];
+
+        return $args;
     }
 
     /**
@@ -2925,12 +2993,52 @@ class FairPlay_LMS_Plugin {
         $ajax_url      = admin_url( 'admin-ajax.php' );
         $nonce         = wp_create_nonce( 'fplms_dashboard_stats' );
         $struct_nonce  = wp_create_nonce( 'fplms_frontend_structures' );
+        $hide_student_certificates = 'matchup' === $this->brand->get_key();
+        $brand_primary = $this->brand->color(
+            'primary',
+            '#ffa800'
+        );
+
+        $brand_primary_alt = $this->brand->color(
+            'primary_alt',
+            '#f6b23a'
+        );
+
+        $brand_primary_hover = $this->brand->color(
+            'primary_hover',
+            '#e08800'
+        );
+
+        $brand_primary_soft = $this->brand->color(
+            'primary_soft',
+            '#fff8ee'
+        );
+
+        $brand_primary_light = $this->brand->color(
+            'primary_light',
+            '#fffaf0'
+        );
         ?>
         <script id="fplms-dashboard-stats-script">
         (function () {
             'use strict';
 
             var AJAX_URL      = <?php echo wp_json_encode( $ajax_url ); ?>;
+            var HIDE_STUDENT_CERTIFICATES =  <?php echo $hide_student_certificates ? 'true' : 'false'; ?>;
+            var BRAND_PRIMARY =
+                <?php echo wp_json_encode( $brand_primary ); ?>;
+
+            var BRAND_PRIMARY_ALT =
+                <?php echo wp_json_encode( $brand_primary_alt ); ?>;
+
+            var BRAND_PRIMARY_HOVER =
+                <?php echo wp_json_encode( $brand_primary_hover ); ?>;
+
+            var BRAND_PRIMARY_SOFT =
+                <?php echo wp_json_encode( $brand_primary_soft ); ?>;
+
+            var BRAND_PRIMARY_LIGHT =
+                <?php echo wp_json_encode( $brand_primary_light ); ?>;
             var NONCE         = <?php echo wp_json_encode( $nonce ); ?>;
             var STRUCT_NONCE  = <?php echo wp_json_encode( $struct_nonce ); ?>;
             var fplmsUserRoles = <?php echo wp_json_encode( wp_get_current_user()->roles ); ?>;
@@ -3347,7 +3455,7 @@ class FairPlay_LMS_Plugin {
                     if ( nr ) nr.style.display = ( q && found === 0 && cards.length > 0 ) ? 'block' : 'none';
                 }
                 input.addEventListener( 'input', doSearch );
-                input.addEventListener( 'focus', function () { this.style.borderColor = '#ffa800d9'; } );
+                input.addEventListener( 'focus', function () { this.style.borderColor = BRAND_PRIMARY; } );
                 input.addEventListener( 'blur',  function () { this.style.borderColor = '#e0e0e0'; } );
 
                 // Limpiar filtro de texto cuando Vue re-renderiza (cambio de tab nativo)
@@ -3375,9 +3483,9 @@ class FairPlay_LMS_Plugin {
                 var BTN_BASE   = 'padding:6px 16px;border-radius:20px;border:1.5px solid #ddd;' +
                                  'background:#f5f5f5;color:#555;font-size:13px;cursor:pointer;' +
                                  'white-space:nowrap;transition:all .18s;font-weight:500;line-height:1.5;';
-                var BTN_ACTIVE = 'padding:6px 16px;border-radius:20px;border:1.5px solid #ffa800;' +
-                                 'background:#ffa800;color:#fff;font-size:13px;cursor:pointer;' +
-                                 'white-space:nowrap;transition:all .18s;font-weight:600;line-height:1.5;';
+                var BTN_ACTIVE = 'padding:6px 16px;border-radius:20px;border:1.5px solid ' + BRAND_PRIMARY + ';' +
+                                'background:' + BRAND_PRIMARY + ';color:#fff;font-size:13px;cursor:pointer;' +
+                                'white-space:nowrap;transition:all .18s;font-weight:600;line-height:1.5;';
 
                 function toIdSet( ids ) {
                     var set = {};
@@ -4735,25 +4843,25 @@ class FairPlay_LMS_Plugin {
                         '.fplms-cal-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px;}' +
                         '.fplms-cal-nav{display:flex;align-items:center;gap:8px;}' +
                         '.fplms-cal-nav-btn{width:32px;height:32px;border-radius:7px;border:1.5px solid #ddd;background:#fff;cursor:pointer;font-size:18px;line-height:1;color:#555;display:inline-flex;align-items:center;justify-content:center;transition:all .15s;}' +
-                        '.fplms-cal-nav-btn:hover{border-color:#ffa800;color:#ffa800;}' +
+                        '.fplms-cal-nav-btn:hover{border-color:' + BRAND_PRIMARY + ';color:' + BRAND_PRIMARY + ';}' +
                         '.fplms-cal-title{font-size:15px;font-weight:700;color:#222;min-width:180px;text-align:center;}' +
                         '.fplms-cal-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}' +
                         '.fplms-cal-ctrl-btn{padding:6px 14px;border-radius:20px;border:1.5px solid #ddd;background:#f5f5f5;color:#555;font-size:12px;cursor:pointer;font-weight:500;transition:all .15s;white-space:nowrap;}' +
-                        '.fplms-cal-ctrl-btn.active{border-color:#ffa800;background:#ffa800;color:#fff;}' +
-                        '.fplms-cal-ctrl-btn:hover:not(.active){border-color:#ffa800;color:#ffa800;}' +
+                        '.fplms-cal-ctrl-btn.active{border-color:' + BRAND_PRIMARY + ';background:' + BRAND_PRIMARY + ';color:#fff;}' +
+                        '.fplms-cal-ctrl-btn:hover:not(.active){border-color:' + BRAND_PRIMARY + ';color:' + BRAND_PRIMARY + ';}' +
                         '#fplms-cal-filter-panel{background:#fafafa;border:1.5px solid #e0e0e0;border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:18px;}' +
                         '.fplms-cal-fp-group{flex:1 1 180px;}' +
                         '.fplms-cal-fp-title{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#666;margin-bottom:8px;}' +
                         '.fplms-cal-fp-checks{display:flex;flex-wrap:wrap;gap:5px;}' +
                         '.fplms-cal-fp-check{display:inline-flex;align-items:center;font-size:12px;color:#444;cursor:pointer;padding:4px 10px;border:1.5px solid #ddd;border-radius:14px;background:#fff;transition:all .15s;user-select:none;}' +
-                        '.fplms-cal-fp-check.checked{border-color:#ffa800;background:#fff8ec;color:#b45309;}' +
+                        '.fplms-cal-fp-check.checked{border-color:' + BRAND_PRIMARY + ';background:' + BRAND_PRIMARY_SOFT + ';color:' + BRAND_PRIMARY_HOVER + ';}' +
                         '.fplms-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);border-left:1px solid #e8e8e8;border-top:1px solid #e8e8e8;}' +
                         '.fplms-cal-grid-hdr{background:#f8f8f8;padding:7px 0;text-align:center;font-size:11px;font-weight:700;color:#666;text-transform:uppercase;border-right:1px solid #e8e8e8;border-bottom:1px solid #e8e8e8;}' +
                         '.fplms-cal-day{min-height:88px;padding:5px 5px 3px;border-right:1px solid #e8e8e8;border-bottom:1px solid #e8e8e8;background:#fff;overflow:hidden;}' +
                         '.fplms-cal-day.other-month{background:#d7d7d7;}' +
-                        '.fplms-cal-day.today{background:#fffaf0;}' +
+                        '.fplms-cal-day.today{background:' + BRAND_PRIMARY_LIGHT + ';}' +
                         '.fplms-cal-day-num{font-size:12px;font-weight:600;color:#444;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;margin-bottom:2px;}' +
-                        '.fplms-cal-day.today .fplms-cal-day-num{background:#ffa800;color:#fff;}' +
+                        '.fplms-cal-day.today .fplms-cal-day-num{background:' + BRAND_PRIMARY + ';color:#fff;}' +
                         '.fplms-cal-event{display:block;font-size:10px;color:#fff;border-radius:3px;padding:1px 5px;margin-bottom:2px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
                         '.fplms-cal-event:hover{opacity:.8;}' +
                         '.fplms-cal-grid.week .fplms-cal-day{min-height:130px;}' +
@@ -4763,11 +4871,11 @@ class FairPlay_LMS_Plugin {
                         '.fplms-cal-pop-dot{flex-shrink:0;width:12px;height:12px;border-radius:50%;margin-top:3px;}' +
                         '.fplms-cal-pop-title{margin:0;font-size:14px;font-weight:700;color:#222;line-height:1.3;}' +
                         '.fplms-cal-pop-title a{color:#222;text-decoration:none;}' +
-                        '.fplms-cal-pop-title a:hover{color:#ffa800;text-decoration:underline;}' +
+                        '.fplms-cal-pop-title a:hover{color:' + BRAND_PRIMARY + ';text-decoration:underline;}' +
                         '.fplms-cal-pop-dates{font-size:12px;color:#888;margin:0 0 4px;}' +
                         '.fplms-cal-pop-progress{font-size:12px;font-weight:600;margin:4px 0 2px;}' +
                         '.fplms-cal-pop-progress.done{color:#27ae60;}' +
-                        '.fplms-cal-pop-progress.inprog{color:#ffa800;}' +
+                        '.fplms-cal-pop-progress.inprog{color:' + BRAND_PRIMARY + ';}' +
                         '.fplms-cal-pop-structs{font-size:11px;color:#666;margin:0;}' +
                         '@media print{.masterstudy-account-menu,#fplms-cal-popup,.fplms-cal-controls,#fplms-cal-filter-panel,.fplms-cal-nav-btn{display:none!important;}.fplms-cal-header{justify-content:center;}.fplms-cal-day{min-height:60px;}}' +
                         '@media(max-width:640px){.fplms-cal-day{min-height:58px;}.fplms-cal-event{font-size:9px;}.fplms-cal-title{min-width:120px;font-size:13px;}}' +
@@ -4777,7 +4885,16 @@ class FairPlay_LMS_Plugin {
                     document.head.appendChild( calSt );
                 }
 
-                var PALETTE = [ '#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac' ];
+                var PALETTE = [
+                    BRAND_PRIMARY,
+                    BRAND_PRIMARY_ALT,
+                    BRAND_PRIMARY_HOVER,
+                    '#76b7b2',
+                    '#59a14f',
+                    '#b07aa1',
+                    '#9c755f',
+                    '#bab0ac'
+                ];
                 courses = ( courses || [] ).slice();
                 courses.forEach( function ( c, i ) { c._color = PALETTE[ i % PALETTE.length ]; } );
 
@@ -5357,6 +5474,24 @@ class FairPlay_LMS_Plugin {
 
                     if ( ! menu ) return;
 
+                    if ( HIDE_STUDENT_CERTIFICATES ) {
+                            var gradesLink = menu.querySelector(
+                                'a[href*="/my-grades/"]'
+                            );
+
+                            var certificatesLink = menu.querySelector(
+                                'a[href*="/my-certificates/"]'
+                            );
+
+                            if ( gradesLink ) {
+                                gradesLink.style.display = 'none';
+                            }
+
+                            if ( certificatesLink ) {
+                                certificatesLink.style.display = 'none';
+                            }
+                        }
+
                     // Insertar dentro de la sección Progreso.
                     var anchor = menu.querySelector(
                         'a[href*="/my-grades/"]'
@@ -5568,12 +5703,37 @@ class FairPlay_LMS_Plugin {
                 } );
 
                 var avg  = (data.avg_progress || 0) + '%';
-                var hrs  = (data.hours || 0) + ' h';
-                var html = mkStudentBlock( 'courses',      'Cursos Inscritos',   data.enrolled      || 0 )
-                        + mkStudentBlock( 'groups',       'Avance Promedio',    avg                    )
-                        + mkStudentBlock( 'courses',      'Cursos Completados', data.completed     || 0 )
-                        + mkStudentBlock( 'certificates', 'Certificados',       data.certificates  || 0 )
-                        + mkStudentBlock( 'groups',       'Horas de Formación', hrs                    );
+                var hrs  = (data.hours || 0);
+
+                var html = mkStudentBlock(
+                    'courses',
+                    'Cursos Inscritos',
+                    data.enrolled || 0
+                )
+                + mkStudentBlock(
+                    'groups',
+                    'Avance Promedio',
+                    avg
+                )
+                + mkStudentBlock(
+                    'courses',
+                    'Cursos Completados',
+                    data.completed || 0
+                );
+
+                if ( ! HIDE_STUDENT_CERTIFICATES ) {
+                    html += mkStudentBlock(
+                        'certificates',
+                        'Certificados',
+                        data.certificates || 0
+                    );
+                }
+
+                html += mkStudentBlock(
+                    'groups',
+                    'Horas de Formación',
+                    hrs
+                );
                 el.innerHTML = html;
                 studentCalData  = data;
                 renderedStudent = true;
@@ -6819,6 +6979,101 @@ class FairPlay_LMS_Plugin {
         </script>
 
 
+        <?php
+    }
+
+    public function inject_completed_course_button_fix(): void {
+        if ( is_admin() || ! is_user_logged_in() ) {
+            return;
+        }
+
+        $request_uri = isset( $_SERVER['REQUEST_URI'] )
+            ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) )
+            : '';
+
+        /*
+        * Ejecutar únicamente en páginas individuales de cursos.
+        *
+        * MatchUp:
+        * /courses/{slug}/
+        *
+        * Boost Academy:
+        * /pagina-de-cursos/{slug}/
+        */
+        $is_course_page =
+            false !== strpos( $request_uri, '/courses/' ) ||
+            false !== strpos( $request_uri, '/pagina-de-cursos/' );
+
+        if ( ! $is_course_page ) {
+            return;
+        }
+
+        ?>
+        <script id="fplms-completed-course-button-fix">
+        (function () {
+            'use strict';
+
+            function fixCompletedCourseButton() {
+                if ( ! document.body ) {
+                    return;
+                }
+
+                var pageText = document.body.innerText || '';
+
+                var isCompleted =
+                    pageText.indexOf('Curso completo') !== -1 &&
+                    pageText.indexOf('100%') !== -1;
+
+                if ( ! isCompleted ) {
+                    return;
+                }
+
+                var titles = document.querySelectorAll(
+                    '.masterstudy-buy-button__title, ' +
+                    '.masterstudy-button .masterstudy-button__title'
+                );
+
+                titles.forEach(function(title) {
+                    var text = (title.textContent || '')
+                        .trim()
+                        .toLowerCase();
+
+                    if (
+                        text === 'continuar' ||
+                        text === 'continue'
+                    ) {
+                        title.textContent = 'Completado';
+                    }
+                });
+            }
+
+            function initCompletedCourseButtonFix() {
+                fixCompletedCourseButton();
+
+                if ( ! document.body ) {
+                    return;
+                }
+
+                var observer = new MutationObserver(function() {
+                    fixCompletedCourseButton();
+                });
+
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            }
+
+            if ( document.readyState === 'loading' ) {
+                document.addEventListener(
+                    'DOMContentLoaded',
+                    initCompletedCourseButtonFix
+                );
+            } else {
+                initCompletedCourseButtonFix();
+            }
+        })();
+        </script>
         <?php
     }
 
