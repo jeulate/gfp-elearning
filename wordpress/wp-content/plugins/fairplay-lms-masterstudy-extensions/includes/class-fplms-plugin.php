@@ -167,6 +167,27 @@ class FairPlay_LMS_Plugin {
 
         // Formularios de cursos / módulos / temas / profesor
         add_action( 'admin_init', [ $this->courses, 'handle_form' ] );
+        // Invalidar calendario cuando cambian fechas o vigencia del curso.
+        add_action(
+            'added_post_meta',
+            [ $this, 'handle_course_calendar_meta_change' ],
+            10,
+            4
+        );
+
+        add_action(
+            'updated_post_meta',
+            [ $this, 'handle_course_calendar_meta_change' ],
+            10,
+            4
+        );
+
+        add_action(
+            'deleted_post_meta',
+            [ $this, 'handle_course_calendar_meta_change' ],
+            10,
+            4
+        );
 
         // Ocultar cursos inactivos (draft) a roles no-administrador (frontend + REST + AJAX)
         add_action( 'pre_get_posts', [ $this->courses, 'filter_inactive_courses' ] );
@@ -533,6 +554,63 @@ class FairPlay_LMS_Plugin {
             [ $this, 'fplms_send_certificate_email_only_if_passed' ],
             10,
             3
+        );
+    }
+
+    /**
+     * Invalida los caches del calendario cuando MasterStudy modifica
+     * información temporal de un curso.
+     *
+     * @param mixed  $meta_id    ID o IDs del registro de postmeta.
+     * @param int    $object_id  ID del curso.
+     * @param string $meta_key   Clave de postmeta modificada.
+     * @param mixed  $meta_value Valor asociado.
+     */
+    public function handle_course_calendar_meta_change(
+        $meta_id,
+        $object_id,
+        $meta_key,
+        $meta_value = null
+    ): void {
+        static $invalidated_courses = [];
+
+        $course_id = (int) $object_id;
+
+        if ( $course_id <= 0 ) {
+            return;
+        }
+
+        if (
+            ! in_array(
+                (string) $meta_key,
+                [
+                    'end_time',
+                    'coming_soon_date',
+                    'coming_soon_time',
+                ],
+                true
+            )
+        ) {
+            return;
+        }
+
+        if ( 'stm-courses' !== get_post_type( $course_id ) ) {
+            return;
+        }
+
+       /*
+        * MasterStudy puede modificar varias metas del mismo curso
+        * durante un único request. Una invalidación por request
+        * es suficiente.
+        */
+        if ( isset( $invalidated_courses[ $course_id ] ) ) {
+            return;
+        }
+
+        $invalidated_courses[ $course_id ] = true;
+
+        $this->progress->invalidate_course_calendar_cache(
+            $course_id
         );
     }
 
