@@ -598,6 +598,67 @@ class FairPlay_LMS_Progress_Service {
     }
 
     /**
+     * Invalida los caches de dashboard afectados por cambios
+     * en la configuración temporal de un curso.
+     *
+     * El dashboard del estudiante se invalida únicamente para
+     * usuarios matriculados en el curso.
+     *
+     * El dashboard del instructor se invalida para el autor
+     * propietario del curso.
+     */
+    public function invalidate_course_calendar_cache( int $course_id ): void {
+        global $wpdb;
+
+        if ( $course_id <= 0 ) {
+            return;
+        }
+
+        if ( 'stm-courses' !== get_post_type( $course_id ) ) {
+            return;
+        }
+
+        $users_table = $wpdb->prefix . 'stm_lms_user_courses';
+
+       /*
+        * Invalidar únicamente estudiantes matriculados
+        * en el curso modificado.
+        */
+        $user_ids = $wpdb->get_col(
+            $wpdb->prepare(
+                "
+                SELECT DISTINCT user_id
+                FROM {$users_table}
+                WHERE course_id = %d
+                AND user_id > 0
+                ",
+                $course_id
+            )
+        );
+
+        foreach ( $user_ids as $user_id ) {
+            delete_transient(
+                'fplms_sdash_v15_' . (int) $user_id
+            );
+        }
+
+       /*
+        * El dashboard de instructor obtiene sus cursos
+        * mediante posts.post_author.
+        */
+        $instructor_id = (int) get_post_field(
+            'post_author',
+            $course_id
+        );
+
+        if ( $instructor_id > 0 ) {
+            delete_transient(
+                'fplms_idash_v5_' . $instructor_id
+            );
+        }
+    }
+
+    /**
      * Extrae IDs de lecciones/items del array curriculum de MasterStudy.
      */
     private static function extract_lesson_ids( array $curriculum ): array {
